@@ -1,0 +1,58 @@
+# Experiment: Qwen3-Next-80B-A3B-Thinking-NVFP4
+# Model: nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4
+#
+# ⚠️ NVFP4 is NVIDIA's custom quantization format designed for TensorRT-LLM.
+# vLLM may NOT be able to load this model directly. This compose file is provided
+# as a template — you may need to:
+#
+#   1. Try vLLM with a quantization workaround:
+#      --quantization aqlm  (if the model has AQLM-compatible weights)
+#
+#   2. Use TensorRT-LLM instead (official deployment path):
+#      - Requires: tensorrt-llm container, tensor_parallel_size=4, Blackwell GPU
+#      - Reference: https://huggingface.co/nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4
+#
+#   3. Use the unquantized FP8 version as fallback:
+#      Qwen/Qwen3-Next-80B-A3B-Thinking-FP8
+#
+# Architecture: 80B total, ~3B active (attention-based MoE), context up to 262K/1M
+# VRAM (NVFP4 weights only): ~40 GB. Full model + KV cache may exceed 72 GB.
+# Benchmark scores: MMLU-Pro 0.822, GPQA 0.752, AIME25 0.862
+# License: Apache 2.0
+
+services:
+  qwen36:
+    image: vllm/vllm-openai:latest
+    container_name: qwen36
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+    command: >
+      --model nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4
+      --served-model-name qwen3-next-80b-nvfp4
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 131072
+      --max-num-seqs 2
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.55
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -27,7 +27,8 @@ BASE_DIR="/home/chuck/homelab"
 PROFILE_DIR="$BASE_DIR/models/profiles"
 ENV_FILE="$BASE_DIR/.env"
 STATE_DIR="$BASE_DIR/state"
-COMPOSE_DIR="$BASE_DIR"  # Profiles reference compose as 'compose/qwen-coder.yml' relative to BASE_DIR
+COMPOSE_DIR="$BASE_DIR"
+EXPERIMENT_COMPOSE_DIR="$BASE_DIR/compose/experiments"
 LITELLM_CONFIG="$BASE_DIR/thor.litellm.config.yml"
 SCRIPTS_DIR="$BASE_DIR/scripts"
 
@@ -166,6 +167,73 @@ set_last_mode() {
     echo "$1" > "$STATE_DIR/last_mode"
 }
 
+# Get the currently active experiment name
+active_experiment() {
+    if [[ -f "$STATE_DIR/active_experiment" ]]; then
+        cat "$STATE_DIR/active_experiment"
+    else
+        echo "none"
+    fi
+}
+
+# Set the active experiment name
+set_active_experiment() {
+    echo "$1" > "$STATE_DIR/active_experiment"
+}
+
+# Clear the active experiment name
+clear_active_experiment() {
+    rm -f "$STATE_DIR/active_experiment"
+}
+
+# List experiment profile names (from YAML files matching experiment-*)
+list_experiment_profiles() {
+    local profiles=()
+    for profile_file in "$PROFILE_DIR"/experiment-*.yaml; do
+        [[ -f "$profile_file" ]] || continue
+        profiles+=("$(basename "$profile_file" .yaml)")
+    done
+    echo "${profiles[*]}"
+}
+
+# Check if an experiment compose file exists for a given profile name
+experiment_compose_exists() {
+    local profile="$1"
+    local base="${profile#experiment-}"
+    local compose_path="$EXPERIMENT_COMPOSE_DIR/${base}.yml"
+    [[ -f "$compose_path" ]]
+}
+
+# Get the experiment compose file path for a profile
+experiment_compose_path() {
+    local profile="$1"
+    local base="${profile#experiment-}"
+    echo "$EXPERIMENT_COMPOSE_DIR/${base}.yml"
+}
+
+# Log an experiment event to the archive
+log_experiment() {
+    local profile="$1"
+    local event="$2"
+    local detail="${3:-}"
+    local timestamp
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local log_file="$STATE_DIR/experiment_archive.md"
+    local line="### $timestamp: $event"
+    [[ -n "$detail" ]] && line="$line ($detail)"
+    echo "$line" >> "$log_file"
+}
+
+# Read the experiment archive log
+read_experiment_archive() {
+    local log_file="$STATE_DIR/experiment_archive.md"
+    if [[ -f "$log_file" ]]; then
+        cat "$log_file"
+    else
+        echo "(no experiment history yet)"
+    fi
+}
+
 # Write state/active_profiles as a YAML list
 write_active_profiles() {
     local profiles="$1"
@@ -251,8 +319,11 @@ cmd_init() {
     
     # If vLLM is running but mode wasn't matched, try to figure out which profile
     if [[ "$detected_mode" == "unknown" && "$has_vllm" == true ]]; then
-        # Check if experiment-active.yml exists (experiment mode)
+        # Check if experiment-active.yml exists (old ad-hoc experiment mode)
         if [[ -f "$COMPOSE_DIR/compose/experiment-active.yml" ]]; then
+            detected_mode="experiment"
+        elif [[ -f "$STATE_DIR/active_experiment" ]]; then
+            # Named experiment was active at last boot
             detected_mode="experiment"
         else
             # Default: assume matrix-coder
@@ -326,7 +397,17 @@ cmd_status() {
     local mode
     mode=$(current_mode)
     echo -e "  Mode: ${BOLD}$mode${NC}"
-    
+
+    # Show active experiment if applicable
+    local current_exp
+    current_exp=$(active_experiment)
+    if [[ "$current_exp" != "none" && "$current_exp" != "" ]]; then
+        echo -e "  Experiment: ${BOLD}$current_exp${NC}"
+        local exp_model
+        exp_model=$(profile_get "$current_exp" "model.path")
+        echo -e "  Model:    $exp_model"
+    fi
+
     if [[ "$mode" == "unknown" || "$mode" == "none" ]]; then
         echo -e "  ${YELLOW}No mode set in state (model manager not yet initialized)${NC}"
         echo ""
@@ -408,27 +489,30 @@ cmd_list() {
     echo ""
     printf "  ${BOLD}%-25s %-12s %-8s %-20s ${NC}\n" "PROFILE" "BACKEND" "PORT" "STATUS"
     echo "  $(printf '%.0s-' {1..67})"
-    
+
+    # Regular profiles (non-experiment)
     for profile_file in "$PROFILE_DIR"/*.yaml; do
         local profile
         profile=$(basename "$profile_file" .yaml)
+        # Skip experiment profiles (shown separately)
+        [[ "$profile" == experiment-* ]] && continue
         local backend
         backend=$(profile_backend "$profile")
         local port
         port=$(profile_port "$profile")
         local status
         status=$(profile_status "$profile")
-        
+
         local status_color
         if [[ "$status" == "active" ]]; then
             status_color="$GREEN"
         else
             status_color="$YELLOW"
         fi
-        
+
         printf "  ${BOLD}%-25s %-12s %-8s ${status_color}%-20s${NC}\n" "$profile" "$backend" "$port" "$status"
     done
-    
+
     echo ""
     section "Available Modes"
     echo ""
@@ -436,6 +520,37 @@ cmd_list() {
         local profiles="${MODE_PROFILES[$mode]}"
         printf "  ${BOLD}%-15s${NC}  %s\n" "$mode" "$profiles"
     done
+
+    # Experiment profiles section
+    local profiles
+    profiles=$(list_experiment_profiles)
+    if [[ -n "$profiles" ]]; then
+        echo ""
+        section "Experiment Profiles"
+        echo ""
+        printf "  ${BOLD}%-30s %-35s %-12s %-10s ${NC}\n" "PROFILE" "MODEL" "BACKEND" "VRAM"
+        echo "  $(printf '%.0s-' {1..90})"
+
+        local current_exp
+        current_exp=$(active_experiment)
+
+        for profile in $profiles; do
+            local model_path
+            model_path=$(profile_get "$profile" "model.path")
+            local backend
+            backend=$(profile_backend "$profile")
+            local vram
+            vram=$(profile_get "$profile" "model.expected_vram")
+
+            local color="$CYAN"
+            if [[ "$profile" == "$current_exp" ]]; then
+                color="$GREEN"
+            fi
+
+            printf "  ${color}%-30s %-35s %-12s %-10s${NC}\n" \
+                "$profile" "$model_path" "$backend" "$vram"
+        done
+    fi
 }
 
 cmd_mode_current() {
@@ -448,6 +563,11 @@ cmd_mode_current() {
         echo -e "  Last mode:    $(last_mode)"
         local profiles="${MODE_PROFILES[$mode]:-unknown}"
         echo -e "  Profiles:     $profiles"
+        local current_exp
+        current_exp=$(active_experiment)
+        if [[ "$current_exp" != "none" && "$current_exp" != "" ]]; then
+            echo -e "  Experiment:   ${BOLD}$current_exp${NC}"
+        fi
     fi
 }
 
@@ -821,13 +941,21 @@ cmd_mode_switch() {
 cmd_mode_rollback() {
     local prev_mode
     prev_mode=$(last_mode)
-    
+
     if [[ "$prev_mode" == "none" || -z "$prev_mode" ]]; then
         echo -e "  ${RED}No previous mode to rollback to.${NC}"
         return 1
     fi
-    
+
     # Clean up any experiment artifacts
+    local current_exp
+    current_exp=$(active_experiment)
+    local was_experiment=false
+    if [[ "$current_exp" != "none" && "$current_exp" != "" ]]; then
+        was_experiment=true
+    fi
+
+    # Clean up old ad-hoc experiment compose
     local exp_compose="$COMPOSE_DIR/compose/experiment-active.yml"
     if [[ -f "$exp_compose" ]]; then
         echo -e "  ${YELLOW}Cleaning up experiment artifacts...${NC}"
@@ -838,7 +966,14 @@ cmd_mode_rollback() {
         rm -f "$exp_compose"
         echo -e "  ${GREEN}Removed $exp_compose${NC}"
     fi
-    
+
+    # Clean up named experiment state
+    if [[ "$was_experiment" == true ]]; then
+        log_experiment "$current_exp" "ended (rollback to $prev_mode)"
+        clear_active_experiment
+        echo -e "  ${GREEN}Cleared active experiment: $current_exp${NC}"
+    fi
+
     echo -e "  Rolling back to: ${BOLD}$prev_mode${NC}"
     cmd_mode_switch "--yes" "$prev_mode"
 }
@@ -1083,17 +1218,119 @@ cmd_benchmark() {
 
 cmd_experiment_start() {
     if [[ $# -lt 1 ]]; then
-        echo -e "  ${RED}Usage: model-manager experiment start [--mtp] <MODEL_PATH> [args...][${NC}"
+        echo -e "  ${RED}Usage: model-manager experiment start [--mtp] <MODEL_PATH> [args...]${NC}"
+        echo -e "         model-manager experiment start --profile <EXPERIMENT_PROFILE>${NC}"
         echo ""
         echo "  Replaces the active vLLM model on port 8000."
         echo "  The LiteLLM alias 'matrix-coder' will transparently serve this model."
         echo ""
-        echo "  --mtp        Enable Multi-Token Prediction (n_predict=1)"
-        echo "  Args:        --gpu-mem <float> --max-len <int> --max-seqs <int>"
+        echo "  --profile <NAME>  Start a named experiment from models/profiles/"
+        echo "  --mtp             Enable Multi-Token Prediction (n_predict=1)"
+        echo "  Args:             --gpu-mem <float> --max-len <int> --max-seqs <int>"
         echo ""
         echo "  To restore: model-manager mode rollback"
+        echo ""
+        local profiles
+        profiles=$(list_experiment_profiles)
+        [[ -n "$profiles" ]] && echo "  Available profiles: $profiles"
         return 1
     fi
+
+    # Check for --profile flag (named experiment)
+    if [[ "$1" == "--profile" ]]; then
+        local target_profile="${2:-}"
+        if [[ -z "$target_profile" ]]; then
+            echo -e "  ${RED}Profile name required after --profile${NC}"
+            return 1
+        fi
+        if [[ ! -f "$PROFILE_DIR/${target_profile}.yaml" ]]; then
+            echo -e "  ${RED}Experiment profile not found: $target_profile${NC}"
+            local available
+            available=$(list_experiment_profiles)
+            [[ -n "$available" ]] && echo -e "  Available: $available"
+            return 1
+        fi
+        if ! experiment_compose_exists "$target_profile"; then
+            echo -e "  ${RED}Compose file missing for profile: $target_profile${NC}"
+            return 1
+        fi
+
+        local model_path
+        model_path=$(profile_get "$target_profile" "model.path")
+        local current
+        current=$(current_mode)
+
+        section "Experiment Mode (Named Profile)"
+        echo -e "  Profile: ${BOLD}$target_profile${NC}"
+        echo -e "  Model:   ${BOLD}$model_path${NC}"
+        echo ""
+
+        # Stop current vLLM
+        sub_section "Stopping current vLLM..."
+        if container_running "qwen36"; then
+            docker stop qwen36 2>&1 | sed 's/^/    /'
+            docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+            echo -e "    ${GREEN}✓ Stopped${NC}"
+        fi
+
+        # Save current mode for rollback
+        if [[ "$current" != "unknown" && "$current" != "none" ]]; then
+            set_last_mode "$current"
+        fi
+
+        # Clean up any old experiment artifacts
+        local old_exp_compose="$COMPOSE_DIR/compose/experiment-active.yml"
+        rm -f "$old_exp_compose"
+
+        # Start the experiment using the named compose file
+        local exp_compose
+        exp_compose=$(experiment_compose_path "$target_profile")
+        sub_section "Starting experiment: $target_profile"
+        docker compose -f "$exp_compose" up -d 2>&1 | sed 's/^/    /'
+
+        echo "    Waiting for vLLM to initialize..."
+        local max_wait=180
+        local waited=0
+        while (( waited < max_wait )); do
+            if health_check "http://localhost:8000/v1/models"; then
+                local exp_model
+                exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(', '.join(m['id'] for m in d.get('data', [])))
+except:
+    print('unknown')
+" 2>/dev/null)
+                echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+                break
+            fi
+            sleep 5
+            ((waited += 5))
+        done
+        if (( waited >= max_wait )); then
+            echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+        fi
+
+        # Update state
+        set_mode "experiment"
+        set_active_experiment "$target_profile"
+        write_active_profiles "experiment embeddings"
+        log_switch "${current:-unknown}" "experiment ($target_profile)" "success"
+        log_experiment "$target_profile" "started"
+
+        echo ""
+        section "Experiment Active"
+        echo -e "  Profile: ${BOLD}$target_profile${NC}"
+        echo -e "  Model:   ${BOLD}$model_path${NC}"
+        echo -e "  Alias:   matrix-coder (port 8000)"
+        echo ""
+        echo "  Switch to another: ${BOLD}model-manager experiment switch <PROFILE>${NC}"
+        echo "  Return to production: ${BOLD}model-manager mode rollback${NC}"
+        return 0
+    fi
+
+    # --- Legacy ad-hoc experiment start (below) ---
     
     local mtp_enabled=false
     local model_path=""
@@ -1252,6 +1489,227 @@ except:
 }
 
 # ============================================================
+# Experiment Subcommands
+# ============================================================
+
+cmd_experiment_list() {
+    local profiles
+    profiles=$(list_experiment_profiles)
+
+    if [[ -z "$profiles" ]]; then
+        echo -e "  ${YELLOW}No experiment profiles configured.${NC}"
+        echo ""
+        echo "  Create profiles in $PROFILE_DIR/experiment-*.yaml"
+        echo "  and compose files in $EXPERIMENT_COMPOSE_DIR/"
+        return 1
+    fi
+
+    section "Available Experiments"
+    echo ""
+
+    local current_exp
+    current_exp=$(active_experiment)
+
+    for profile in $profiles; do
+        local model_path
+        model_path=$(profile_get "$profile" "model.path")
+        local vram
+        vram=$(profile_get "$profile" "model.expected_vram")
+        local status_color="$CYAN"
+        local status_text="available"
+
+        if [[ "$profile" == "$current_exp" ]]; then
+            status_color="$GREEN"
+            status_text="ACTIVE"
+        elif ! experiment_compose_exists "$profile"; then
+            status_color="$RED"
+            status_text="NO COMPOSE"
+        fi
+
+        printf "  ${BOLD}%-30s${NC}  %-10s ${status_color}[%s]${NC}\n" \
+            "$profile" "$vram" "$status_text"
+        echo -e "    ${CYAN}model: $model_path${NC}"
+        echo ""
+    done
+
+    echo "  Usage:"
+    echo "    model-manager experiment start --profile <PROFILE>  Start an experiment"
+    echo "    model-manager experiment switch <PROFILE>           Switch to another experiment"
+    echo "    model-manager experiment show <PROFILE>             Show profile details"
+    echo "    model-manager experiment archive                    View experiment history"
+    echo "    model-manager mode rollback                         Return to production"
+}
+
+cmd_experiment_switch() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager experiment switch [--yes] <PROFILE>${NC}"
+        echo ""
+        echo "  Switch from the current experiment to a different one."
+        echo "  Both experiments use the same vLLM container on port 8000."
+        echo ""
+        local profiles
+        profiles=$(list_experiment_profiles)
+        [[ -n "$profiles" ]] && echo "  Available: $profiles"
+        return 1
+    fi
+
+    local force_no=false
+    local target_profile=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y|--force) force_no=true; shift ;;
+            *) target_profile="$1"; shift ;;
+        esac
+    done
+
+    # Validate profile
+    if [[ -z "$target_profile" ]]; then
+        echo -e "  ${RED}Profile name required${NC}"
+        return 1
+    fi
+
+    if [[ ! -f "$PROFILE_DIR/${target_profile}.yaml" ]]; then
+        echo -e "  ${RED}Experiment profile not found: $target_profile${NC}"
+        return 1
+    fi
+
+    if ! experiment_compose_exists "$target_profile"; then
+        echo -e "  ${RED}Compose file missing for: $target_profile${NC}"
+        return 1
+    fi
+
+    local current_exp
+    current_exp=$(active_experiment)
+    local current_mode_now
+    current_mode_now=$(current_mode)
+
+    # Must be in experiment mode or already running an experiment
+    if [[ "$current_mode_now" != "experiment" && "$current_exp" == "none" ]]; then
+        echo -e "  ${RED}Not currently in experiment mode.${NC}"
+        echo "  Start an experiment first: model-manager experiment start --profile <PROFILE>"
+        return 1
+    fi
+
+    local model_path
+    model_path=$(profile_get "$target_profile" "model.path")
+
+    section "Experiment Switch"
+    echo -e "  From:  ${BOLD}${current_exp:-none}${NC}"
+    echo -e "  To:    ${BOLD}$target_profile${NC}"
+    echo -e "  Model: ${BOLD}$model_path${NC}"
+    echo ""
+
+    if [[ "$force_no" != true ]]; then
+        echo -e "${BOLD}Proceed?${NC}"
+        read -r -p "  [y/N] " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo -e "  ${YELLOW}Aborted.${NC}"
+            return 0
+        fi
+    fi
+
+    # Stop current vLLM
+    sub_section "Stopping current experiment..."
+    if container_running "qwen36"; then
+        docker stop qwen36 2>&1 | sed 's/^/    /'
+        docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+        echo -e "    ${GREEN}✓ Stopped${NC}"
+    fi
+
+    # Log the switch
+    log_experiment "$current_exp" "switch → $target_profile"
+    log_switch "$current_exp" "$target_profile" "experiment switch"
+
+    # Start new experiment using the same flow as cmd_experiment_start
+    local exp_compose
+    exp_compose=$(experiment_compose_path "$target_profile")
+
+    sub_section "Starting experiment: $target_profile"
+    docker compose -f "$exp_compose" up -d 2>&1 | sed 's/^/    /'
+
+    echo "    Waiting for vLLM to initialize..."
+    local max_wait=180
+    local waited=0
+    while (( waited < max_wait )); do
+        if health_check "http://localhost:8000/v1/models"; then
+            local exp_model
+            exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(', '.join(m['id'] for m in d.get('data', [])))
+except:
+    print('unknown')
+" 2>/dev/null)
+            echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+            break
+        fi
+        sleep 5
+        ((waited += 5))
+    done
+    if (( waited >= max_wait )); then
+        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+    fi
+
+    # Update state
+    set_active_experiment "$target_profile"
+    write_active_profiles "experiment embeddings"
+
+    echo ""
+    section "Experiment Active"
+    echo -e "  Profile: ${BOLD}$target_profile${NC}"
+    echo -e "  Model:   ${BOLD}$model_path${NC}"
+    echo -e "  Alias:   matrix-coder (port 8000)"
+    echo ""
+    echo "  Switch to another: ${BOLD}model-manager experiment switch <PROFILE>${NC}"
+    echo "  Return to production: ${BOLD}model-manager mode rollback${NC}"
+}
+
+cmd_experiment_show() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager experiment show <PROFILE>${NC}"
+        return 1
+    fi
+
+    local profile="$1"
+    local profile_file="$PROFILE_DIR/${profile}.yaml"
+
+    if [[ ! -f "$profile_file" ]]; then
+        echo -e "  ${RED}Experiment profile not found: $profile${NC}"
+        return 1
+    fi
+
+    section "Experiment Profile: $profile"
+    echo ""
+    cat "$profile_file" | sed 's/^/  /'
+    echo ""
+
+    # Check compose file status
+    if experiment_compose_exists "$profile"; then
+        local compose_path
+        compose_path=$(experiment_compose_path "$profile")
+        echo -e "  ${GREEN}Compose file:${NC} $compose_path"
+    else
+        echo -e "  ${RED}Compose file missing!${NC}"
+    fi
+
+    # Check if this is the active experiment
+    local current_exp
+    current_exp=$(active_experiment)
+    if [[ "$profile" == "$current_exp" ]]; then
+        echo -e "  ${GREEN}Status: ${BOLD}ACTIVE${NC} (currently running on port 8000)"
+    fi
+}
+
+cmd_experiment_archive() {
+    section "Experiment Archive"
+    echo ""
+    read_experiment_archive
+    echo ""
+}
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -1273,8 +1731,14 @@ usage() {
     echo "  health                    Check all running services"
     echo "  preflight <MODE>          Run preflight checks without switching"
     echo "  benchmark <PROFILE>       Run benchmark harness"
-    echo "  experiment start <MODEL>  Start a candidate model on port 8000"
-    echo "  experiment start --mtp <MODEL>  Start with Multi-Token Prediction enabled"
+    echo ""
+    echo "  experiment list                       List available experiment profiles"
+    echo "  experiment start <MODEL>              Start ad-hoc candidate model"
+    echo "  experiment start --profile <NAME>     Start a named experiment profile"
+    echo "  experiment start --mtp <MODEL>        Start with Multi-Token Prediction"
+    echo "  experiment switch <NAME>              Switch to another experiment"
+    echo "  experiment show <NAME>                Show experiment profile details"
+    echo "  experiment archive                    View experiment history"
     echo ""
     echo "Modes: daily qwen-coder qwen-long llms experiment images"
 }
@@ -1334,12 +1798,25 @@ case "$CMD" in
         ;;
     experiment)
         if [[ $# -lt 1 ]]; then
-            echo -e "  ${RED}Usage: model-manager experiment start <MODEL_PATH>[${NC}"
+            echo -e "  ${RED}Usage: model-manager experiment <list|start|switch|show|archive>${NC}"
+            echo ""
+            echo "  Subcommands:"
+            echo "    list                      List available experiment profiles"
+            echo "    start [--profile <NAME>]  Start an experiment (ad-hoc or named)"
+            echo "    start --mtp <MODEL>       Start with Multi-Token Prediction"
+            echo "    switch <NAME>             Switch to another experiment"
+            echo "    show <NAME>               Show experiment profile details"
+            echo "    archive                   View experiment history"
             exit 2
         fi
         case "$1" in
-            start) cmd_experiment_start "${@:2}" ;;
-            *) echo -e "  ${RED}Unknown experiment subcommand: $1${NC}" ;;
+            list)     cmd_experiment_list ;;
+            start)    cmd_experiment_start "${@:2}" ;;
+            switch)   cmd_experiment_switch "${@:2}" ;;
+            show)     cmd_experiment_show "${@:2}" ;;
+            archive)  cmd_experiment_archive ;;
+            *) echo -e "  ${RED}Unknown experiment subcommand: $1${NC}"
+               echo "  Valid: list start switch show archive" ;;
         esac
         ;;
     help|--help|-h)

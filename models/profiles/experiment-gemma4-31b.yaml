@@ -1,0 +1,53 @@
+# experiment-gemma4-31b — Gemma 4 31B Q4 Experiment
+# Dense 31B model, good for general reasoning and coding
+# Q4 quantization via vLLM built-in (or use pre-quantized variant)
+
+name: experiment-gemma4-31b
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: google/gemma-4-31b-it
+  quantization: q4 (vLLM built-in)
+  format: huggingface
+  expected_vram: 30-40 GB
+  parameters: 31B
+  context: 131072
+
+launch:
+  container: qwen36
+  image: vllm/vllm-openai:latest
+  compose: compose/experiments/gemma4-31b.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --max-model-len: 131072
+    --max-num-seqs: 4
+    --max-num-batched-tokens: 16384
+    --gpu-memory-utilization: 0.40
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+
+compatible_modes:
+  - experiment
+
+notes:
+  - If google/gemma-4-31b-it load fails, try bartowski/gemma-4-31b-it-GGUF
+  - Or try TheBloke/gemma-4-31b-AWQ for AWQ-quantized variant
+  - Lighter VRAM usage than Qwen3.6-27b — more headroom for KV cache
+  - No tool-call-parser needed (gemma4 doesn't need custom parser)
+  - Rollback: model-manager mode rollback

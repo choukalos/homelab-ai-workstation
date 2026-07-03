@@ -55,12 +55,39 @@ All ports are LAN-only. Never exposed publicly.
 # Roll back to previous mode
 ./scripts/model-manager mode rollback
 
-# Start a candidate model for testing
+# --- Experiments ---
+# List available experiment profiles
+./scripts/model-manager experiment list
+
+# Start a named experiment (uses pre-configured profile)
+./scripts/model-manager experiment start --profile experiment-gemma4-31b
+
+# Start an ad-hoc experiment with a model path
 ./scripts/model-manager experiment start <MODEL_PATH>
 
-# Test with Multi-Token Prediction
-./scripts/model-manager experiment start --mtp <MODEL_PATH>
+# Switch between experiments (no rollback needed)
+./scripts/model-manager experiment switch experiment-nemotron-3-nano-30b
+
+# View experiment profile details
+./scripts/model-manager experiment show experiment-gemma4-31b
+
+# View experiment history log
+./scripts/model-manager experiment archive
 ```
+
+### Experiment Profiles
+
+Named experiments are defined by a YAML profile and a Docker Compose file:
+
+| Profile | Model | VRAM | Notes |
+|---|---|---|---|
+| `experiment-gemma4-31b` | google/gemma-4-31b-it | ~30-40 GB | Dense 31B, vLLM-compatible, good for general tasks |
+| `experiment-nemotron-3-nano-30b` | nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 | ~55-65 GB | ⚠️ Hybrid Mamba-2/Transformer — **likely not vLLM-compatible**, needs TensorRT-LLM or NeMo |
+| `experiment-qwen3-next-80b-nvfp4` | nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4 | ~40-55 GB | ⚠️ NVFP4 is a **TensorRT-LLM-only format** — vLLM will not load it |
+
+> **Note:** The `--profile` flag lets you jump between experiments without rolling back to production. Use `mode rollback` to return to the previous production mode.
+
+> **⚠️ Known compatibility issues:** The Nemotron-3-Nano uses a hybrid Mamba-2/Transformer architecture that vLLM may not support. The Qwen3-Next-80B NVFP4 quantization is designed exclusively for TensorRT-LLM on Blackwell GPUs. Both profiles are created as research placeholders — see TODO.md for alternative paths.
 
 ## Directory Layout
 
@@ -73,8 +100,13 @@ home/
     experiment.yml      # vLLM template (copy & edit)
     comfyui.yml         # ComfyUI / FLUX
     metrics.yml         # node-exporter + dcgm-exporter
+    experiments/        # Named experiment compose files
+      gemma4-31b.yml
+      nemotron-3-nano-30b.yml
+      qwen3-next-80b-nvfp4.yml
     legacy/             # Archived pre-migration files
   models/profiles/      # Declarative model profiles
+    experiment-*.yaml   # Experiment profile definitions
   scripts/              # Operational tools
     model-manager       # Mode switching & state management
     preflight.sh        # Pre-launch validation
@@ -83,6 +115,7 @@ home/
     vllm_feature_eval.sh # vLLM feature testing
   docs/                 # Design docs & reference materials
   state/                # Runtime state (gitignored)
+    experiment_archive.md  # Experiment start/end history
   .env                  # Environment vars (gitignored)
 ```
 
@@ -105,6 +138,10 @@ home/
 | Run preflight | `./scripts/model-manager preflight <MODE>` |
 | Run benchmarks | `./scripts/model-manager benchmark <PROFILE>` |
 | Show profile details | `./scripts/model-manager profile show <NAME>` |
+| List experiments | `./scripts/model-manager experiment list` |
+| Start experiment | `./scripts/model-manager experiment start --profile <NAME>` |
+| Switch experiments | `./scripts/model-manager experiment switch <NAME>` |
+| Experiment history | `./scripts/model-manager experiment archive` |
 | Health check (JSON) | `./scripts/matrix_health.sh --json` |
 
 ## Docs
