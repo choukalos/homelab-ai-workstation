@@ -1,0 +1,38 @@
+# matrix-gemma4-moe — Light tasks / fallback LLM
+# Status: ACTIVE
+
+name: matrix-gemma4-moe
+alias: matrix-gemma4-moe
+backend: ollama
+status: active
+
+model:
+  path: gemma4:26b
+  quantization: Q4_K_M
+  format: GGUF
+  parameter_size: 25.8B
+  expected_vram: 17 GB
+
+launch:
+  container: ollama
+  image: ollama/ollama:latest
+  compose: compose/gemma4-moe.yml
+  port: 11434
+  volumes:
+    - /home/chuck/data/ollama:/root/.ollama
+  env:
+    OLLAMA_HOST: 0.0.0.0:11434
+    OLLAMA_MAX_LOADED_MODELS: 2
+    OLLAMA_MAX_QUEUE: 8
+    OLLAMA_KEEP_ALIVE: 5m
+  args: []  # Ollama uses API calls, not launch args
+
+health:
+  endpoint: http://localhost:11434
+  expected_model_name: gemma4:26b
+  pull_command: docker exec ollama ollama pull gemma4:26b
+
+compatible_modes:
+  - daily
+  - llms
+  - images

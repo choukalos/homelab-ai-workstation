@@ -1,0 +1,38 @@
+services:
+  qwen36:
+    image: vllm/vllm-openai:latest
+    container_name: qwen36
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+    command: >
+      --model Lorbus/Qwen3.6-27b-int4-AutoRound
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 300000
+      --max-num-seqs 1
+      --max-num-batched-tokens 4096
+      --gpu-memory-utilization 0.60
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

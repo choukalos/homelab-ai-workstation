@@ -1,0 +1,59 @@
+# qwen-long — Long-context Qwen for large codebases / documents
+# Status: PLANNED (not yet implemented)
+
+name: qwen-long
+alias: matrix-coder
+backend: vllm
+status: planned
+
+model:
+  path: Lorbus/Qwen3.6-27b-int4-AutoRound
+  quantization: int4-AutoRound
+  format: vLLM native
+  expected_vram: 52-58 GB
+
+launch:
+  container: qwen36
+  image: vllm/vllm-openai:latest
+  compose: compose/qwen-long.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --max-model-len: 240000
+    --max-num-seqs: 2
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.50
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --chunked-prefill-size: 16384
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_xml
+    --trust-remote-code: true
+    --speculative-config: '{"n_predict": 1}'
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen36-27b
+
+compatible_modes:
+  - qwen-long
+
+notes:
+  - "Restart policy: 'no' (not persistent, operator-controlled start/stop)"
+  - "max-model-len: 240000 (Qwen3.6-27B hard limit, do not increase)"
+  - "gpu-memory-utilization: 0.50 to fit 2 seqs at 240K context with MTP overhead"
+  - "max-num-seqs: 2 for concurrency (requires testing at long context)"
+  - "max-num-batched-tokens: 8192 for better throughput with multiple sequences"
+  - "chunked-prefill-size: 16384 optimized for long prompts"
+  - "MTP: --speculative-config with n_predict=1 for throughput gain"
+  - "Gemma4 should be unloaded from Ollama before launching to free VRAM headroom"
+  - "alias stays matrix-coder; no LiteLLM config change needed"
+  - "Use: docker compose -f compose/qwen-long.yml up -d"

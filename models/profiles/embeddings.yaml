@@ -1,0 +1,40 @@
+# embeddings — Embedding model
+# Status: ACTIVE
+
+name: embeddings
+alias: embeddings
+backend: ollama
+status: active
+
+model:
+  path: nomic-embed-text:latest
+  quantization: F16
+  format: GGUF
+  parameter_size: 137M
+  expected_vram: 0.3 GB
+
+launch:
+  container: ollama
+  image: ollama/ollama:latest
+  compose: compose/gemma4-moe.yml
+  port: 11434
+  volumes:
+    - /home/chuck/data/ollama:/root/.ollama
+  env:
+    OLLAMA_HOST: 0.0.0.0:11434
+    OLLAMA_KEEP_ALIVE: 5m
+    OLLAMA_MAX_LOADED_MODELS: 2
+    OLLAMA_MAX_QUEUE: 8
+  args: []  # Ollama uses API calls, not launch args
+
+health:
+  endpoint: http://localhost:11434
+  expected_model_name: nomic-embed-text:latest
+  pull_command: docker exec ollama ollama pull nomic-embed-text
+
+compatible_modes:
+  - daily
+  - llms
+  - qwen-coder
+  - qwen-long
+  - images

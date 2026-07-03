@@ -1,0 +1,25 @@
+# Ollama — Gemma4 26B MoE + nomic-embed-text
+# Serves: matrix-gemma4-moe (gemma4:26b) and embeddings (nomic-embed-text)
+# Usage: docker compose -f compose/draft/gemma4-moe.yml up -d
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=5m
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_MAX_QUEUE=8
+    volumes:
+      - /home/chuck/data/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

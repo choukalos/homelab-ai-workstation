@@ -1,0 +1,59 @@
+# comfyui — Image generation / FLUX
+# Status: PLANNED
+
+name: comfyui
+alias: none  # no LiteLLM alias — image generation only
+backend: comfyui
+status: planned
+
+model:
+  path: varies  # FLUX or other, loaded by ComfyUI at runtime
+  format: ComfyUI workflow
+  expected_vram: 30-40 GB
+
+launch:
+  container: comfyui_backend
+  image: mmartial/comfyui-nvidia-docker:latest
+  compose: compose/comfyui.yml
+  profile: image
+  port: 8188
+  shm_size: 4gb
+  volumes:
+    - /home/chuck/data/comfyui/run:/comfy/mnt
+    - /home/chuck/data/comfyui/basedir:/basedir
+  env:
+    COMFYUI_FLAGS: "--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8"
+    CUDA_MALLOC_ASYNC: "1"
+    SECURITY_LEVEL: weak
+    USE_SOCAT: "false"
+    USE_UV: "true"
+    BASE_DIRECTORY: /basedir
+  args: []  # ComfyUI handles its own model loading
+
+health:
+  endpoint: http://localhost:8188
+  note: ComfyUI has no standardized health endpoint; check port responsiveness
+
+compatible_modes:
+  - images
+
+mode_requirements:
+  must_stop:
+    - vLLM (compose/qwen-coder.yml) — matrix-coder alias goes offline
+  must_keep:
+    - Ollama (compose/gemma4-moe.yml) — gemma4 + embeddings remain available
+  must_have:
+    - compose/metrics.yml — node-exporter and dcgm-exporter (untouched)
+
+security:
+  - Do NOT expose port 8188 publicly
+  - Internal/LAN access only
+  - SECURITY_LEVEL=weak (intentional, internal only)
+
+notes:
+  - vLLM (matrix-coder) is STOPPED during image mode — alias offline
+  - Ollama stays running: gemma4:26b + nomic-embed-text provide a working LLM
+  - Total VRAM: ComfyUI 30-40 GB + gemma4 17 GB = ~48-58 GB of 72 GB
+  - Do NOT expose port 8188 publicly
+  - Rollback: stop ComfyUI, restart compose/qwen-coder.yml
+  - Full documentation: docs/matrix_images_mode.md

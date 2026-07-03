@@ -1,0 +1,30 @@
+# ComfyUI — Image generation / FLUX (images mode)
+# vLLM must be stopped before starting this.
+# Usage: docker compose -f compose/draft/comfyui.yml --profile image up -d
+
+services:
+  comfyui:
+    image: mmartial/comfyui-nvidia-docker:latest
+    container_name: comfyui_backend
+    restart: unless-stopped
+    profiles: ["image"]
+    ports:
+      - "8188:8188"
+    shm_size: "4gb"
+    environment:
+      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8
+      - CUDA_MALLOC_ASYNC=1
+      - SECURITY_LEVEL=weak
+      - USE_SOCAT=false
+      - USE_UV=true
+      - BASE_DIRECTORY=/basedir
+    volumes:
+      - /home/chuck/data/comfyui/run:/comfy/mnt
+      - /home/chuck/data/comfyui/basedir:/basedir
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

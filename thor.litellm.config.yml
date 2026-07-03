@@ -1,0 +1,67 @@
+model_list:
+
+  # ─── Custom pricing for budget tracking ─────────────────────────
+  # Self-hosted models have no real $ cost, so we set nominal pricing
+  # so that key budgets actually work. At $0.000001/token:
+  #   $1 budget  = ~1M tokens  (~3-5k chat turns with ~200-300 tokens each)
+  #   $10 budget = ~10M tokens
+  #   $100 budget = ~100M tokens
+  # Embeddings are 10x cheaper since they're short vectors.
+  # Adjust to taste — the real "cost" is just your GPU time.
+
+  # -- Gemma-4b via LMStudio on Mac Studio M1 -----------------------
+  - model_name: studio-gemma4-4b
+    model_info:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000001
+    litellm_params:
+      model: openai/gemma-4b
+      api_base: http://macstudio:1234/v1
+      api_key: "not-needed"
+
+  # ── Qwen3.6-27B via vLLM (port 8000) ─────────────────────────────
+  - model_name: matrix-coder
+    model_info:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000001
+    litellm_params:
+      model: openai/qwen36-27b
+      api_base: http://matrix:8000/v1
+      api_key: "unused"
+      num_retries: 2
+
+  - model_name: matrix-gemma4-moe
+    model_info:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000001
+    litellm_params:
+      model: ollama/gemma4:26b
+      api_base: http://matrix:11434
+      api_key: "unused"
+      num_retries: 2
+      extra_body:
+        options:
+          think: false
+
+  # ── Nomic embed-text for embeddings ──────────────────────────────
+  - model_name: embeddings
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: http://matrix:11434
+      api_key: "unused"
+      num_retries: 2
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  database_url: "os.environ/LITELLM_DATABASE_URL"
+  set_verbose: true
+  debug_level: "WARNING"
+
+# Added to get token data into prometheus
+litellm_settings:
+  callbacks:
+    - prometheus
+

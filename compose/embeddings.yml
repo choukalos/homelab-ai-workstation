@@ -1,0 +1,28 @@
+# Ollama — Embeddings only (nomic-embed-text)
+# Alias: embeddings on Thor LiteLLM
+# Note: In practice this shares the Ollama instance with gemma4-moe.
+#       Use gemma4-moe.yml to start both models together.
+#       This file exists only as a reference for the embeddings profile.
+# Usage: (use gemma4-moe.yml to start the shared Ollama instance)
+
+services:
+  ollama-embeddings:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=5m
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_MAX_QUEUE=8
+    volumes:
+      - /home/chuck/data/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

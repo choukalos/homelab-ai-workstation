@@ -1,0 +1,53 @@
+# experiment — Candidate model swap-out slot
+# Status: PLANNED (ad hoc, created as needed)
+
+name: experiment
+alias: matrix-coder
+backend: vllm
+status: planned
+
+model:
+  path: "[CANDIDATE MODEL]"
+  quantization: varies
+  format: varies
+  expected_vram: varies
+
+launch:
+  container: qwen36  # same container name, re-used
+  image: vllm/vllm-openai:latest
+  compose: compose/experiment.yml  # template — copy & edit before use
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    # Adapt per candidate model — use matrix-coder profile as baseline
+    --max-model-len: 200000
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.66
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --enable-auto-tool-choice: true
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+
+compatible_modes:
+  - experiment
+
+notes:
+  - compose/experiment.yml is a TEMPLATE — copy to compose/experiment-CANDIDATE.yml, edit model path/args
+  - Replaces matrix-coder on port 8000 — alias stays fixed, model changes
+  - No LiteLLM config changes needed
+  - Operator MUST restore production Qwen after testing
+  - Rollback: docker compose -f compose/experiment-CANDIDATE.yml down; docker compose -f compose/qwen-coder.yml up -d
+  - Gemma4 and embeddings may need to be unloaded from Ollama if candidate needs more VRAM
+  - Always run preflight.sh --profile experiment before launching

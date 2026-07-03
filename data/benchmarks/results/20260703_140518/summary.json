@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-07-03T14:05:18Z",
+  "profile": "matrix-coder",
+  "model": "Lorbus/Qwen3.6-27b-int4-AutoRound",
+  "endpoint": "http://localhost:8000/v1",
+  "category": "all",
+  "params": {
+    "warmup": 5,
+    "runs": 20,
+    "concurrent": 4,
+    "tokens": 512
+  },
+  "gpu": {
+    "vram_used_before_mb": 48840,
+    "vram_used_after_mb": 48840,
+    "gpu_util_before_pct": 0,
+    "gpu_util_after_pct": 100
+  },
+  "latency": {
+    "ttft_ms_mean": 38.34,
+    "ttft_ms_median": 38.27,
+    "ttft_ms_p95": 38.95,
+    "ttft_ms_min": 38.0,
+    "ttft_ms_max": 38.95,
+    "total_ms_mean": 39.2,
+    "total_ms_median": 39.11,
+    "total_runs": 20
+  },
+  "throughput": {
+    "tokens_per_sec_mean": 165.0,
+    "tokens_per_sec_median": 165.51,
+    "tokens_per_sec_min": 161.25,
+    "tokens_per_sec_max": 168.52,
+    "target_tokens": 512,
+    "total_runs": 20
+  },
+  "stress": {
+    "concurrent": 4,
+    "rounds": 20,
+    "total_requests": 80,
+    "success": 80,
+    "fail": 0,
+    "avg_time_per_request_s": 1.101,
+    "total_throughput_req_per_s": 18.16
+  }
+}

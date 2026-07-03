@@ -1,0 +1,49 @@
+# Experiment template — copy and edit before use
+# Usage:
+#   cp compose.experiment.yml compose.experiment-<name>.yml
+#   edit model name/args
+#   docker compose -f compose.experiment-<name>.yml up -d
+#
+# The LiteLLM alias 'matrix-coder' always points to port 8000.
+# Whatever model runs here IS matrix-coder to all clients.
+# When done, restore qwen-coder.yml on port 8000.
+
+services:
+  qwen36:
+    image: vllm/vllm-openai:latest
+    container_name: qwen36
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+    # ★ EDIT THESE for your candidate model:
+    command: >
+      --model MODEL_PATH_HERE
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 200000
+      --max-num-seqs 3
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.66
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

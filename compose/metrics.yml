@@ -1,0 +1,32 @@
+# Metrics — node-exporter + dcgm-exporter
+# Always running. Not tied to any mode.
+# Usage: docker compose -f compose/draft/metrics.yml up -d
+
+services:
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/rootfs"
+
+  dcgm-exporter:
+    image: nvidia/dcgm-exporter:latest
+    container_name: dcgm-exporter
+    restart: unless-stopped
+    ports:
+      - "9400:9400"
+    environment:
+      - DCGM_EXPORTER_LISTEN=0.0.0.0:9400
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN

@@ -1,0 +1,1353 @@
+#!/usr/bin/env bash
+# model-manager — Safe mode switching for Matrix GPU appliance
+# Usage: model-manager <command> [args...]
+#
+# Commands:
+#   init                      — Auto-detect current mode from running containers
+#   status                    — Current active mode + running profiles
+#   list                      — All available profiles (active + planned)
+#   mode current              — Show current mode
+#   mode switch <MODE>        — Switch to a mode (interactive confirmation)
+#   mode switch --yes <MODE>  — Switch to a mode (non-interactive)
+#   mode rollback             — Rollback to last known good mode
+#   profile show <PROFILE>    — Show a profile's full spec
+#   profile validate <P>      — Validate a profile's compose/args/env
+#   health                    — Check all running services
+#   preflight <MODE>          — Run preflight checks without switching
+#   benchmark <PROFILE>       — Run benchmark harness against a profile
+#   experiment start <MODEL>  — Start a candidate model on port 8000
+#   experiment start --mtp <M> — Start candidate with Multi-Token Prediction
+#
+set -uo pipefail
+
+# ============================================================
+# Configuration
+# ============================================================
+BASE_DIR="/home/chuck/homelab"
+PROFILE_DIR="$BASE_DIR/models/profiles"
+ENV_FILE="$BASE_DIR/.env"
+STATE_DIR="$BASE_DIR/state"
+COMPOSE_DIR="$BASE_DIR"  # Profiles reference compose as 'compose/qwen-coder.yml' relative to BASE_DIR
+LITELLM_CONFIG="$BASE_DIR/thor.litellm.config.yml"
+SCRIPTS_DIR="$BASE_DIR/scripts"
+
+# Ensure state dir exists
+mkdir -p "$STATE_DIR"
+
+# Mode → profiles mapping (must match preflight.sh and runtime modes doc)
+declare -A MODE_PROFILES
+MODE_PROFILES[daily]="matrix-coder matrix-gemma4-moe embeddings"
+MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
+MODE_PROFILES[qwen-long]="qwen-long embeddings"
+MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
+MODE_PROFILES[experiment]="experiment embeddings"
+MODE_PROFILES[images]="comfyui matrix-gemma4-moe embeddings"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ============================================================
+# Utility functions
+# ============================================================
+
+# Load .env if present
+load_env() {
+    if [[ -f "$ENV_FILE" ]]; then
+        set -a
+        source "$ENV_FILE"
+        set +a
+    fi
+}
+
+# Parse a YAML field from a profile using python3
+profile_get() {
+    local profile="$1"
+    local field="$2"
+    local profile_file="$PROFILE_DIR/${profile}.yaml"
+    python3 -c "
+import yaml, sys
+try:
+    with open('$profile_file') as f:
+        d = yaml.safe_load(f)
+    keys = '$field'.split('.')
+    val = d
+    for k in keys:
+        if isinstance(val, dict):
+            val = val.get(k)
+        else:
+            val = None
+            break
+    if val is not None:
+        if isinstance(val, list):
+            print(' '.join(str(v) for v in val))
+        else:
+            print(val)
+except:
+    pass
+" 2>/dev/null
+}
+
+# Get the compose file path for a profile
+profile_compose() {
+    profile_get "$1" "launch.compose"
+}
+
+# Get the container name for a profile
+profile_container() {
+    profile_get "$1" "launch.container"
+}
+
+# Get the backend for a profile
+profile_backend() {
+    profile_get "$1" "backend"
+}
+
+# Get the health endpoint for a profile
+profile_health_endpoint() {
+    profile_get "$1" "health.endpoint"
+}
+
+# Get the port for a profile
+profile_port() {
+    profile_get "$1" "launch.port"
+}
+
+# Get compatible modes for a profile
+profile_modes() {
+    profile_get "$1" "compatible_modes"
+}
+
+# Get the profile status (active/planned)
+profile_status() {
+    profile_get "$1" "status"
+}
+
+# Check if a container is running
+container_running() {
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"
+}
+
+# Check if a health endpoint is up
+health_check() {
+    local endpoint="$1"
+    curl -sf --max-time 5 "$endpoint" &>/dev/null
+}
+
+# Get the current mode from state
+current_mode() {
+    if [[ -f "$STATE_DIR/current_mode" ]]; then
+        cat "$STATE_DIR/current_mode"
+    else
+        echo "unknown"
+    fi
+}
+
+# Get the last mode from state
+last_mode() {
+    if [[ -f "$STATE_DIR/last_mode" ]]; then
+        cat "$STATE_DIR/last_mode"
+    else
+        echo "none"
+    fi
+}
+
+# Set the current mode
+set_mode() {
+    echo "$1" > "$STATE_DIR/current_mode"
+}
+
+# Set the last mode (for rollback)
+set_last_mode() {
+    echo "$1" > "$STATE_DIR/last_mode"
+}
+
+# Write state/active_profiles as a YAML list
+write_active_profiles() {
+    local profiles="$1"
+    local active_yaml=""
+    for p in $profiles; do
+        local container
+        container=$(profile_container "$p")
+        local backend
+        backend=$(profile_backend "$p")
+        local port
+        port=$(profile_port "$p")
+        local status="running"
+        if [[ "$backend" != "ollama" ]] && ! container_running "$container"; then
+            # For vLLM profiles in mode, check the actual qwen36 container
+            if [[ "$backend" == "vllm" ]] && container_running "qwen36"; then
+                status="running"
+            elif [[ "$backend" == "comfyui" ]] && container_running "comfyui_backend"; then
+                status="running"
+            else
+                status="stopped"
+            fi
+        fi
+        local backend_status="$backend"
+        [[ "$backend" == "ollama" ]] && backend_status="ollama (shared)"
+        active_yaml+="- profile: $p\n  backend: $backend_status\n  container: $container\n  port: $port\n  status: $status\n"
+    done
+    printf '%b' "$active_yaml" > "$STATE_DIR/active_profiles"
+}
+
+# Append to the switch log
+log_switch() {
+    local from_mode="$1"
+    local to_mode="$2"
+    local result="$3"
+    local timestamp
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    cat >> "$STATE_DIR/switch_log.md" << EOF
+
+### $timestamp: $from_mode → $to_mode ($result)
+EOF
+}
+
+# Initialize state from live system (detect current mode from running containers)
+cmd_init() {
+    section "Initializing Model Manager State"
+    
+    # Detect which containers are running
+    local has_vllm=false
+    local has_ollama=false
+    local has_comfyui=false
+    
+    container_running "qwen36" && has_vllm=true
+    container_running "ollama" && has_ollama=true
+    container_running "comfyui_backend" && has_comfyui=true
+    
+    echo "  vLLM (qwen36):               $([ "$has_vllm" = true ] && echo 'running' || echo 'stopped')"
+    echo "  Ollama (ollama):              $([ "$has_ollama" = true ] && echo 'running' || echo 'stopped')"
+    echo "  ComfyUI (comfyui_backend):    $([ "$has_comfyui" = true ] && echo 'running' || echo 'stopped')"
+    echo ""
+    
+    # Detect mode by matching container states to MODE_PROFILES
+    local detected_mode="unknown"
+    for mode in daily qwen-coder qwen-long llms experiment images; do
+        local profiles="${MODE_PROFILES[$mode]}"
+        local mode_vllm=false
+        local mode_ollama=false
+        local mode_comfyui=false
+        
+        for p in $profiles; do
+            local b
+            b=$(profile_backend "$p")
+            [[ "$b" == "vllm" ]] && mode_vllm=true
+            [[ "$b" == "ollama" ]] && mode_ollama=true
+            [[ "$b" == "comfyui" ]] && mode_comfyui=true
+        done
+        
+        # Match: all three must agree
+        if [[ "$mode_vllm" == "$has_vllm" && "$mode_ollama" == "$has_ollama" && "$mode_comfyui" == "$has_comfyui" ]]; then
+            detected_mode="$mode"
+            break
+        fi
+    done
+    
+    # If vLLM is running but mode wasn't matched, try to figure out which profile
+    if [[ "$detected_mode" == "unknown" && "$has_vllm" == true ]]; then
+        # Check if experiment-active.yml exists (experiment mode)
+        if [[ -f "$COMPOSE_DIR/compose/experiment-active.yml" ]]; then
+            detected_mode="experiment"
+        else
+            # Default: assume matrix-coder
+            for mode in daily llms qwen-coder; do
+                local profiles="${MODE_PROFILES[$mode]}"
+                if [[ " $profiles " == *"matrix-coder"* ]]; then
+                    local has_gemma=false
+                    [[ " $profiles " == *"matrix-gemma4-moe"* ]] && has_gemma=true
+                    if [[ "$has_gemma" == "$has_ollama" ]]; then
+                        detected_mode="$mode"
+                        break
+                    fi
+                fi
+            done
+        fi
+    fi
+    
+    if [[ "$detected_mode" == "unknown" ]]; then
+        echo -e "  ${YELLOW}Could not auto-detect mode. Setting to 'unknown'.${NC}"
+        echo -e "  ${YELLOW}Use 'model-manager mode switch <MODE>' to set the mode explicitly.${NC}"
+    else
+        echo -e "  ${GREEN}Detected mode: ${BOLD}$detected_mode${NC}${NC}"
+    fi
+    
+    # Set mode state
+    local prev_mode
+    prev_mode=$(current_mode)
+    set_mode "$detected_mode"
+    
+    # Set last_mode only if the previous value was a real mode and differs from detected
+    if [[ "$prev_mode" != "unknown" && "$prev_mode" != "none" && "$prev_mode" != "$detected_mode" ]]; then
+        set_last_mode "$prev_mode"
+    else
+        set_last_mode "none"
+    fi
+    
+    # Write active_profiles
+    if [[ "$detected_mode" != "unknown" ]]; then
+        write_active_profiles "${MODE_PROFILES[$detected_mode]}"
+    else
+        echo "" > "$STATE_DIR/active_profiles"
+    fi
+    
+    # Log initialization
+    log_switch "boot" "$detected_mode" "initialized from running containers"
+    
+    echo ""
+    echo -e "  ${GREEN}State initialized.${NC}"
+    echo -e "  current_mode: $(current_mode)"
+    echo -e "  last_mode:    $(last_mode)"
+    echo -e "  active_profiles: $(wc -l < "$STATE_DIR/active_profiles") lines"
+}
+
+# Print a section header
+section() {
+    echo -e "\n${CYAN}${BOLD}$1${NC}"
+}
+
+# Print a sub-header
+sub_section() {
+    echo -e "  ${BOLD}$1${NC}"
+}
+
+# ============================================================
+# Commands
+# ============================================================
+
+cmd_status() {
+    section "Matrix Model Manager — Status"
+    
+    local mode
+    mode=$(current_mode)
+    echo -e "  Mode: ${BOLD}$mode${NC}"
+    
+    if [[ "$mode" == "unknown" || "$mode" == "none" ]]; then
+        echo -e "  ${YELLOW}No mode set in state (model manager not yet initialized)${NC}"
+        echo ""
+        echo -e "  ${BOLD}Detecting current state from running containers...${NC}"
+    fi
+    
+    # Check each profile
+    # For vLLM, multiple profiles share container 'qwen36' and port 8000.
+    # When mode is known, use the mode mapping. When unknown, default to matrix-coder.
+    local active_vllm_profile=""
+    if container_running "qwen36"; then
+        if [[ -n "$mode" && "$mode" != "unknown" && "$mode" != "none" ]]; then
+            # Use current mode's vLLM profile
+            for p in ${MODE_PROFILES[$mode]:-}; do
+                if [[ "$(profile_backend "$p")" == "vllm" ]]; then
+                    active_vllm_profile="$p"
+                    break
+                fi
+            done
+        else
+            # Unknown mode — assume matrix-coder (the production default)
+            active_vllm_profile="matrix-coder"
+        fi
+    fi
+    
+    echo ""
+    for profile_file in "$PROFILE_DIR"/*.yaml; do
+        local profile
+        profile=$(basename "$profile_file" .yaml)
+        local backend
+        backend=$(profile_backend "$profile")
+        local container
+        container=$(profile_container "$profile")
+        local status
+        status=$(profile_status "$profile")
+        local port
+        port=$(profile_port "$profile")
+        
+        local status_icon="${YELLOW}⬚${NC}"
+        local running_text="stopped"
+        
+        # vLLM profiles: only the active one shows as running
+        if [[ "$backend" == "vllm" ]]; then
+            if [[ "$profile" == "$active_vllm_profile" ]]; then
+                status_icon="${GREEN}●${NC}"
+                running_text="running"
+            fi
+        elif container_running "$container"; then
+            status_icon="${GREEN}●${NC}"
+            running_text="running"
+        fi
+        
+        if [[ "$running_text" == "stopped" && "$status" == "active" ]]; then
+            status_icon="${RED}○${NC}"
+            running_text="inactive"
+        fi
+        
+        echo -e "  $status_icon ${BOLD}$profile${NC} ($backend, port $port) — $running_text [${status}]"
+    done
+    
+    echo ""
+    section "Health"
+    cmd_health_quiet
+    echo ""
+    section "State Files"
+    echo "  current_mode: $(current_mode)"
+    echo "  last_mode:    $(last_mode)"
+    if [[ -f "$STATE_DIR/switch_log.md" ]]; then
+        local log_lines
+        log_lines=$(wc -l < "$STATE_DIR/switch_log.md")
+        echo "  switch_log:   $log_lines lines"
+    else
+        echo "  switch_log:   (empty — no switches yet)"
+    fi
+}
+
+cmd_list() {
+    section "Available Profiles"
+    echo ""
+    printf "  ${BOLD}%-25s %-12s %-8s %-20s ${NC}\n" "PROFILE" "BACKEND" "PORT" "STATUS"
+    echo "  $(printf '%.0s-' {1..67})"
+    
+    for profile_file in "$PROFILE_DIR"/*.yaml; do
+        local profile
+        profile=$(basename "$profile_file" .yaml)
+        local backend
+        backend=$(profile_backend "$profile")
+        local port
+        port=$(profile_port "$profile")
+        local status
+        status=$(profile_status "$profile")
+        
+        local status_color
+        if [[ "$status" == "active" ]]; then
+            status_color="$GREEN"
+        else
+            status_color="$YELLOW"
+        fi
+        
+        printf "  ${BOLD}%-25s %-12s %-8s ${status_color}%-20s${NC}\n" "$profile" "$backend" "$port" "$status"
+    done
+    
+    echo ""
+    section "Available Modes"
+    echo ""
+    for mode in daily qwen-coder qwen-long llms experiment images; do
+        local profiles="${MODE_PROFILES[$mode]}"
+        printf "  ${BOLD}%-15s${NC}  %s\n" "$mode" "$profiles"
+    done
+}
+
+cmd_mode_current() {
+    local mode
+    mode=$(current_mode)
+    if [[ "$mode" == "unknown" || "$mode" == "none" ]]; then
+        echo -e "  ${YELLOW}No mode currently set (model manager not yet initialized)${NC}"
+    else
+        echo -e "  Current mode: ${BOLD}$mode${NC}"
+        echo -e "  Last mode:    $(last_mode)"
+        local profiles="${MODE_PROFILES[$mode]:-unknown}"
+        echo -e "  Profiles:     $profiles"
+    fi
+}
+
+cmd_mode_switch() {
+    local force_no=false
+    local target_mode=""
+    
+    # Parse --yes flag
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y|--force) force_no=true; shift ;;
+            *) target_mode="$1"; shift ;;
+        esac
+    done
+    
+    if [[ -z "$target_mode" ]]; then
+        echo -e "  ${RED}Usage: model-manager mode switch [--yes] <MODE>${NC}"
+        echo ""
+        echo "  Modes: daily qwen-coder qwen-long llms experiment images"
+        return 1
+    fi
+    
+    # Validate mode
+    if [[ -z "${MODE_PROFILES[$target_mode]+x}" ]]; then
+        echo -e "  ${RED}Unknown mode: $target_mode${NC}"
+        echo ""
+        echo "  Valid modes: daily qwen-coder qwen-long llms experiment images"
+        return 1
+    fi
+    
+    local current
+    current=$(current_mode)
+    local target_profiles="${MODE_PROFILES[$target_mode]}"
+    
+    # If same mode, just report
+    if [[ "$current" == "$target_mode" && "$current" != "unknown" && "$current" != "none" ]]; then
+        echo -e "  ${YELLOW}Already in mode: $target_mode${NC}"
+        return 0
+    fi
+    
+    section "Mode Switch Plan"
+    echo -e "  From: ${BOLD}${current:-unknown}${NC}"
+    echo -e "  To:   ${BOLD}${target_mode}${NC}"
+    echo ""
+    
+    # Run preflight first
+    echo -e "${BOLD}Running preflight for '$target_mode'...${NC}"
+    bash "$SCRIPTS_DIR/preflight.sh" "$target_mode" 2>&1 | sed 's/^/  /'
+    echo ""
+    
+    # --- Determine backend-level actions ---
+    # vLLM profiles share container 'qwen36' and port 8000.
+    # Ollama profiles share container 'ollama' and port 11434.
+    # ComfyUI is standalone.
+    # We plan by backend, not by individual profile.
+    
+    # Which vLLM profile does the target mode need? (at most one)
+    local target_vllm=""
+    for p in $target_profiles; do
+        if [[ "$(profile_backend "$p")" == "vllm" ]]; then
+            target_vllm="$p"
+            break
+        fi
+    done
+    
+    # Which Ollama profiles does the target mode need?
+    local target_ollama_list=""
+    for p in $target_profiles; do
+        if [[ "$(profile_backend "$p")" == "ollama" ]]; then
+            target_ollama_list="$target_ollama_list $p"
+        fi
+    done
+    target_ollama_list=$(echo "$target_ollama_list" | xargs)
+    
+    # Which ComfyUI profile?
+    local target_comfyui=""
+    for p in $target_profiles; do
+        if [[ "$(profile_backend "$p")" == "comfyui" ]]; then
+            target_comfyui="$p"
+            break
+        fi
+    done
+    
+    # --- Display the plan ---
+    section "Switch Plan"
+    
+    # vLLM plan
+    local vllm_action="none"
+    if [[ -n "$target_vllm" ]]; then
+        if container_running "qwen36"; then
+            # vLLM is running — check if we need a different profile
+            # When mode is known, check against current mode's vLLM profile
+            if [[ -n "$current" && "$current" != "unknown" && "$current" != "none" ]]; then
+                local current_vllm=""
+                for cp in ${MODE_PROFILES[$current]}; do
+                    if [[ "$(profile_backend "$cp")" == "vllm" ]]; then
+                        current_vllm="$cp"
+                        break
+                    fi
+                done
+                if [[ "$current_vllm" == "$target_vllm" ]]; then
+                    vllm_action="keep"
+                else
+                    vllm_action="swap ($current_vllm → $target_vllm)"
+                fi
+            else
+                # Mode unknown — assume current is matrix-coder
+                if [[ "$target_vllm" == "matrix-coder" ]]; then
+                    vllm_action="keep (detected as matrix-coder)"
+                else
+                    vllm_action="swap (unknown → $target_vllm)"
+                fi
+            fi
+        else
+            vllm_action="start $target_vllm"
+        fi
+    else
+        if container_running "qwen36"; then
+            vllm_action="stop (no vLLM in target mode)"
+        fi
+    fi
+    
+    # Ollama plan
+    local ollama_action="none"
+    local ollama_models_to_load=""
+    local ollama_models_to_unload=""
+    if [[ -n "$target_ollama_list" ]]; then
+        if container_running "ollama"; then
+            # Get currently RUNNING models (loaded in VRAM) via 'ollama ps' (skip header)
+            local running_models
+            running_models=$(docker exec ollama ollama ps 2>/dev/null | tail -n +2 | awk '{print $1}' || true)
+            
+            # Build a set of target model name prefixes
+            local target_model_prefixes=""
+            for p in $target_ollama_list; do
+                local model_path
+                model_path=$(profile_get "$p" "model.path")
+                if [[ -n "$model_path" ]]; then
+                    target_model_prefixes="$target_model_prefixes ${model_path%%:*}"
+                fi
+            done
+            target_model_prefixes=$(echo "$target_model_prefixes" | xargs)
+            
+            # Find models to load (in target but not currently running)
+            for p in $target_ollama_list; do
+                local model_path
+                model_path=$(profile_get "$p" "model.path")
+                if [[ -n "$model_path" ]]; then
+                    local prefix="${model_path%%:*}"
+                    if ! echo "$running_models" | grep -q "^$prefix"; then
+                        ollama_models_to_load="$ollama_models_to_load $model_path"
+                    fi
+                fi
+            done
+            
+            # Find models to unload (currently running but prefix not in target)
+            for rm in $running_models; do
+                local rm_prefix="${rm%%:*}"
+                if [[ ! " $target_model_prefixes " =~ " $rm_prefix " ]]; then
+                    ollama_models_to_unload="$ollama_models_to_unload $rm"
+                fi
+            done
+            
+            ollama_models_to_load=$(echo "$ollama_models_to_load" | xargs)
+            ollama_models_to_unload=$(echo "$ollama_models_to_unload" | xargs)
+            
+            if [[ -n "$ollama_models_to_load" || -n "$ollama_models_to_unload" ]]; then
+                local action_desc="reload"
+                [[ -n "$ollama_models_to_load" ]] && action_desc="$action_desc (load:$ollama_models_to_load)"
+                [[ -n "$ollama_models_to_unload" ]] && action_desc="$action_desc (unload:$ollama_models_to_unload)"
+                ollama_action="$action_desc"
+            else
+                ollama_action="keep"
+            fi
+        else
+            ollama_action="start ($target_ollama_list)"
+        fi
+    else
+        if container_running "ollama"; then
+            ollama_action="stop (no Ollama in target mode)"
+        fi
+    fi
+    
+    # ComfyUI plan
+    local comfyui_action="none"
+    if [[ -n "$target_comfyui" ]]; then
+        if container_running "comfyui_backend"; then
+            comfyui_action="keep"
+        else
+            comfyui_action="start"
+        fi
+    else
+        if container_running "comfyui_backend"; then
+            comfyui_action="stop"
+        fi
+    fi
+    
+    [[ "$vllm_action" != "none" ]] && echo -e "  vLLM:     ${BOLD}$vllm_action${NC}"
+    [[ "$ollama_action" != "none" ]] && echo -e "  Ollama:   ${BOLD}$ollama_action${NC}"
+    [[ "$comfyui_action" != "none" ]] && echo -e "  ComfyUI:  ${BOLD}$comfyui_action${NC}"
+    [[ "$vllm_action" == "none" && "$ollama_action" == "none" && "$comfyui_action" == "none" ]] && \
+        echo -e "  ${CYAN}No changes needed — all profiles already match target mode${NC}"
+    echo -e "  Aliases:  ${BOLD}$target_profiles${NC}"
+    echo ""
+    
+    # Interactive confirmation (skip with --yes)
+    if [[ "$force_no" != true ]]; then
+        echo -e "${BOLD}Proceed with mode switch?${NC}"
+        read -r -p "  [y/N] " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo -e "  ${YELLOW}Aborted.${NC}"
+            return 0
+        fi
+    else
+        echo -e "  ${YELLOW}Auto-confirmed (--yes flag)${NC}"
+    fi
+    
+    section "Executing Switch"
+    
+    # Save last mode BEFORE starting the switch (safety)
+    if [[ "$current" != "unknown" && "$current" != "none" ]]; then
+        set_last_mode "$current"
+    fi
+    
+    local start_time
+    start_time=$(date +%s)
+    
+    # --- PHASE 1: Stop things that need stopping ---
+    
+    # Stop vLLM if needed (before starting a new one)
+    if [[ "$vllm_action" == *"stop"* || "$vllm_action" == *"swap"* ]]; then
+        sub_section "Stopping vLLM..."
+        if container_running "qwen36"; then
+            docker stop qwen36 2>&1 | sed 's/^/    /'
+            docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+            echo -e "    ${GREEN}✓ Stopped${NC}"
+        fi
+    fi
+    
+    # Stop ComfyUI if needed
+    if [[ "$comfyui_action" == "stop" ]]; then
+        sub_section "Stopping ComfyUI..."
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" down 2>&1 | sed 's/^/    /' || true
+        echo -e "    ${GREEN}✓ Stopped${NC}"
+    fi
+    
+    # --- PHASE 2: Start things that need starting ---
+    
+    # Start/swap vLLM
+    if [[ "$vllm_action" == *"start"* || "$vllm_action" == *"swap"* ]]; then
+        sub_section "Starting vLLM: $target_vllm"
+        local compose_path
+        compose_path=$(profile_compose "$target_vllm")
+        docker compose -f "$COMPOSE_DIR/$compose_path" up -d 2>&1 | sed 's/^/    /'
+        echo "    Waiting for vLLM to initialize..."
+        local waited=0
+        while (( waited < 180 )); do
+            if health_check "http://localhost:8000/v1/models"; then
+                echo -e "    ${GREEN}✓ vLLM healthy${NC}"
+                break
+            fi
+            sleep 5
+            ((waited += 5))
+        done
+        if (( waited >= 180 )); then
+            echo -e "    ${YELLOW}⚠ vLLM did not respond within 180s — check docker logs qwen36${NC}"
+        fi
+    fi
+    
+    # Start/reload Ollama
+    if [[ "$ollama_action" == *"start"* ]]; then
+        sub_section "Starting Ollama..."
+        # Use the first ollama profile's compose file
+        local first_ollama
+        first_ollama=$(echo "$target_ollama_list" | awk '{print $1}')
+        local compose_path
+        compose_path=$(profile_compose "$first_ollama")
+        docker compose -f "$COMPOSE_DIR/$compose_path" up -d 2>&1 | sed 's/^/    /'
+        echo "    Waiting for Ollama to initialize..."
+        local waited=0
+        while (( waited < 60 )); do
+            if health_check "http://localhost:11434"; then
+                echo -e "    ${GREEN}✓ Ollama healthy${NC}"
+                break
+            fi
+            sleep 5
+            ((waited += 5))
+        done
+    elif [[ "$ollama_action" == *"reload"* ]]; then
+        sub_section "Reloading Ollama models..."
+        # First unload models that shouldn't be in target mode
+        if [[ -n "$ollama_models_to_unload" ]]; then
+            for um in $ollama_models_to_unload; do
+                echo "    Unloading $um..."
+                docker exec ollama ollama stop "$um" 2>&1 | sed 's/^/    /' || true
+            done
+        fi
+        # Then load models that should be in target mode but aren't running
+        if [[ -n "$ollama_models_to_load" ]]; then
+            for lm in $ollama_models_to_load; do
+                echo "    Loading $lm into VRAM..."
+                # Try generate first (works for LLMs), fall back to embeddings
+                local loaded=false
+                local resp
+                resp=$(curl -sf --max-time 120 -X POST http://localhost:11434/api/generate \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"model\": \"$lm\", \"prompt\": \" \", \"stream\": false, \"keep_alive\": \"5m\"}" 2>&1) || true
+                if [[ $? -eq 0 && -n "$resp" ]]; then
+                    loaded=true
+                else
+                    # Try embeddings endpoint (for embedding models)
+                    resp=$(curl -sf --max-time 120 -X POST http://localhost:11434/api/embeddings \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"model\": \"$lm\", \"prompt\": \"load\"}" 2>&1) || true
+                    if [[ $? -eq 0 && -n "$resp" ]]; then
+                        loaded=true
+                    fi
+                fi
+                if [[ "$loaded" == "true" ]]; then
+                    echo -e "    ${GREEN}✓ $lm loaded${NC}"
+                else
+                    echo -e "    ${YELLOW}⚠ $lm — load attempt returned no response (may need manual pull)${NC}"
+                fi
+            done
+        fi
+    fi
+    
+    # Start ComfyUI
+    if [[ "$comfyui_action" == "start" ]]; then
+        sub_section "Starting ComfyUI..."
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image up -d 2>&1 | sed 's/^/    /'
+        echo "    Waiting for ComfyUI to initialize..."
+        local waited=0
+        while (( waited < 120 )); do
+            if health_check "http://localhost:8188"; then
+                echo -e "    ${GREEN}✓ ComfyUI healthy${NC}"
+                break
+            fi
+            sleep 5
+            ((waited += 5))
+        done
+        if (( waited >= 120 )); then
+            echo -e "    ${YELLOW}⚠ ComfyUI did not respond within 120s${NC}"
+        fi
+    fi
+    
+    # Update state
+    set_mode "$target_mode"
+    write_active_profiles "$target_profiles"
+    
+    local end_time
+    end_time=$(date +%s)
+    local elapsed=$((end_time - start_time))
+    
+    # Log the switch
+    log_switch "${current:-unknown}" "$target_mode" "success (${elapsed}s)"
+    
+    section "Switch Complete"
+    echo -e "  Mode: ${BOLD}$target_mode${NC}"
+    echo -e "  Time: ${elapsed}s"
+    echo -e "  Profiles: $target_profiles"
+    echo ""
+    
+    # Final health check
+    section "Post-Switch Health"
+    cmd_health_quiet
+    echo ""
+    echo -e "  ${GREEN}Mode switch to '${BOLD}$target_mode${NC}${GREEN}' complete.${NC}"
+}
+
+cmd_mode_rollback() {
+    local prev_mode
+    prev_mode=$(last_mode)
+    
+    if [[ "$prev_mode" == "none" || -z "$prev_mode" ]]; then
+        echo -e "  ${RED}No previous mode to rollback to.${NC}"
+        return 1
+    fi
+    
+    # Clean up any experiment artifacts
+    local exp_compose="$COMPOSE_DIR/compose/experiment-active.yml"
+    if [[ -f "$exp_compose" ]]; then
+        echo -e "  ${YELLOW}Cleaning up experiment artifacts...${NC}"
+        if container_running "qwen36"; then
+            docker stop qwen36 2>/dev/null || true
+            docker rm qwen36 2>/dev/null || true
+        fi
+        rm -f "$exp_compose"
+        echo -e "  ${GREEN}Removed $exp_compose${NC}"
+    fi
+    
+    echo -e "  Rolling back to: ${BOLD}$prev_mode${NC}"
+    cmd_mode_switch "--yes" "$prev_mode"
+}
+
+cmd_profile_show() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager profile show <PROFILE>${NC}"
+        return 1
+    fi
+    
+    local profile="$1"
+    local profile_file="$PROFILE_DIR/${profile}.yaml"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        echo -e "  ${RED}Profile not found: $profile${NC}"
+        return 1
+    fi
+    
+    section "Profile: $profile"
+    echo ""
+    cat "$profile_file" | sed 's/^/  /'
+}
+
+cmd_profile_validate() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager profile validate <PROFILE>${NC}"
+        return 1
+    fi
+    
+    local profile="$1"
+    local profile_file="$PROFILE_DIR/${profile}.yaml"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        echo -e "  ${RED}Profile not found: $profile${NC}"
+        return 1
+    fi
+    
+    section "Validating profile: $profile"
+    
+    local pass=0
+    local fail=0
+    local warn=0
+    
+    p() { echo -e "  ${GREEN}PASS${NC}  $1"; ((pass++)); }
+    f() { echo -e "  ${RED}FAIL${NC}  $1"; ((fail++)); }
+    w() { echo -e "  ${YELLOW}WARN${NC}  $1"; ((warn++)); }
+    
+    local backend
+    backend=$(profile_backend "$profile")
+    local compose
+    compose=$(profile_compose "$profile")
+    local container
+    container=$(profile_container "$profile")
+    local port
+    port=$(profile_port "$profile")
+    local health_ep
+    health_ep=$(profile_health_endpoint "$profile")
+    
+    # YAML validity
+    if python3 -c "import yaml; yaml.safe_load(open('$profile_file'))" 2>/dev/null; then
+        p "Profile YAML is valid"
+    else
+        f "Profile YAML is invalid"
+    fi
+    
+    # Compose file
+    if [[ -n "$compose" && "$compose" != "unknown" ]]; then
+        local compose_path="$COMPOSE_DIR/$compose"
+        if [[ -f "$compose_path" ]]; then
+            p "Compose file exists: $compose"
+            if docker compose -f "$compose_path" config &>/dev/null; then
+                p "Compose file is valid"
+            else
+                f "Compose file failed validation"
+            fi
+        else
+            if [[ "$backend" == "ollama" && "$compose" == *"gemma4-moe"* ]]; then
+                # embeddings shares gemma4-moe compose
+                compose_path="$COMPOSE_DIR/compose/gemma4-moe.yml"
+                if [[ -f "$compose_path" ]]; then
+                    w "Compose references shared Ollama instance (gemma4-moe.yml)"
+                    p "Shared compose file exists"
+                else
+                    w "Compose file not found, shared instance may not be running"
+                fi
+            else
+                f "Compose file missing: $compose_path"
+            fi
+        fi
+    else
+        w "No compose file defined (manual launch)"
+    fi
+    
+    # Container image
+    if [[ -n "$container" ]]; then
+        if docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q "$(profile_get "$profile" "launch.image")"; then
+            p "Container image available locally"
+        else
+            w "Container image not found locally (will pull on first start)"
+        fi
+    fi
+    
+    # Model check
+    case "$backend" in
+        vllm)
+            local model_path
+            model_path=$(profile_get "$profile" "model.path")
+            local model_user
+            model_user=$(echo "$model_path" | cut -d'/' -f1)
+            local model_name
+            model_name=$(echo "$model_path" | cut -d'/' -f2-)
+            local hf_cache="/home/chuck/data/models/hub/models--${model_user}--${model_name}"
+            
+            if [[ -d "$hf_cache" ]]; then
+                local size
+                size=$(du -sh "$hf_cache" 2>/dev/null | cut -f1)
+                p "Model cached: $model_path ($size)"
+            else
+                w "Model not cached — will download on first launch"
+            fi
+            ;;
+        ollama)
+            if container_running "ollama"; then
+                if docker exec ollama ollama list 2>/dev/null | grep -q "$(profile_get "$profile" "model.path")"; then
+                    p "Model in Ollama library"
+                else
+                    w "Model not in Ollama library — will need to pull"
+                fi
+            else
+                w "Ollama not running — cannot check model"
+            fi
+            ;;
+        comfyui)
+            if [[ -d "/home/chuck/data/comfyui" ]]; then
+                p "ComfyUI data directory exists"
+            else
+                w "ComfyUI data directory missing"
+            fi
+            ;;
+    esac
+    
+    # Port check
+    if [[ -n "$port" && "$port" != "0" ]]; then
+        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+            p "Port $port is available (in use)"
+        else
+            w "Port $port is not listening"
+        fi
+    fi
+    
+    # Health endpoint
+    if [[ -n "$health_ep" ]]; then
+        p "Health endpoint defined: $health_ep"
+        if health_check "$health_ep"; then
+            p "Health endpoint responding"
+        fi
+    else
+        w "No health endpoint defined"
+    fi
+    
+    echo ""
+    echo -e "  Results: ${GREEN}PASS=$pass${NC}  ${YELLOW}WARN=$warn${NC}  ${RED}FAIL=$fail${NC}"
+    echo ""
+    
+    if (( fail > 0 )); then
+        echo -e "  ${RED}Validation FAILED${NC}"
+        return 1
+    else
+        echo -e "  ${GREEN}Validation PASSED${NC}"
+        return 0
+    fi
+}
+
+cmd_health() {
+    section "Service Health"
+    cmd_health_quiet
+}
+
+cmd_health_quiet() {
+    # vLLM
+    if health_check "http://localhost:8000/v1/models"; then
+        local models
+        models=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(', '.join(m['id'] for m in d.get('data', [])))
+except:
+    print('unknown')
+" 2>/dev/null)
+        echo -e "  ${GREEN}vLLM${NC}  : UP (port 8000, models: $models)"
+    else
+        echo -e "  ${RED}vLLM${NC}  : DOWN"
+    fi
+    
+    # Ollama
+    if health_check "http://localhost:11434"; then
+        echo -e "  ${GREEN}Ollama${NC}: UP (port 11434)"
+    else
+        echo -e "  ${RED}Ollama${NC}: DOWN"
+    fi
+    
+    # ComfyUI
+    if health_check "http://localhost:8188"; then
+        echo -e "  ${GREEN}ComfyUI${NC}: UP (port 8188)"
+    else
+        echo -e "  ${RED}ComfyUI${NC}: DOWN"
+    fi
+    
+    # node-exporter
+    if health_check "http://localhost:9100/metrics"; then
+        echo -e "  ${GREEN}node-exporter${NC}: UP (port 9100)"
+    else
+        echo -e "  ${RED}node-exporter${NC}: DOWN"
+    fi
+    
+    # dcgm-exporter
+    if health_check "http://localhost:9400/metrics"; then
+        echo -e "  ${GREEN}dcgm-exporter${NC}: UP (port 9400)"
+    else
+        echo -e "  ${RED}dcgm-exporter${NC}: DOWN"
+    fi
+}
+
+cmd_preflight() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager preflight <MODE>${NC}"
+        return 1
+    fi
+    
+    bash "$SCRIPTS_DIR/preflight.sh" "$@"
+}
+
+cmd_benchmark() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager benchmark <PROFILE>${NC}"
+        return 1
+    fi
+    
+    bash "$SCRIPTS_DIR/benchmark.sh" "$@"
+}
+
+cmd_experiment_start() {
+    if [[ $# -lt 1 ]]; then
+        echo -e "  ${RED}Usage: model-manager experiment start [--mtp] <MODEL_PATH> [args...][${NC}"
+        echo ""
+        echo "  Replaces the active vLLM model on port 8000."
+        echo "  The LiteLLM alias 'matrix-coder' will transparently serve this model."
+        echo ""
+        echo "  --mtp        Enable Multi-Token Prediction (n_predict=1)"
+        echo "  Args:        --gpu-mem <float> --max-len <int> --max-seqs <int>"
+        echo ""
+        echo "  To restore: model-manager mode rollback"
+        return 1
+    fi
+    
+    local mtp_enabled=false
+    local model_path=""
+    local remaining_args=()
+    
+    # Parse --mtp flag
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --mtp) mtp_enabled=true; shift ;;
+            *) break ;;
+        esac
+    done
+    
+    if [[ -z "$1" ]]; then
+        echo -e "  ${RED}Model path required${NC}"
+        return 1
+    fi
+    
+    model_path="$1"
+    shift
+    remaining_args=("$@")
+    
+    local gpu_mem="0.66"
+    local max_len="131072"
+    local max_seqs="3"
+    local max_batch="8192"
+    local mtp_line=""
+    
+    # Parse optional args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --gpu-mem) gpu_mem="$2"; shift 2 ;;
+            --max-len) max_len="$2"; shift 2 ;;
+            --max-seqs) max_seqs="$2"; shift 2 ;;
+            --max-batch) max_batch="$2"; shift 2 ;;
+            *) echo -e "  ${RED}Unknown arg: $1${NC}"; return 1 ;;
+        esac
+    done
+    
+    # MTP line for compose
+    if [[ "$mtp_enabled" == true ]]; then
+        mtp_line="      --speculative-config '{\"n_predict\": 1}'"
+    fi
+    
+    section "Experiment Mode"
+    echo -e "  Model: ${BOLD}$model_path${NC}"
+    if [[ "$mtp_enabled" == true ]]; then
+        echo -e "  MTP:     ${BOLD}enabled (n_predict=1)${NC}"
+    fi
+    echo -e "  GPU mem: $gpu_mem, Max len: $max_len, Max seqs: $max_seqs, Max batch: $max_batch"
+    echo ""
+    
+    local current
+    current=$(current_mode)
+    
+    # Safety: stop current vLLM first
+    sub_section "Stopping current vLLM..."
+    if container_running "qwen36"; then
+        docker stop qwen36 2>&1 | sed 's/^/    /'
+        echo -e "    ${GREEN}✓ Stopped${NC}"
+    fi
+    
+    # Save current mode for rollback
+    if [[ "$current" != "unknown" && "$current" != "none" ]]; then
+        set_last_mode "$current"
+    fi
+    
+    # Start the experiment model using a temporary compose approach
+    sub_section "Starting experiment model: $model_path"
+    
+    # Generate a temporary compose file for this experiment
+    local exp_compose="$COMPOSE_DIR/compose/experiment-active.yml"
+    cat > "$exp_compose" << YAMLEOF
+# Experiment model - auto-generated by model-manager
+# Model: $model_path
+# MTP: $mtp_enabled
+# Created: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+services:
+  qwen36:
+    image: vllm/vllm-openai:latest
+    container_name: qwen36
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=\${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - ../data/models:/data/models
+    command: >
+      --model $model_path
+      --served-model-name qwen36-27b
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len $max_len
+      --max-num-seqs $max_seqs
+      --max-num-batched-tokens $max_batch
+      --gpu-memory-utilization $gpu_mem
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --trust-remote-code
+      $mtp_line
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+YAMLEOF
+
+    docker compose -f "$exp_compose" up -d 2>&1 | sed 's/^/    /'
+    
+    # Wait for it to come up
+    echo "    Waiting for vLLM to initialize..."
+    local max_wait=180
+    local waited=0
+    while (( waited < max_wait )); do
+        if health_check "http://localhost:8000/v1/models"; then
+            local exp_model
+            exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(', '.join(m['id'] for m in d.get('data', [])))
+except:
+    print('unknown')
+" 2>/dev/null)
+            echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+            break
+        fi
+        sleep 5
+        ((waited += 5))
+    done
+    if (( waited >= max_wait )); then
+        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+    fi
+    
+    # Update state
+    set_mode "experiment"
+    write_active_profiles "experiment embeddings"
+    log_switch "${current:-unknown}" "experiment ($model_path)" "success"
+    
+    echo ""
+    section "Experiment Active"
+    echo -e "  Model: ${BOLD}$model_path${NC}"
+    echo -e "  Alias: matrix-coder (port 8000)"
+    echo -e "  Restore: ${BOLD}model-manager mode rollback${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Remember: always run 'model-manager mode rollback' when done testing!${NC}"
+}
+
+# ============================================================
+# Main
+# ============================================================
+
+usage() {
+    echo "Matrix Model Manager"
+    echo ""
+    echo "Usage: model-manager <command> [args...]"
+    echo ""
+    echo "Commands:"
+    echo "  init                      Auto-detect current mode from running containers"
+    echo "  status                    Current active mode + running profiles"
+    echo "  list                      All available profiles (active + planned)"
+    echo "  mode current              Show current mode"
+    echo "  mode switch <MODE>        Switch to a mode (interactive)"
+    echo "  mode switch --yes <MODE>  Switch to a mode (non-interactive, no confirmation)"
+    echo "  mode rollback             Rollback to last known good mode"
+    echo "  profile show <PROFILE>    Show a profile's full spec"
+    echo "  profile validate <P>      Validate a profile"
+    echo "  health                    Check all running services"
+    echo "  preflight <MODE>          Run preflight checks without switching"
+    echo "  benchmark <PROFILE>       Run benchmark harness"
+    echo "  experiment start <MODEL>  Start a candidate model on port 8000"
+    echo "  experiment start --mtp <MODEL>  Start with Multi-Token Prediction enabled"
+    echo ""
+    echo "Modes: daily qwen-coder qwen-long llms experiment images"
+}
+
+# Load env
+load_env
+
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 2
+fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+    init)
+        cmd_init
+        ;;
+    status)
+        cmd_status
+        ;;
+    list)
+        cmd_list
+        ;;
+    mode)
+        if [[ $# -lt 1 ]]; then
+            echo -e "  ${RED}Usage: model-manager mode <current|switch|rollback>${NC}"
+            exit 2
+        fi
+        case "$1" in
+            current) cmd_mode_current ;;
+            switch)  cmd_mode_switch "${@:2}" ;;
+            rollback) cmd_mode_rollback ;;
+            *) echo -e "  ${RED}Unknown mode subcommand: $1${NC}" ;;
+        esac
+        ;;
+    profile)
+        if [[ $# -lt 1 ]]; then
+            echo -e "  ${RED}Usage: model-manager profile <show|validate> <PROFILE>${NC}"
+            exit 2
+        fi
+        case "$1" in
+            show)     cmd_profile_show "$2" ;;
+            validate) cmd_profile_validate "$2" ;;
+            *) echo -e "  ${RED}Unknown profile subcommand: $1${NC}" ;;
+        esac
+        ;;
+    health)
+        cmd_health
+        ;;
+    preflight)
+        cmd_preflight "$@"
+        ;;
+    benchmark)
+        cmd_benchmark "$@"
+        ;;
+    experiment)
+        if [[ $# -lt 1 ]]; then
+            echo -e "  ${RED}Usage: model-manager experiment start <MODEL_PATH>[${NC}"
+            exit 2
+        fi
+        case "$1" in
+            start) cmd_experiment_start "${@:2}" ;;
+            *) echo -e "  ${RED}Unknown experiment subcommand: $1${NC}" ;;
+        esac
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo -e "  ${RED}Unknown command: $CMD${NC}"
+        usage
+        exit 2
+        ;;
+esac

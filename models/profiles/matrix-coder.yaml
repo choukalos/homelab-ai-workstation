@@ -1,0 +1,45 @@
+# matrix-coder — Primary daily model
+# Status: ACTIVE
+
+name: matrix-coder
+alias: matrix-coder
+backend: vllm
+status: active
+
+model:
+  path: Lorbus/Qwen3.6-27b-int4-AutoRound
+  quantization: int4-AutoRound
+  format: vLLM native
+  expected_vram: 48.7 GB
+
+launch:
+  container: qwen36
+  image: vllm/vllm-openai:latest
+  compose: compose/qwen-coder.yml
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --max-model-len: 200000
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.66
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_xml
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen36-27b
+
+compatible_modes:
+  - daily
+  - llms
