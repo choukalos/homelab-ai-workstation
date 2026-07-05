@@ -1,8 +1,8 @@
-# qwen36-27b-w8a16-128k-mtp — Performance-optimized Qwen3.6-27B with 3 threads, 128K context
-# 3 concurrent sequences, FP8 KV cache, MTP, prefix caching, chunked prefill
+# qwen36-27b-w8a16-128k — Performance-optimized Qwen3.6-27B with 3 threads, 128K context
+# 3 concurrent sequences, FP8 KV cache, prefix caching, chunked prefill
 # Balanced for real-world agent workloads with moderate-long context
 
-name: qwen36-27b-w8a16-128k-mtp
+name: qwen36-27b-w8a16-128k
 alias: matrix-coder
 backend: vllm
 status: planned
@@ -42,7 +42,6 @@ launch:
     --enable-chunked-prefill: true
     --chunked-prefill-size: 32768
     --reasoning-parser: qwen3
-    --speculative-config: '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
     --default-chat-template-kwargs: '{"preserve_thinking":true}'
     --trust-remote-code: true
 
@@ -57,7 +56,7 @@ compatible_modes:
 performance_targets:
   concurrent_sequences: 3
   context_window: 128000
-  decode_throughput_boost: "~70-90% with MTP (acceptance rate ~85-94%)"
+  decode_throughput_boost: "No MTP — Qwen3_5ForCausalLM not supported for MTP in current vLLM"
   prefix_cache_hit: "30%+ TTFT improvement on repeated system prompts"
   estimated_vram: 45-50 GB of 72 GB
 
@@ -70,19 +69,17 @@ comparison_to_current:
   improvements:
     - "W8A16 INT8 (27GB) vs INT4 AutoRound (14GB): better quality at higher VRAM cost"
     - "Context reduced to 128K (from 200K) to fit 3 threads with headroom"
-    - "MTP with qwen3_next_mtp method (modern format, 2 speculative tokens)"
     - "gpu-memory-utilization 0.92 (from 0.66): much more KV cache for longer contexts"
     - "chunked-prefill-size 32768 (from 16384): better for long prompt processing"
     - "max-num-batched-tokens 16384 (from 8192): higher throughput for concurrent batches"
     - "preserve_thinking: enables reasoning trace retention across multi-turn"
+    - "⚠️ MTP (qwen3_next_mtp / mtp) NOT supported for Qwen3_5ForCausalLM — removed speculative decoding"
     - "reasoning-parser qwen3: correct parser for Qwen3.6 output format"
 
 notes:
   - "This config trades context length (200K → 128K) for reliability at 3 concurrent threads"
   - "If you need more context and fewer threads: use qwen-long-w8a16-mtp.yml instead (262K ctx, 4 seqs)"
   - "W8A16 is ~99% MMLU recovery vs BF16 — significantly better quality than INT4"
-  - "MTP acceptance rate: code tasks ~94%, structured ~85%, general ~88%"
-  - "Effective throughput with MTP: ~1.7-1.9x faster than non-MTP"
   - "⚠️ Requires vLLM v0.21.0+ — the current 'latest' tag may not have compressed-tensors support"
   - "⚠️ Do NOT use --quantization turboquant (vLLM #41560)"
   - "If v0.21.0 image not available: build from source or use 88plug's Docker instructions"

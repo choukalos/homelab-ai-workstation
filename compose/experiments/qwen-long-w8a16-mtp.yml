@@ -1,16 +1,17 @@
-# vLLM Qwen3.6-27B — Qwen-long variant: max VRAM + MTP + INT8 W8A16
-# Optimizations: W8A16 INT8 weights, FP8 KV cache, MTP, 262K native context
-# Differences from qwen-coder: W8A16 instead of INT4, 262K context, MTP enabled, higher VRAM
+# vLLM Qwen3.6-27B — Qwen-long variant: max VRAM + INT8 W8A16
+# Optimizations: W8A16 INT8 weights, FP8 KV cache, 262K native context
+# Differences from qwen-coder: W8A16 instead of INT4, 262K context, higher VRAM
 # This replaces Lorbus/Qwen3.6-27b-int4-AutoRound with 88plug/Qwen3.6-27B-W8A16
 #
 # VRAM Budget (72GB RTX PRO 5000, Blackwell, native FP8):
 #   W8A16 weights (27B):            ~27 GB
 #   Activations (BF16):              ~6  GB
-#   MTP module (BF16):               ~0.2 GB
 #   GPU overhead (0.92 util):        ~2  GB
 #   Remaining for KV cache:          ~37 GB
 #   KV @ 262K context (FP8):        ~2.4 GB per sequence
 #   → Fits 12+ sequences at full 262K context!
+#
+# ⚠️ MTP REMOVED: Qwen3_5ForCausalLM not supported for MTP in current vLLM
 #
 # ⚠️  Requires vLLM v0.21.0+ for compressed-tensors W8A16 support
 #     Do NOT use --quantization flag — vLLM auto-detects compressed-tensors
@@ -45,7 +46,6 @@ services:
       --enable-prefix-caching
       --enable-chunked-prefill
       --reasoning-parser qwen3
-      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
       --default-chat-template-kwargs '{"preserve_thinking":true}'
       --trust-remote-code
     deploy:
