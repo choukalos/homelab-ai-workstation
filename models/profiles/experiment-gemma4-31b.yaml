@@ -1,6 +1,6 @@
-# experiment-gemma4-31b — Gemma 4 31B Q4 Experiment
+# experiment-gemma4-31b — Gemma 4 31B FP8 Experiment
 # Dense 31B model, good for general reasoning and coding
-# Q4 quantization via vLLM built-in (or use pre-quantized variant)
+# FP8 quantization via vLLM runtime quantization (--quantization fp8)
 
 name: experiment-gemma4-31b
 alias: matrix-coder
@@ -10,9 +10,9 @@ experiment: true
 
 model:
   path: google/gemma-4-31b-it
-  quantization: q4 (vLLM built-in)
+  quantization: fp8 (vLLM runtime)
   format: huggingface
-  expected_vram: 30-40 GB
+  expected_vram: 35-45 GB
   parameters: 31B
   context: 131072
 
@@ -30,10 +30,11 @@ launch:
     HF_TOKEN: ""
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
   args:
+    --quantization: fp8
     --max-model-len: 131072
     --max-num-seqs: 4
     --max-num-batched-tokens: 16384
-    --gpu-memory-utilization: 0.40
+    --gpu-memory-utilization: 0.65
     --kv-cache-dtype: fp8
     --enable-prefix-caching: true
     --enable-chunked-prefill: true
@@ -46,8 +47,9 @@ compatible_modes:
   - experiment
 
 notes:
-  - If google/gemma-4-31b-it load fails, try bartowski/gemma-4-31b-it-GGUF
-  - Or try TheBloke/gemma-4-31b-AWQ for AWQ-quantized variant
-  - Lighter VRAM usage than Qwen3.6-27b — more headroom for KV cache
-  - No tool-call-parser needed (gemma4 doesn't need custom parser)
+  - "--quantization fp8 tells vLLM to quantize BF16 weights to FP8 at load time"
+  - "FP8 weights (~15.5GB) + activations (~6GB) + KV cache = ~35-45GB total on 72GB"
+  - "If FP8 load fails, try bartowski/gemma-4-31b-it-GGUF or TheBloke/gemma-4-31b-AWQ"
+  - "Lighter VRAM usage than Qwen3.6-27b — more headroom for KV cache"
+  - "No tool-call-parser needed (gemma4 doesn't need custom parser)"
   - Rollback: model-manager mode rollback

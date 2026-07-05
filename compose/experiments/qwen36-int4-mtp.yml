@@ -1,0 +1,62 @@
+# Experiment: Qwen3.6-27B INT4 + MTP — Minimal change path
+# Model: Lorbus/Qwen3.6-27b-int4-AutoRound (same as current daily driver)
+# Same config as qwen-coder.yml with MTP and reasoning-parser added
+#
+# Goal: Add MTP throughput boost to existing daily driver with zero model change.
+# Keep identical VRAM profile, context, and concurrency — just add speculative decoding.
+#
+# VRAM Budget (72GB RTX PRO 5000, Blackwell):
+#   INT4 weights (27B):             ~14 GB  (same as current)
+#   Activations (BF16):             ~6  GB  (same as current)
+#   MTP module (BF16):              ~0.2 GB (new, negligible)
+#   GPU overhead (0.66 util):       ~2  GB  (same as current)
+#   Remaining for KV cache:         ~28 GB  (same as current)
+#   → Identical VRAM footprint to current daily driver
+#
+# Changes from qwen-coder.yml:
+#   + --reasoning-parser qwen3
+#   + --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+#   + --default-chat-template-kwargs '{"preserve_thinking":true}'
+#   - --enable-auto-tool-choice  (redundant with reasoning-parser)
+#   - --tool-call-parser qwen3_xml (redundant with reasoning-parser)
+#   - restart: unless-stopped → restart: "no" (experiment convention)
+
+services:
+  qwen36-mtp:
+    image: vllm/vllm-openai:latest
+    container_name: qwen36-mtp
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+    command: >
+      --model Lorbus/Qwen3.6-27b-int4-AutoRound
+      --served-model-name qwen36-27b-mtp
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 200000
+      --max-num-seqs 3
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.66
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --reasoning-parser qwen3
+      --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

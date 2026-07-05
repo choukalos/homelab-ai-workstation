@@ -1,0 +1,77 @@
+# qwen-long-w8a16-mtp — Qwen3.6-27B W8A16 with MTP, max VRAM utilization
+# Replaces Lorbus INT4 with 88plug W8A16 (INT8 weights, BF16 activations)
+# Full 262K native context, FP8 KV cache, MTP speculative decoding
+
+name: qwen-long-w8a16-mtp
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: 88plug/Qwen3.6-27B-W8A16
+  quantization: W8A16 (INT8 weights, BF16 activations)
+  format: compressed-tensors (vLLM auto-detected)
+  expected_vram: 35-42 GB (model + KV)
+  parameters: 27B dense (no MoE)
+  context: 262144 (native max)
+  architecture: "Qwen3_5ForConditionalGeneration (dense hybrid Gated-DeltaNet)"
+  layers:
+    total: 64
+    gated_deltanet: 48
+    gated_attention: 16
+    pattern: "3 linear-attention → 1 full-attention (repeated 16x)"
+
+launch:
+  container: qwen36-long
+  image: vllm/vllm-openai:v0.21.0-cu129-ubuntu2404
+  compose: compose/experiments/qwen-long-w8a16-mtp.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --model: 88plug/Qwen3.6-27B-W8A16
+    --served-model-name: qwen36-27b-long
+    --max-model-len: 262144
+    --max-num-seqs: 4
+    --max-num-batched-tokens: 16384
+    --gpu-memory-utilization: 0.92
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --chunked-prefill-size: 32768
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking":true}'
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen36-27b-long
+
+compatible_modes:
+  - qwen-long
+  - experiment
+
+notes:
+  - "W8A16 INT8 weights (88plug) = better quality than INT4, same ~27GB footprint as FP8"
+  - "compressed-tensors format — vLLM v0.21.0+ auto-detects, NO --quantization flag needed"
+  - "Activations stay BF16 (better quality than W8A8), Gated-DeltaNet layers stay BF16"
+  - "GPU-memory-utilization 0.92 — maxes out 72GB VRAM for KV cache capacity"
+  - "MTP with num_speculative_tokens=2: ~1.7-1.9x decode throughput gain"
+  - "chunked-prefill-size 32768: optimized for very long context prefills"
+  - "preserve_thinking=true: retains reasoning context across multi-turn (new Qwen3.6 feature)"
+  - "reasoning-parser qwen3 (not deepseek_r1 — this is the correct parser for Qwen3.6)"
+  - "KV cache: only 16 full-attention layers store KV; 48 DeltaNet layers use fixed recurrent state"
+  - "At 262K context with FP8 KV, each seq uses ~2.4GB KV — 4 seqs = ~10GB KV"
+  - "Total estimated VRAM: 27GB weights + 6GB activations + 10GB KV + overhead ≈ 45GB of 72GB"
+  - "⚠️ Requires vLLM v0.21.0+ (not the default 'latest' tag)"
+  - "⚠️ Do NOT use --quantization turboquant (vLLM #41560)"
+  - "Alternative model: btbtyler09/Qwen3.6-27B-GPTQ-8bit (GPTQ INT8, ~32GB) if W8A16 has issues"
+  - "Rollback: model-manager mode rollback"

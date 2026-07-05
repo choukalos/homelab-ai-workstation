@@ -1,0 +1,64 @@
+# Experiment: Qwen3-Next-80B-A3B-Thinking-FP8 (MTP + Long Context)
+# Model: Qwen/Qwen3-Next-80B-A3B-Thinking-FP8
+#
+# Architecture: 80B total params, ~3B active per token (MoE with 512 experts, 10 activated)
+# - Hybrid attention: Gated DeltaNet (linear) + Gated Attention (full KV)
+# - MTP (Multi-Token Prediction) with 2 speculative tokens
+# - Thinking mode: outputs <think>...</think> before response
+#
+# VRAM Budget (72GB RTX PRO 5000, Blackwell, native FP8):
+#   FP8 weights (80B MoE):          ~40 GB
+#   GPU overhead (0.75 util):       ~5  GB
+#   Remaining for KV cache:         ~13 GB
+#   KV @ 64K context (FP8):        ~36 MB per sequence
+#   → Fits 2 sequences comfortably
+#
+# ⚠️  This requires vLLM nightly (Qwen3-Next FP8 support is recent):
+#     pip install vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
+#     Or use: vllm/vllm-openai:latest-cu129-ubuntu2404
+#
+# Benchmarks: MMLU-Pro 82.7, AIME25 87.8, LiveCodeBench v6 68.7
+# License: Apache 2.0
+# Context: 262K native (we target 64K for VRAM efficiency)
+
+services:
+  qwen3-next-80b:
+    # Use nightly build for Qwen3-Next FP8 support
+    image: vllm/vllm-openai:latest-cu129-ubuntu2404
+    container_name: qwen3-next-80b
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Blackwell FP8 kernel optimizations (optional, may improve MoE perf)
+      - VLLM_ATTENTION_BACKEND=FLASH_ATTN
+    volumes:
+      - /home/chuck/data/models:/data/models
+    command: >
+      --model Qwen/Qwen3-Next-80B-A3B-Thinking-FP8
+      --served-model-name qwen3-next-80b-thinking
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 65536
+      --max-num-seqs 2
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.75
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --reasoning-parser deepseek_r1
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

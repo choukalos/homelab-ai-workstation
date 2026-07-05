@@ -1,0 +1,9 @@
+{
+  "concurrent": 4,
+  "rounds": 20,
+  "total_requests": 80,
+  "success": 80,
+  "fail": 0,
+  "avg_time_per_request_s": 1.546,
+  "total_throughput_req_per_s": 12.94
+}

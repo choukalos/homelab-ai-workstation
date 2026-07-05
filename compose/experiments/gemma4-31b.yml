@@ -1,11 +1,14 @@
-# Experiment: Gemma 4 31B (Q4_K_M quantized)
-# Model: google/gemma-4-31b-it (loaded via vLLM with built-in quantization)
-# VRAM budget: ~30-40 GB on 72 GB GPU (Q4 weights ~15GB + KV cache)
+# Experiment: Gemma 4 31B — FP8 quantization
+# Model: google/gemma-4-31b-it (loaded via vLLM with --quantization fp8)
+# VRAM budget: ~35-45 GB on 72 GB GPU (FP8 weights ~15.5GB + activations + KV cache)
 #
-# NOTE: If google/gemma-4-31b-it is too slow or fails to quantize at load time,
-# try a pre-quantized variant like:
-#   bartowski/gemma-4-31b-it-GGUF (requires vLLM GGUF support)
-#   or TheBloke/gemma-4-31b-AWQ
+# --quantization fp8 tells vLLM to quantize the BF16 weights to FP8 at load time.
+# This brings a 31B model from ~62GB (BF16) down to ~15.5GB (FP8).
+# Supported on vLLM 0.6+ with CUDA 12.4+.
+#
+# If this fails, fallback options:
+#   - bartowski/gemma-4-31b-it-GGUF (requires vLLM GGUF support)
+#   - TheBloke/gemma-4-31b-AWQ (with --quantization awq)
 
 services:
   qwen36:
@@ -28,10 +31,11 @@ services:
       --served-model-name gemma4-31b
       --host 0.0.0.0
       --port 8000
+      --quantization fp8
       --max-model-len 131072
       --max-num-seqs 4
       --max-num-batched-tokens 16384
-      --gpu-memory-utilization 0.40
+      --gpu-memory-utilization 0.70
       --kv-cache-dtype fp8
       --enable-prefix-caching
       --enable-chunked-prefill

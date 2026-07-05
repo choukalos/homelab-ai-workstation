@@ -1,0 +1,72 @@
+# qwen36-int4-mtp — Current INT4 daily driver with MTP added (Path B)
+# Same model as matrix-coder, just adds MTP + reasoning-parser
+# Minimal-risk upgrade path: test MTP throughput on existing model
+
+name: qwen36-int4-mtp
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: Lorbus/Qwen3.6-27b-int4-AutoRound
+  quantization: int4-AutoRound
+  format: vLLM native
+  expected_vram: 48-52 GB (same as current daily driver)
+  parameters: 27B dense (no MoE)
+  context: 200000
+  architecture: "Qwen3_5ForConditionalGeneration (dense hybrid Gated-DeltaNet)"
+
+launch:
+  container: qwen36-mtp
+  image: vllm/vllm-openai:latest
+  compose: compose/experiments/qwen36-int4-mtp.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --model: Lorbus/Qwen3.6-27b-int4-AutoRound
+    --served-model-name: qwen36-27b-mtp
+    --max-model-len: 200000
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.66
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking":true}'
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen36-27b-mtp
+
+compatible_modes:
+  - experiment
+
+comparison_to_current:
+  current_model: Lorbus/Qwen3.6-27b-int4-AutoRound
+  changes_from_daily:
+    - "Added MTP: --speculative-config with qwen3_next_mtp, 2 speculative tokens"
+    - "Added --reasoning-parser qwen3 (replaces --tool-call-parser qwen3_xml)"
+    - "Added --default-chat-template-kwargs with preserve_thinking"
+    - "Identical VRAM, context, concurrency, and gpu-memory-utilization"
+  expected_gains:
+    - "Decode throughput: ~1.5-1.9x faster with MTP acceptance"
+    - "TTFT: unchanged (MTP affects decode phase only)"
+
+notes:
+  - "This is Path B from TODO.md — same INT4 model, just add MTP on top"
+  - "Same model, same VRAM, same context — lowest-risk experiment"
+  - "If MTP works on INT4: directly promotes to qwen-coder.yml by adding 3 flags"
+  - "⚠️ n_predict=1 (legacy MTP) is the old format; qwen3_next_mtp method is v0.21.0+"
+  - "If MTP fails on INT4 AutoRound: fallback to removing speculative-config and retesting"
+  - "Rollback: model-manager mode rollback"

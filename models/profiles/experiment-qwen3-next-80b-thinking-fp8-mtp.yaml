@@ -1,0 +1,81 @@
+# qwen3-next-80b-thinking-fp8-mtp — Qwen3-Next-80B-A3B-Thinking FP8 w/ MTP Experiment
+# 80B total, ~3B active (MoE), official Qwen FP8 quantization
+# Context: 64K (targeting 60-80K range from user request)
+# MTP: 2 speculative tokens via qwen3_next_mtp
+
+name: qwen3-next-80b-thinking-fp8-mtp
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: Qwen/Qwen3-Next-80B-A3B-Thinking-FP8
+  quantization: FP8 (fine-grained, block_size=128)
+  format: HuggingFace native FP8
+  expected_vram: 55-62 GB
+  parameters: 80B total, 3B active per token
+  context: 65536 (of 262K native max)
+  architecture: "Qwen3NextForCausalLM / Qwen3NextMoE"
+  moe:
+    total_experts: 512
+    activated_experts: 10
+    shared_experts: 1
+  hybrid_attention:
+    gated_delta_net: "32 V heads + 16 QK heads, head_dim=128"
+    gated_attention: "16 Q heads + 2 KV heads, head_dim=256, rope_dim=64"
+
+launch:
+  container: qwen3-next-80b
+  image: vllm/vllm-openai:latest-cu129-ubuntu2404
+  compose: compose/experiments/qwen3-next-80b-thinking-fp8-mtp.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    VLLM_ATTENTION_BACKEND: FLASH_ATTN
+  args:
+    --model: Qwen/Qwen3-Next-80B-A3B-Thinking-FP8
+    --served-model-name: qwen3-next-80b-thinking
+    --max-model-len: 65536
+    --max-num-seqs: 2
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.75
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --chunked-prefill-size: 16384
+    --reasoning-parser: deepseek_r1
+    --speculative-config: '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen3-next-80b-thinking
+
+compatible_modes:
+  - experiment
+
+benchmarks:
+  MMLU-Pro: 82.7
+  GPQA: 77.2
+  AIME25: 87.8
+  LiveCodeBench-V6: 68.7
+  GPQA-Diamond: 77.2
+
+notes:
+  - "Uses official Qwen FP8 quantization (block_size=128), works on Blackwell GPUs"
+  - "MTP (qwen3_next_mtp, 2 speculative tokens) for ~1.7-1.9x decode throughput"
+  - "Requires vLLM nightly or 0.19.0+ — FP8 MoE support is recent"
+  - "reasoning-parser deepseek_r1 for <think>...</think> tag parsing"
+  - "64K context chosen as balance: enough for reasoning chains, fits 2 seqs in 72GB"
+  - "If OOM: reduce max-model-len to 32768 or gpu-memory-utilization to 0.65"
+  - "If too much headroom: increase max-model-len to 81920 or gpu-memory-utilization to 0.80"
+  - "Old experiment (qwen3-next-80b-nvfp4.yml) used NVFP4 which vLLM may NOT load — FP8 is the safe path"
+  - "License: Apache 2.0"
+  - "Rollback: model-manager mode rollback"

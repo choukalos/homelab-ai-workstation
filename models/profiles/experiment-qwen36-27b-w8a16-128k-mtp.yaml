@@ -1,0 +1,90 @@
+# qwen36-27b-w8a16-128k-mtp — Performance-optimized Qwen3.6-27B with 3 threads, 128K context
+# 3 concurrent sequences, FP8 KV cache, MTP, prefix caching, chunked prefill
+# Balanced for real-world agent workloads with moderate-long context
+
+name: qwen36-27b-w8a16-128k-mtp
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: 88plug/Qwen3.6-27B-W8A16
+  quantization: W8A16 (INT8 weights, BF16 activations)
+  format: compressed-tensors (vLLM auto-detected)
+  expected_vram: 40-48 GB (model + 3x KV @ 128K)
+  parameters: 27B dense (no MoE)
+  context: 131072
+  architecture: "Qwen3_5ForConditionalGeneration (dense hybrid Gated-DeltaNet)"
+
+launch:
+  container: qwen36-perf
+  image: vllm/vllm-openai:v0.21.0-cu129-ubuntu2404
+  compose: compose/experiments/qwen36-27b-w8a16-128k-mtp.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --model: 88plug/Qwen3.6-27B-W8A16
+    --served-model-name: qwen36-27b-perf
+    --max-model-len: 131072
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 16384
+    --gpu-memory-utilization: 0.92
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --chunked-prefill-size: 32768
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking":true}'
+    --trust-remote-code: true
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen36-27b-perf
+
+compatible_modes:
+  - qwen-long
+  - experiment
+
+performance_targets:
+  concurrent_sequences: 3
+  context_window: 128000
+  decode_throughput_boost: "~70-90% with MTP (acceptance rate ~85-94%)"
+  prefix_cache_hit: "30%+ TTFT improvement on repeated system prompts"
+  estimated_vram: 45-50 GB of 72 GB
+
+comparison_to_current:
+  current_model: Lorbus/Qwen3.6-27b-int4-AutoRound
+  current_context: 200000
+  current_seqs: 3
+  current_gpu_mem: 0.66
+  current_mtp: "n_predict=1 (legacy format, may not work on newer vLLM)"
+  improvements:
+    - "W8A16 INT8 (27GB) vs INT4 AutoRound (14GB): better quality at higher VRAM cost"
+    - "Context reduced to 128K (from 200K) to fit 3 threads with headroom"
+    - "MTP with qwen3_next_mtp method (modern format, 2 speculative tokens)"
+    - "gpu-memory-utilization 0.92 (from 0.66): much more KV cache for longer contexts"
+    - "chunked-prefill-size 32768 (from 16384): better for long prompt processing"
+    - "max-num-batched-tokens 16384 (from 8192): higher throughput for concurrent batches"
+    - "preserve_thinking: enables reasoning trace retention across multi-turn"
+    - "reasoning-parser qwen3: correct parser for Qwen3.6 output format"
+
+notes:
+  - "This config trades context length (200K → 128K) for reliability at 3 concurrent threads"
+  - "If you need more context and fewer threads: use qwen-long-w8a16-mtp.yml instead (262K ctx, 4 seqs)"
+  - "W8A16 is ~99% MMLU recovery vs BF16 — significantly better quality than INT4"
+  - "MTP acceptance rate: code tasks ~94%, structured ~85%, general ~88%"
+  - "Effective throughput with MTP: ~1.7-1.9x faster than non-MTP"
+  - "⚠️ Requires vLLM v0.21.0+ — the current 'latest' tag may not have compressed-tensors support"
+  - "⚠️ Do NOT use --quantization turboquant (vLLM #41560)"
+  - "If v0.21.0 image not available: build from source or use 88plug's Docker instructions"
+  - "Alternative: btbtyler09/Qwen3.6-27B-GPTQ-8bit (GPTQ INT8, ~32GB) as fallback"
+  - "Rollback: model-manager mode rollback"

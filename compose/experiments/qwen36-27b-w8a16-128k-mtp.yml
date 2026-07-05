@@ -1,0 +1,64 @@
+# Experiment: Qwen3.6-27B W8A16 — 3 threads, 128K context, MTP + KV cache optimization
+# Model: 88plug/Qwen3.6-27B-W8A16 (INT8 weights, BF16 activations)
+#
+# Goal: Balance performance (3 concurrent sequences) with quality (120K+ context)
+# on 72GB RTX PRO 5000, using all available vLLM acceleration features.
+#
+# VRAM Budget (72GB RTX PRO 5000, Blackwell):
+#   W8A16 weights (27B):            ~27 GB
+#   Activations (BF16):              ~6  GB
+#   MTP module (BF16):               ~0.2 GB
+#   GPU overhead (0.92 util):        ~2  GB
+#   Remaining for KV cache:          ~37 GB
+#   KV @ 128K context (FP8):        ~1.2 GB per sequence
+#   → Fits 3 sequences comfortably (~3.6GB KV + headroom)
+#
+# Features enabled:
+#   - MTP (Multi-Token Prediction): 2 speculative tokens for ~70-90% throughput boost
+#   - FP8 KV cache: halves KV memory vs FP16, enabling longer context
+#   - Prefix caching: reuses KV for shared prefixes (system prompts, repeated context)
+#   - Chunked prefill: avoids OOM during long prompt processing
+#   - preserve_thinking: retains reasoning traces across turns (better for agents)
+#
+# ⚠️  Requires vLLM v0.21.0+ for compressed-tensors W8A16 support
+#     Do NOT use --quantization flag — vLLM auto-detects compressed-tensors
+
+services:
+  qwen36-perf:
+    image: vllm/vllm-openai:v0.21.0-cu129-ubuntu2404
+    container_name: qwen36-perf
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+    command: >
+      --model 88plug/Qwen3.6-27B-W8A16
+      --served-model-name qwen36-27b-perf
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 131072
+      --max-num-seqs 3
+      --max-num-batched-tokens 16384
+      --gpu-memory-utilization 0.92
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --reasoning-parser qwen3
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

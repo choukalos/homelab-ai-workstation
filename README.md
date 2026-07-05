@@ -81,13 +81,15 @@ Named experiments are defined by a YAML profile and a Docker Compose file:
 
 | Profile | Model | VRAM | Notes |
 |---|---|---|---|
-| `experiment-gemma4-31b` | google/gemma-4-31b-it | ~30-40 GB | Dense 31B, vLLM-compatible, good for general tasks |
-| `experiment-nemotron-3-nano-30b` | nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 | ~55-65 GB | ⚠️ Hybrid Mamba-2/Transformer — **likely not vLLM-compatible**, needs TensorRT-LLM or NeMo |
-| `experiment-qwen3-next-80b-nvfp4` | nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4 | ~40-55 GB | ⚠️ NVFP4 is a **TensorRT-LLM-only format** — vLLM will not load it |
+| `experiment-gemma4-31b` | google/gemma-4-31b-it | ~35-45 GB | Dense 31B, FP8 runtime quantization, good for general tasks |
+| `experiment-qwen3-next-80b-thinking-fp8-mtp` | Qwen/Qwen3-Next-80B-A3B-Thinking-FP8 | ~55-62 GB | 80B MoE (3B active), FP8 + MTP, thinking mode, nightly vLLM |
+| `experiment-qwen36-27b-w8a16-128k-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~40-48 GB | W8A16 INT8, 128K ctx, 3 threads, MTP — best daily-coder candidate (Path A) |
+| `experiment-qwen36-int4-mtp` | Lorbus/Qwen3.6-27b-int4-AutoRound | ~48-52 GB | Same model as daily + MTP — minimal-risk throughput upgrade (Path B) |
+| `experiment-qwen-long-w8a16-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~35-42 GB | W8A16 INT8, 262K ctx, 4 threads, MTP — max long context |
 
 > **Note:** The `--profile` flag lets you jump between experiments without rolling back to production. Use `mode rollback` to return to the previous production mode.
 
-> **⚠️ Known compatibility issues:** The Nemotron-3-Nano uses a hybrid Mamba-2/Transformer architecture that vLLM may not support. The Qwen3-Next-80B NVFP4 quantization is designed exclusively for TensorRT-LLM on Blackwell GPUs. Both profiles are created as research placeholders — see TODO.md for alternative paths.
+> **Removed profiles:** Nemotron-3-Nano (Mamba-2/Transformer not vLLM-compatible) and Qwen3-Next NVFP4 (TensorRT-LLM-only format) were removed during compatibility research. See TODO.md for details.
 
 ## Directory Layout
 
