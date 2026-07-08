@@ -33,7 +33,9 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     volumes:
       - /home/chuck/data/models:/data/models
+      - /home/chuck/homelab/scripts/templates:/templates:ro
     command: >
+      --chat-template /templates/qwen3-fixed-chat-template.jinja
       --model 88plug/Qwen3.6-27B-W8A16
       --served-model-name qwen36-27b-long
       --host 0.0.0.0

@@ -24,8 +24,10 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     volumes:
       - /home/chuck/data/models:/data/models
+      - /home/chuck/homelab/scripts/templates:/templates:ro
     # ★ EDIT THESE for your candidate model:
     command: >
+      --chat-template /templates/qwen3-fixed-chat-template.jinja
       --model MODEL_PATH_HERE
       --served-model-name qwen36-27b
       --host 0.0.0.0
