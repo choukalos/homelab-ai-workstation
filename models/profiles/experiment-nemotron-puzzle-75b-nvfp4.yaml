@@ -1,0 +1,108 @@
+# nemotron-puzzle-75b-nvfp4 — NVIDIA Nemotron-3 Puzzle 75B MoE in NVFP4
+# MoE model: 75B total params, 9B active/token — designed for 72GB VRAM tier
+# Source: https://www.reddit.com/r/LocalLLaMA/comments/1uru9ja/
+# Original poster ran on 3x3090 (Ampere, pipeline-parallel). Adapted for single RTX PRO 5000 (Blackwell).
+
+name: nemotron-puzzle-75b-nvfp4
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: nvidia/Nemotron-3-Puzzle-75B-A9B
+  quantization: nvfp4 (runtime)
+  format: vLLM native NVFP4
+  expected_vram: 58-66 GB (weights ~37.5GB + activations + KV cache at 128K)
+  parameters: 75B total, 9B active per token (MoE)
+  context: 131072 (128K, reduced from 256K for safe single-GPU fit)
+  architecture: "NemotronForCausalLM (MoE with 9B active, hybrid Mamba/attention)"
+  attention_heads: 32
+
+launch:
+  container: nemotron-puzzle
+  image: vllm/vllm-openai:latest
+  compose: compose/experiments/nemotron-puzzle-75b-nvfp4.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+    - /home/chuck/homelab/scripts/templates:/templates:ro
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: ""
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --model: nvidia/Nemotron-3-Puzzle-75B-A9B
+    --quantization: nvfp4
+    --served-model-name: puzzle-75b-nvfp4
+    --max-model-len: 131072
+    --max-num-seqs: 3
+    --kv-cache-dtype: fp8
+    --gpu-memory-utilization: 0.90
+    --enable-prefix-caching: true
+    --trust-remote-code: true
+    --reasoning-parser: nemotron_v3
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_coder
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: puzzle-75b-nvfp4
+
+compatible_modes:
+  - experiment
+
+reddit_reference:
+  thread: https://www.reddit.com/r/LocalLLaMA/comments/1uru9ja/
+  poster_config: "3x3090 pipeline-parallel, 132 t/s decode across 3 streams (~65 single), 1,949 t/s prefill"
+  notes:
+    - "Poster uses pipeline-parallel-size 3 (PP not TP — 32 attn heads don't divide by 3)"
+    - "Cards on x16/x4/x4 PCIe, bandwidth-light PP works fine"
+    - "4th GPU runs speech sidecar"
+    - "~500W wall draw for the whole box"
+    - "Replaced Nemotron Super 120B MoE (was using 4x3090s)"
+    - "Better instruction-following, ~2x speed per watt, frees a card"
+    - "Hybrid Mamba keeps KV cache tiny"
+    - "Great at coding (per Fable CC DeepAgents assessment)"
+    - "Excellent in-context grounding: 0.26 cold → 0.97 with reference doc"
+  vllm_requirement: |
+    ⚠️ Requires vLLM v0.22.1+ (NVFP4 Marlin fallback merged in this release).
+    Before first run, pull the latest image:
+      docker pull vllm/vllm-openai:latest
+
+comparison_to_current:
+  current_model: Lorbus/Qwen3.6-27b-int4-AutoRound
+  changes_from_daily:
+    - "Larger model: 75B MoE vs 27B dense"
+    - "Different quant: NVFP4 vs INT4-AutoRound"
+    - "Different architecture: MoE with hybrid Mamba vs dense with Gated-DeltaNet"
+    - "Longer context: 128K vs 200K (current) — can increase if VRAM allows"
+    - "Higher GPU utilization: 0.90 vs 0.66"
+    - "No MTP (speculative decoding) — poster didn't mention MTP for this model"
+    - "--reasoning-parser nemotron_v3 instead of qwen3"
+    - "--enable-auto-tool-choice + --tool-call-parser qwen3_coder instead of reasoning-parser"
+  expected_gains:
+    - "Higher quality ceiling: 75B MoE > 27B dense on benchmarks"
+    - "Excellent in-context grounding per poster's testing"
+    - "Strong instruction-following (IFBench: Nemotron 71.9% vs Qwen 65.1%)"
+    - "Good coding ability (per Fable CC assessment)"
+    - "Hybrid Mamba enables efficient long context"
+  expected_tradeoffs:
+    - "Near-max GPU utilization (0.90) — less headroom for spikes"
+    - "NVFP4 is 4-bit — potential quality loss vs INT4 AutoRound on specific tasks"
+    - "No MTP currently configured (poster didn't test it)"
+    - "Single-GPU vs 3-GPU pipeline = lower total throughput"
+
+notes:
+  - "Reddit poster hit 132 t/s decode across 3 streams on 3x3090; single-GPU estimate: ~65 t/s"
+  - "Blackwell (RTX PRO 5000) has native NVFP4 hardware — no Marlin fallback needed (Ampere requires it)"
+  - "This model is the only modern option in the 70-80B total / ~10B active band"
+  - "Perfect for 72GB tier: fills VRAM exactly at NVFP4"
+  - "⚠️ --reasoning-parser nemotron_v3 may require vLLM v0.22.1+ — verify on latest"
+  - "⚠️ If nvfp4 quantization fails, try --quantization fp8 as fallback (less compressed)"
+  - "⚠️ If OOM at 128K context, reduce --max-model-len to 65536 (64K)"
+  - "MLX version also available: https://huggingface.co/georgeis55/Nemotron-Labs-3-Puzzle-75B-A9B-MLX-6bit"
+  - "GGUF versions available: https://huggingface.co/YanissAmz/Nemotron-3-Puzzle-75B-A9B-GGUF"
+  - "Rollback: docker compose -f compose/experiments/nemotron-puzzle-75b-nvfp4.yml down; restore daily driver"

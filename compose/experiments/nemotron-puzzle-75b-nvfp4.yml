@@ -1,0 +1,67 @@
+# Experiment: Nemotron-3-Puzzle-75B-A9B NVFP4 — Single GPU (Blackwell)
+# Model: nvidia/Nemotron-3-Puzzle-75B-A9B (NVFP4 quantization)
+# Source: https://www.reddit.com/r/LocalLLaMA/comments/1uru9ja/
+#
+# Reddit poster ran on 3x3090 (Ampere) with pipeline-parallel-size 3.
+# This config adapts for single RTX PRO 5000 (72GB Blackwell) — native NVFP4.
+#
+# VRAM Budget (72GB RTX PRO 5000, Blackwell):
+#   NVFP4 weights (75B total):      ~37.5 GB
+#   Activations (BF16):             ~4-6  GB  (9B active params)
+#   GPU overhead (0.90 util):       ~3-4  GB
+#   Remaining for KV cache:         ~22-25 GB
+#   → Hybrid Mamba keeps KV cache tiny, 128K context is safe
+#
+# Key flags from Reddit thread (adapted for single 72GB GPU):
+#   --pipeline-parallel-size 3  →  removed (single GPU, no PP needed)
+#   --max-model-len 262144      →  131072 (128K, safer fit)
+#   --max-num-seqs 3            →  kept
+#   --kv-cache-dtype fp8        →  kept
+#   --gpu-memory-utilization .96 →  0.90 (more VRAM headroom for MoE)
+#   --reasoning-parser nemotron_v3 →  kept
+#   --enable-auto-tool-choice   →  kept
+#   --tool-call-parser qwen3_coder →  kept
+#
+# ⚠️ Requires vLLM v0.22.1+ (NVFP4 Marlin fallback merged in this release).
+#    ⚠️ If this is your first run, PULL THE LATEST IMAGE:
+#       docker pull vllm/vllm-openai:latest
+
+services:
+  nemotron-puzzle:
+    image: vllm/vllm-openai:latest
+    container_name: nemotron-puzzle
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+      - /home/chuck/homelab/scripts/templates:/templates:ro
+    command: >
+      --model nvidia/Nemotron-3-Puzzle-75B-A9B
+      --quantization nvfp4
+      --served-model-name puzzle-75b-nvfp4
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 131072
+      --max-num-seqs 3
+      --kv-cache-dtype fp8
+      --gpu-memory-utilization 0.90
+      --enable-prefix-caching
+      --trust-remote-code
+      --reasoning-parser nemotron_v3
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -11,6 +11,7 @@ Ran 5 experiments on vLLM 0.24.0 (latest) against the daily driver. **2 succeede
 | 3 | Qwen3-Next-80B FP8 | Qwen/Qwen3-Next-80B-A3B-Thinking-FP8 | ❌ FAILED | `--chunked-prefill-size` no longer recognized |
 | 4 | Qwen3.6-27B W8A16 128K | 88plug/Qwen3.6-27B-W8A16 | ❌ FAILED | `--chunked-prefill-size` no longer recognized |
 | 5 | Qwen-long W8A16 262K | 88plug/Qwen3.6-27B-W8A16 | ❌ FAILED | `--chunked-prefill-size` no longer recognized |
+| 6 | Nemotron-3-Puzzle-75B NVFP4 | nvidia/Nemotron-3-Puzzle-75B-A9B | ⏳ PLANNED | MoE 75B total / 9B active, NVFP4, single GPU |
 
 All 3 failures are fixed (see below).
 
@@ -212,8 +213,86 @@ Remove:
 
 ---
 
+## ⏳ Experiment 6: Nemotron-3-Puzzle-75B-A9B NVFP4
+
+**Not yet tested — config created, ready to launch.**
+
+| Field | Detail |
+|---|---|
+| Model | nvidia/Nemotron-3-Puzzle-75B-A9B |
+| Architecture | 75B total, ~9B active/token (MoE, hybrid Mamba/attention) |
+| Quantization | NVFP4 (native on Blackwell, Marlin fallback for Ampere) |
+| vLLM image | `vllm/vllm-openai:latest` (needs **v0.22.1+** for NVFP4) |
+| Context | 128K (131072, reduced from 256K for safe single-GPU fit) |
+| GPU util | 0.90 |
+| Max seqs | 3 |
+| Source | [Reddit r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/comments/1uru9ja/) |
+
+**⚠️ BEFORE FIRST RUN — pull the latest vLLM image:**
+```bash
+docker pull vllm/vllm-openai:latest
+```
+NVFP4 Marlin fallback was merged in v0.22.1; your current local image may be older.
+
+**Reddit poster's results (3×3090 pipeline-parallel):**
+
+| Metric | Value |
+|---|---|
+| Decode throughput | 132 t/s across 3 streams (~65 t/s single) |
+| Prefill throughput | 1,949 t/s |
+| Power draw | ~500W for the whole box (3×3090 capped at 200W each) |
+
+**Adaptation notes for single RTX PRO 5000 (72GB Blackwell):**
+
+- Pipeline parallel removed (single GPU)
+- Context reduced from 256K → 128K for safe VRAM fit
+- GPU memory utilization set to 0.90 (poster used 0.96 on 3 GPUs with PP)
+- `--reasoning-parser nemotron_v3` for the model's native reasoning format
+- `--enable-auto-tool-choice --tool-call-parser qwen3_coder` for tool calling
+- `--quantization nvfp4` — Blackwell has native NVFP4 hardware support
+- Hybrid Mamba keeps KV cache tiny, enabling long context
+- **No `--max-num-batched-tokens`** — poster didn't set this; vLLM auto-manages chunked prefill
+- **No MTP** — poster didn't test speculative decoding on this model
+
+**VRAM Budget (72GB RTX PRO 5000):**
+
+| Component | Estimate |
+|---|---|
+| NVFP4 weights (75B) | ~37.5 GB |
+| Activations (9B active) | ~4-6 GB |
+| GPU overhead (0.90 util) | ~3-4 GB |
+| Remaining for KV cache | ~22-25 GB |
+| KV cache at 128K, fp8, 3 seqs | fits comfortably with Mamba hybrid |
+
+**Launch:**
+```bash
+# Pull latest image first
+docker pull vllm/vllm-openai:latest
+# Then launch
+model-manager experiment start --profile experiment-nemotron-puzzle-75b-nvfp4
+# Or direct compose:
+docker compose -f compose/experiments/nemotron-puzzle-75b-nvfp4.yml up -d
+```
+
+**Pro / Con:**
+
+| Pro | Con |
+|---|---|
+| 75B MoE — larger active param space than 27B dense | Higher VRAM usage (near-max GPU util) |
+| Excellent instruction-following (IFBench 71.9% vs Qwen 65.1%) | NVFP4 is 4-bit — may lose quality vs INT4 AutoRound |
+| Great in-context grounding (0.26 → 0.97 with reference doc) | No MTP tested on this model yet |
+| Strong coding ability (per Fable CC assessment) | Only one model in this size band |
+| 128K context with hybrid Mamba | Single GPU = lower total throughput vs 3-GPU PP |
+
+**Rollback:**
+```bash
+docker compose -f compose/experiments/nemotron-puzzle-75b-nvfp4.yml down
+# Restore daily driver (qwen-coder mode)
+```
+
 ## Next Steps
 
 1. ~~Update daily driver with MTP~~ (you're doing this manually)
 2. Rerun experiments 3, 4, 5 (all fixed, ready to go)
-3. Consider testing W8A16 + MTP as a potential quality upgrade over INT4 + MTP
+3. **Run experiment 6: Nemotron-3-Puzzle-75B NVFP4** (config + profile ready, ⚠️ pull latest vLLM first)
+4. Consider testing W8A16 + MTP as a potential quality upgrade over INT4 + MTP
