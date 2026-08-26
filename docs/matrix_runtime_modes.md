@@ -188,42 +188,24 @@ docker compose -f compose/qwen-coder.yml up -d
 
 ---
 
-## `images` — ComfyUI/FLUX Image Generation
+## Image generation (ComfyUI) — not a mode
 
-**Goal:** Run image generation while keeping a light LLM available for chat/tools.
+> Updated 2026-08-26: image generation no longer requires stopping vLLM.
+> ComfyUI (Qwen-Image) runs **concurrently with any mode** at a ~12 GB VRAM
+> budget (`--reserve-vram 60`). `matrix-coder` stays online.
 
-**What's running:**
-
-| Service | Container | Model | Port | Backend | VRAM |
-|---|---|---|---|---|---|
-| ComfyUI | `comfyui_backend` | FLUX or other | 8188 | ComfyUI | ~30-40 GB |
-| Light model | `ollama` | gemma4:26b | 11434 | Ollama | ~17 GB |
-| Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
-
-**vLLM (Qwen) is stopped** — ComfyUI + Qwen won't fit on 72 GB. Ollama stays up
-with Gemma4 for a working LLM fallback during image work.
-
-**LiteLLM aliases valid:** `matrix-gemma4-moe`, `embeddings`
-**Aliases offline:** `matrix-coder` (vLLM stopped)
-
-**Startup:**
+**Start / stop:**
 ```bash
-docker compose -f compose/qwen-coder.yml down
-docker compose -f compose/comfyui.yml --profile image up -d
-# Ollama stays running — no need to touch it
+docker compose -f compose/comfyui.yml --profile image up -d    # start
+curl -s http://localhost:8188/system_stats | head -c 100       # verify
+docker compose -f compose/comfyui.yml --profile image down     # stop
 ```
 
-**Health check:** `curl -s http://localhost:8188` and `curl -s http://localhost:11434`
+**VRAM:** ~12 GB cap; 9.3–14.4 GB measured peaks; total-GPU peak ≤ ~71.2 GB.
+Idle cost ~0.7 GB — safe to leave running.
 
-**Rollback to daily:**
-```bash
-docker compose -f compose/comfyui.yml --profile image down
-docker compose -f compose/qwen-coder.yml up -d
-```
-
-**⚠️ Expected downtime:** 5-10 min to switch in or out of image mode.
-**⚠️ Do not expose port 8188 publicly.**
-**⚠️ `matrix-coder` is offline during image mode — clients get Gemma instead.
+**Details:** [ComfyUI Media API](matrix_comfyui_media_api.md) (tooling contract) ·
+[ComfyUI Ops](matrix_images_mode.md) (operations)
 
 ---
 
@@ -236,7 +218,8 @@ docker compose -f compose/qwen-coder.yml up -d
 | `qwen-long` | vLLM, Ollama gemma4 | vLLM @ long-ctx args | gemma4-moe offline |
 | `llms` | (same as daily) | (same as daily) | all valid |
 | `experiment` | vLLM | vLLM with new model | coder points to experiment |
-| `images` | vLLM | ComfyUI + Ollama (gemma4) | coder offline; gemma4-moe + embeddings valid |
+
+(Image generation is not a mode — see the section above.)
 
 ---
 
@@ -248,4 +231,3 @@ docker compose -f compose/qwen-coder.yml up -d
 | `qwen-coder` | ~54 GB (0.75 util) | ~274 MB (embed only) | ~54 GB | ~18 GB |
 | `qwen-long` | ~50-55 GB | ~274 MB | ~50-55 GB | ~17-22 GB |
 | `experiment` | varies | varies | varies | varies |
-| `images` | *(stopped)* | ~30-40 GB (ComfyUI) + ~17 GB (gemma4) + 274 MB | ~48-58 GB | ~14-24 GB |

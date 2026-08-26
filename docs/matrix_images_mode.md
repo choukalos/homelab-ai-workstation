@@ -1,322 +1,102 @@
-# Images Mode — ComfyUI/FLUX Image Generation
+# ComfyUI — Image Generation & Editing (Qwen-Image)
 
-> Created: 2026-07-03
+> Updated: 2026-08-26 (supersedes the old "images mode" / stop-vLLM model)
 > Compose: `compose/comfyui.yml` (profile: `image`)
 > Profile: `models/profiles/comfyui.yaml`
+> **API reference for tooling: `docs/matrix_comfyui_media_api.md`**
 
 ## Overview
 
-Images mode runs ComfyUI for image generation while keeping a light LLM (Gemma4)
-available for chat and tool-calling. vLLM (Qwen3.6-27B) is **stopped** —
-ComfyUI + Qwen won't fit on the 72 GB GPU simultaneously.
+ComfyUI runs **concurrently with vLLM** — no mode switch, no stopping vLLM, no
+downtime. ComfyUI is capped at a ~12 GB VRAM budget via `--reserve-vram 60`
+(reserves 60 GB for other software), and Qwen-Image's dynamic-VRAM streaming
+(9.4 GB encoder + 11.9 GB DiT are never resident at the same time) keeps it
+inside the budget.
 
-**Rule: Never assume Qwen (`matrix-coder`) is available during image mode.**
+**`matrix-coder` (vLLM) stays fully online during all image work.**
 
----
-
-## What Runs in Images Mode
-
-| Service | Container | Port | Backend | VRAM |
-|---|---|---|---|---|
-| ComfyUI | `comfyui_backend` | 8188 | ComfyUI + FLUX or other | ~30-40 GB |
-| Gemma4 MoE | `ollama` | 11434 | Ollama | ~17 GB (on demand) |
-| Embeddings | `ollama` | 11434 | Ollama | ~274 MB |
-| Metrics | `node-exporter`, `dcgm-exporter` | 9100, 9400 | — | N/A |
-
-**Total VRAM: ~48-58 GB of 72 GB → ~14-24 GB headroom**
-
-### LiteLLM Aliases
-
-| Alias | Status |
-|---|---|
-| `matrix-coder` | ❌ **OFFLINE** (vLLM stopped) |
-| `matrix-gemma4-moe` | ✅ Available (Gemma4 on Ollama) |
-| `embeddings` | ✅ Available |
-
-Thor's LiteLLM proxy will return an error for `matrix-coder` since port 8000 is
-down. Clients routed there should expect a connection failure and fall back to
-`matrix-gemma4-moe` if available.
-
----
-
-## How to Enter Images Mode
-
-### Step-by-step
-
-```bash
-cd /home/chuck/homelab
-
-# 1. Run preflight
-bash scripts/preflight.sh images
-
-# 2. Stop vLLM (releases ~48 GB VRAM)
-docker compose -f compose/qwen-coder.yml down
-
-# 3. Start ComfyUI
-docker compose -f compose/comfyui.yml --profile image up -d
-
-# 4. Verify Ollama is still running (it should be — don't touch it)
-curl -s http://localhost:11434 | head -1
-
-# 5. Verify ComfyUI
-curl -s http://localhost:8188 | head -c 20
-echo ""
-```
-
-### Expected timing
-
-| Step | Time |
-|---|---|
-| vLLM stop | ~30 sec |
-| ComfyUI start + model load | ~2-5 min (depends on which model is loaded) |
-| **Total downtime for `matrix-coder`** | **~2-5 min** (already stopped after step 2) |
-
-### What happens to active clients
-
-- Any client calling `matrix-coder` gets a connection error immediately after vLLM stops
-- `matrix-gemma4-moe` and `embeddings` remain available throughout
-- No client-side config change needed — the error is transient during the switch
-
----
-
-## How to Exit Images Mode (Return to Daily)
-
-```bash
-cd /home/chuck/homelab
-
-# 1. Stop ComfyUI
-docker compose -f compose/comfyui.yml --profile image down
-
-# 2. Start vLLM
-docker compose -f compose/qwen-coder.yml up -d
-
-# 3. Verify
-curl -s http://localhost:8000/v1/models | head -1
-```
-
-### Expected timing
-
-| Step | Time |
-|---|---|
-| ComfyUI stop + VRAM release | ~30 sec |
-| vLLM start + model load | ~2-5 min |
-| **Total downtime** | **~2-5 min** |
-
----
-
-## VRAM Budget Detail
-
-| Component | Min | Max | Notes |
+| Service | Container | Port | VRAM |
 |---|---|---|---|
-| ComfyUI (FLUX or similar) | ~30 GB | ~40 GB | Depends on model loaded and resolution |
-| Gemma4-26B (Ollama) | ~17 GB | ~17 GB | Q4_K_M quantization |
-| nomic-embed-text (Ollama) | ~0.3 GB | ~0.3 GB | Tiny |
-| **Total** | **~47 GB** | **~58 GB** | |
-| GPU total | — | 72 GB | |
-| **Headroom** | **~14 GB** | **~25 GB** | |
+| vLLM (Qwen3.8-27B NVFP4) | `matrix` | 8000 | ~56 GB (untouched by ComfyUI) |
+| ComfyUI | `comfyui_backend` | 8188 | ~12 GB budget; 9.3–14.4 GB measured peaks |
+| Gemma4 MoE + embeddings | `ollama` | 11434 | on demand |
+| Metrics | `node-exporter`, `dcgm-exporter` | 9100, 9400 | N/A |
 
-### VRAM Risks
+Measured total-GPU peaks during image jobs: **70.2–71.2 GB of 73.4 GB** —
+under the ~70 GB acceptance gate, vLLM memory identical before/after.
 
-- If ComfyUI loads a very large model (e.g., 70B+ checkpoint), it may exhaust VRAM
-- Gemma4 loads on demand. If both Gemma4 and a large ComfyUI model load
-  simultaneously, Ollama may be evicted. This is acceptable — Gemma4 can reload.
-- **Rule:** Don't run ComfyUI at maximum resolution + large model + Gemma4 all at once.
+## What it does
 
----
+- **Create image**: text prompt → 1920×1080 PNG (720p render → 4x upscale →
+  lanczos). Qwen-Image-2512 Q4_0 GGUF + 4-step Lightning LoRA. ~15–40 s.
+- **Edit image**: existing image + text instruction → edited image.
+  Qwen-Image-Edit-2511 Q4_0 GGUF + 8-step Lightning LoRA. ~45–60 s.
+- Legible in-image text (verified by OCR), stable iteration loop for edits.
 
-## ComfyUI Configuration
+Full API contract (endpoints, workflow JSON, reference client, error handling):
+**`docs/matrix_comfyui_media_api.md`**.
 
-### Compose file: `compose/comfyui.yml`
+## Operations
 
-| Setting | Value | Purpose |
-|---|---|---|
-| Image | `mmartial/comfyui-nvidia-docker:latest` | GPU-accelerated ComfyUI |
-| Container name | `comfyui_backend` | Stable name for management |
-| Profile | `image` | Requires `--profile image` to start |
-| Port | `8188:8188` | ComfyUI web UI |
-| shm_size | `4gb` | Shared memory for CUDA |
-| `COMFYUI_FLAGS` | `--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8` | FP16 VAE + 8 GB VRAM reservation |
-| `CUDA_MALLOC_ASYNC` | `1` | Async CUDA memory allocator for better fragmentation |
-| `SECURITY_LEVEL` | `weak` | Allow broader file access (internal only) |
-| Volumes | `run:/comfy/mnt`, `basedir:/basedir` | Persistent data and workspace |
-| Restart | `unless-stopped` | Auto-restart on crash (NOT on reboot — deliberate) |
+### Start / stop
 
-### Data paths
-
+```bash
+cd /home/chuck/homelab
+docker compose -f compose/comfyui.yml --profile image up -d     # start
+curl -s http://localhost:8188/system_stats | head -c 100        # verify
+docker compose -f compose/comfyui.yml --profile image down      # stop (frees ~0.7 GB idle cache)
 ```
-/home/chuck/data/comfyui/
-  run/          # ComfyUI runtime (models, outputs, venv, git checkout)
-  basedir/      # User workspace for projects
+
+- ComfyUI is **not** in the default `docker compose up` — start it explicitly
+  when image work is needed. It is safe to leave running (idle cost ~0.7 GB).
+- Models are **not** downloaded on first run — all files are pre-downloaded
+  (see inventory in the API doc §6). No `HF_TOKEN` needed.
+
+### Health / troubleshooting
+
+```bash
+curl -s http://localhost:8188/system_stats          # liveness + version
+curl -s http://localhost:8188/queue                 # queue depth
+docker logs comfyui_backend --tail 50               # errors
+nvidia-smi                                          # VRAM
 ```
+
+| Symptom | Action |
+|---|---|
+| Port 8188 not responding | `up -d` above; check logs |
+| Job errors with OOM | Retry (transient); or use the Q3_K_M fallback config (API doc §4.3) |
+| Job queued but slow | `GET /queue` (job ahead), `docker logs` |
+| `comfyui-mmaudio` import warning at startup | Fixed 2026-08-26 (numba 0.67 / numpy 2.5). If it reappears: `sudo -u comfy /comfy/mnt/venv/bin/pip install -U numba llvmlite` in the container |
+
+### Model management
+
+- Models live in `/home/chuck/data/comfyui/basedir/models/` (owned by uid 1024
+  `comfy`). Add files as the `comfy` user inside the container:
+  `docker exec comfyui_backend sudo -u comfy sh -c '…'`.
+- Model lists refresh automatically when files appear — no restart needed.
+- venv for pip installs: `/comfy/mnt/venv` (always `sudo -u comfy`).
 
 ### Security
 
-- **Do NOT expose port 8188 publicly.** ComfyUI has no authentication by default.
-- `SECURITY_LEVEL=weak` is intentional (internal network only) — allows file access
-  for workspace operations.
-- Access should be limited to LAN or via Thor reverse proxy.
+- **Do NOT expose port 8188 publicly.** No authentication by default.
+- `SECURITY_LEVEL=weak` is intentional (LAN only) — allows file access for
+  workspace operations.
 
----
+## VRAM budget
 
-## How Thor / Open WebUI Should Behave
+| Component | VRAM | Notes |
+|---|---|---|
+| vLLM | ~56.3 GB | Committed baseline; never displaced |
+| ComfyUI | ~12 GB cap | `--reserve-vram 60` (soft budget, dynamic VRAM) |
+| Measured peaks | 9.3–14.4 GB attributable | 71.2 GB total worst case |
+| GPU total | 72 GB (73,415 MiB) | Gate: total peak ≤ ~70 GB — all runs passed |
 
-### Thor LiteLLM
+Idle ComfyUI retains ~0.7 GB (model cache) — normal.
 
-Thor's `thor.litellm.config.yml` has:
+## History
 
-```yaml
-- model_name: matrix-coder
-    litellm_params:
-      api_base: http://matrix:8000/v1
-      num_retries: 2
-```
-
-During images mode, `http://matrix:8000` is unreachable. After 2 retries,
-LiteLLM will raise an error. Clients receive a 503/504.
-
-**Recommended client behavior:**
-- Catch the error, display "Primary model offline"
-- Offer `matrix-gemma4-moe` as fallback
-- No automatic failover — this is a manual mode switch
-
-### Open WebUI
-
-If Open WebUI runs on Thor and uses `matrix-coder`:
-- The chat interface will show an error for `matrix-coder`
-- Users can manually switch to `matrix-gemma4-moe` in the UI
-- Once vLLM restarts, `matrix-coder` is available again automatically
-
----
-
-## Requesting Image Generation from Skills / Tools
-
-### Current state
-
-No skill currently integrates ComfyUI. The `presentation_build` skill
-(mentioned in the project plan) may want to trigger image generation.
-
-### How a skill would call ComfyUI (future)
-
-ComfyUI exposes a REST API on port 8188:
-
-```bash
-# 1. Submit a workflow
-curl -X POST http://matrix:8188/prompt \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": { ...workflow JSON... },
-    "front": false
-  }'
-
-# 2. Poll for status
-curl http://matrix:8188/history/<prompt_id>
-
-# 3. Download output
-curl http://matrix:8188/output/<filename>
-```
-
-### Future integration notes
-
-- A skill should **never** start/stop ComfyUI or vLLM directly. It should only
-  submit jobs to a running ComfyUI instance.
-- If ComfyUI is not running (port 8188 not responding), the skill should
-  return an error: "Image generation unavailable. Operator must switch to images mode."
-- The skill should not attempt auto-switching modes. That's an operator decision.
-- Workflow templates can live in `scripts/comfyui-workflows/` for reusable prompts.
-
----
-
-## Preflight Validation
-
-Run before switching:
-
-```bash
-bash scripts/preflight.sh images
-```
-
-This validates:
-- ComfyUI compose file exists
-- ComfyUI data directory exists
-- Ollama is healthy (gemma4 + embeddings)
-- VRAM budget fits
-- Port 8188 status (warns if not listening — expected when switching in)
-
-Typical output: `22 PASS, 3 WARN` (ComfyUI not running yet, HF_TOKEN empty, port not listening)
-
----
-
-## Common Issues
-
-### ComfyUI fails to start
-
-```bash
-# Check logs
-docker logs comfyui_backend --tail 50
-
-# Common causes:
-# - Model files missing in /home/chuck/data/comfyui/run/
-# - VRAM insufficient (check nvidia-smi)
-# - Port 8188 in use (check docker ps)
-```
-
-### Gemma4 disappears during ComfyUI work
-
-Ollama may unload Gemma4 if VRAM pressure is high. It will reload on next request
-with a warm-up penalty (~30-60 sec). This is normal and acceptable.
-
-### ComfyUI model downloads
-
-ComfyUI downloads models on first run. Ensure `HF_TOKEN` is set in `.env` if
-the model requires auth. Check `/home/chuck/data/comfyui/run/` for downloaded files.
-
----
-
-## Compose File Reference
-
-```yaml
-# compose/comfyui.yml
-services:
-  comfyui:
-    image: mmartial/comfyui-nvidia-docker:latest
-    container_name: comfyui_backend
-    profiles: ["image"]
-    ports:
-      - "8188:8188"
-    shm_size: "4gb"
-    environment:
-      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8
-      - CUDA_MALLOC_ASYNC=1
-      - SECURITY_LEVEL=weak
-      - USE_SOCAT=false
-      - USE_UV=true
-      - BASE_DIRECTORY=/basedir
-    volumes:
-      - /home/chuck/data/comfyui/run:/comfy/mnt
-      - /home/chuck/data/comfyui/basedir:/basedir
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-```
-
----
-
-## Switch Decision Flow
-
-```
-Is image generation needed?
-  └─ Yes
-      └─ Are you okay with matrix-coder being offline?
-          └─ Yes → Enter images mode (stop vLLM, start ComfyUI)
-          └─ No  → Use daily mode; skip image work or use Thor/Mac for images
-
-Is image generation done?
-  └─ Yes → Exit images mode (stop ComfyUI, start vLLM)
-```
-
-**Never run in images mode longer than necessary.** It degrades the primary
-coding/chat experience by taking down the main model.
+- 2026-07-03: original "images mode" — ComfyUI (FLUX) at 30–40 GB required
+  stopping vLLM; manual mode switch with downtime. **Superseded.**
+- 2026-08-26: Qwen-Image-2512 + Qwen-Image-Edit-2511 (GGUF) at a 12 GB budget
+  via `--reserve-vram 60`; full coexistence with vLLM; create + edit flows
+  verified end-to-end (VRAM, timing, OCR).

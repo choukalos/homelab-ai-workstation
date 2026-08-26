@@ -110,7 +110,7 @@
 | `compose/qwen-long.yml` | `qwen38` | vLLM Qwen3.6-27B INT4 (long-context mode, 240K ctx) |
 | `compose/gemma4-moe.yml` | `ollama` | Ollama (Gemma4 MoE + embeddings) |
 | `compose/metrics.yml` | `node-exporter`, `dcgm-exporter` | Monitoring |
-| `compose/comfyui.yml` | `comfyui` (profile: `image`) | ComfyUI / FLUX |
+| `compose/comfyui.yml` | `comfyui` (profile: `image`) | ComfyUI (Qwen-Image create + edit) |
 | `compose/experiment.yml` | — | vLLM template for candidate models (copy & edit) |
 
 ## Docker Networks

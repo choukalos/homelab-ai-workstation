@@ -1,6 +1,6 @@
-# ComfyUI — Image generation / FLUX (images mode)
-# vLLM must be stopped before starting this.
-# Usage: docker compose -f compose/draft/comfyui.yml --profile image up -d
+# ComfyUI — Image generation + editing (Qwen-Image, 12 GB VRAM budget — see docs/matrix_comfyui_media_api.md)
+# Runs ALONGSIDE vLLM: --reserve-vram 60 keeps ~60 GB for vLLM, ComfyUI self-caps at ~12 GB.
+# Usage: docker compose -f compose/comfyui.yml --profile image up -d
 
 services:
   comfyui:
@@ -12,7 +12,7 @@ services:
       - "8188:8188"
     shm_size: "4gb"
     environment:
-      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8
+      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 60
       - CUDA_MALLOC_ASYNC=1
       - SECURITY_LEVEL=weak
       - USE_SOCAT=false

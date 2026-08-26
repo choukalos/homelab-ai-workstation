@@ -280,7 +280,7 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 |---|---|
 | `docs/matrix_runtime_modes.md` | Mode definitions and alias availability per mode |
 | `docs/matrix_optimization_profiles.md` | vLLM arg rationale and VRAM budgets |
-| `docs/matrix_images_mode.md` | ComfyUI/image mode operational details |
+| `docs/matrix_images_mode.md` | ComfyUI operational details (runs alongside vLLM; see also `docs/matrix_comfyui_media_api.md`) |
 | `docs/matrix_monitoring_health.md` | Health endpoints and metrics |
 | `docs/matrix_model_manager.md` | Model manager CLI (operator tool, not Thor-facing) |
 | `thor.litellm.config.yml` | Thor's LiteLLM proxy config (deployed on Thor) |

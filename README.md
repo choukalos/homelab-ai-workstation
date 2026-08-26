@@ -20,7 +20,7 @@ Thor clients & tools
 | **Ollama** | ollama | 11434 | Light tasks (Gemma4 26B MoE) + embeddings |
 | **node-exporter** | node-exporter | 9100 | System metrics |
 | **dcgm-exporter** | dcgm-exporter | 9400 | GPU metrics |
-| **ComfyUI** | comfyui_backend | 8188 | Image generation (stopped by default) |
+| **ComfyUI** | comfyui_backend | 8188 | Image generation + editing (Qwen-Image; runs concurrently with vLLM) |
 
 All ports are LAN-only. Never exposed publicly.
 
@@ -38,7 +38,9 @@ All ports are LAN-only. Never exposed publicly.
 | `qwen-coder` | Qwen3.8-27B NVFP4 | embeddings only | — | Max coding performance |
 | `qwen-long` | Qwen3.6-27B (240K ctx) | embeddings only | — | Long-context work |
 | `experiment` | Candidate model | embeddings | — | Test new models |
-| `images` | — | Gemma4 + embeddings | ComfyUI/FLUX | Image generation |
+
+> Image generation is **not a mode** — ComfyUI (Qwen-Image, ~12 GB VRAM cap) runs
+> concurrently with vLLM. See [ComfyUI Media API](docs/matrix_comfyui_media_api.md).
 
 ### Switching Modes
 
@@ -102,7 +104,7 @@ home/
     qwen-long.yml       # vLLM Qwen3.6-27B (long-context, optimized)
     gemma4-moe.yml      # Ollama (gemma4 + embeddings)
     experiment.yml      # vLLM template (copy & edit)
-    comfyui.yml         # ComfyUI / FLUX
+    comfyui.yml         # ComfyUI (Qwen-Image create + edit)
     metrics.yml         # node-exporter + dcgm-exporter
     experiments/        # Named experiment compose files
       gemma4-31b.yml
@@ -163,6 +165,7 @@ Detailed design docs are in `docs/`:
 - [Thor Contract](docs/matrix_thor_contract.md) — Integration contract between Thor and Matrix
 - [Optimization Profiles](docs/matrix_optimization_profiles.md) — Arg rationale & VRAM budget
 - [vLLM Features](docs/matrix_vllm_features.md) — Feature status & eval plans
-- [Images Mode](docs/matrix_images_mode.md) — ComfyUI operational guide
+- [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
+- [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — image create/edit API for tooling integration
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach

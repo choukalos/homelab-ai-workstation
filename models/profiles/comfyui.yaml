@@ -1,15 +1,23 @@
-# comfyui — Image generation / FLUX
-# Status: PLANNED
+# comfyui — Image generation & editing (Qwen-Image)
+# Status: ACTIVE — runs concurrently with vLLM (no mode switch)
+# Updated: 2026-08-26
 
 name: comfyui
-alias: none  # no LiteLLM alias — image generation only
+alias: none  # no LiteLLM alias — image generation/editing only
 backend: comfyui
-status: planned
+status: active
 
 model:
-  path: varies  # FLUX or other, loaded by ComfyUI at runtime
-  format: ComfyUI workflow
-  expected_vram: 30-40 GB
+  primary:
+    create: qwen-image-2512-Q4_0.gguf (Qwen-Image-2512 20B, GGUF Q4_0) + Qwen-Image-2512-Lightning-4steps LoRA, 4 steps
+    edit: qwen-image-edit-2511-Q4_0.gguf (Qwen-Image-Edit-2511 20B, GGUF Q4_0) + Qwen-Image-Edit-2511-Lightning-8steps LoRA, 8 steps
+  shared:
+    text_encoder: qwen_2.5_vl_7b_fp8_scaled.safetensors (9.4 GB)
+    vae: qwen_image_vae.safetensors
+  fallback:
+    create: qwen-image-2512-Q3_K_M.gguf + 8-step Lightning LoRA (if a Q4_0 run OOMs)
+  expected_vram: "~12 GB cap (--reserve-vram 60); 9.3-14.4 GB measured peaks; total-GPU peak <= ~71.2 GB"
+  docs: docs/matrix_comfyui_media_api.md
 
 launch:
   container: comfyui_backend
@@ -22,7 +30,7 @@ launch:
     - /home/chuck/data/comfyui/run:/comfy/mnt
     - /home/chuck/data/comfyui/basedir:/basedir
   env:
-    COMFYUI_FLAGS: "--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 8"
+    COMFYUI_FLAGS: "--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 60"  # reserves 60 GB for other software -> ~12 GB budget
     CUDA_MALLOC_ASYNC: "1"
     SECURITY_LEVEL: weak
     USE_SOCAT: "false"
@@ -31,17 +39,17 @@ launch:
   args: []  # ComfyUI handles its own model loading
 
 health:
-  endpoint: http://localhost:8188
-  note: ComfyUI has no standardized health endpoint; check port responsiveness
+  endpoint: http://localhost:8188/system_stats
+  note: ComfyUI has no standardized health endpoint; check port responsiveness + comfyui_version
 
 compatible_modes:
-  - images
+  - all  # runs alongside any vLLM/Ollama mode — no exclusivity
 
 mode_requirements:
-  must_stop:
-    - vLLM (compose/qwen-coder.yml) — matrix-coder alias goes offline
+  must_stop: []  # NONE — vLLM stays online (supersedes old stop-vLLM model)
   must_keep:
-    - Ollama (compose/gemma4-moe.yml) — gemma4 + embeddings remain available
+    - vLLM (compose/qwen-coder.yml) — matrix-coder stays online
+    - Ollama (compose/gemma4-moe.yml) — gemma4 + embeddings
   must_have:
     - compose/metrics.yml — node-exporter and dcgm-exporter (untouched)
 
@@ -51,9 +59,9 @@ security:
   - SECURITY_LEVEL=weak (intentional, internal only)
 
 notes:
-  - vLLM (matrix-coder) is STOPPED during image mode — alias offline
-  - Ollama stays running: gemma4:26b + nomic-embed-text provide a working LLM
-  - Total VRAM: ComfyUI 30-40 GB + gemma4 17 GB = ~48-58 GB of 72 GB
-  - Do NOT expose port 8188 publicly
-  - Rollback: stop ComfyUI, restart compose/qwen-coder.yml
-  - Full documentation: docs/matrix_images_mode.md
+  - 2026-08-26: create + edit flows verified end-to-end (VRAM peaks, timing 14-56 s, OCR legibility)
+  - Tooling integration contract: docs/matrix_comfyui_media_api.md (endpoints, workflow JSON, reference client)
+  - Ops guide: docs/matrix_images_mode.md
+  - Models pre-downloaded in basedir/models/ (no HF_TOKEN needed); add files as `comfy` user via `docker exec comfyui_backend sudo -u comfy sh -c '...'`
+  - venv for pip: /comfy/mnt/venv (sudo -u comfy)
+  - Watch item: Qwen-Image-2.0 open weights (drop-in replacement for node 1 when released)
