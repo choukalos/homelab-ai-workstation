@@ -13,7 +13,7 @@ model:
   expected_vram: varies
 
 launch:
-  container: qwen36  # same container name, re-used
+  container: qwen38  # same container name, re-used
   image: vllm/vllm-openai:latest
   compose: compose/experiment.yml  # template — copy & edit before use
   restart: "no"

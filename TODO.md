@@ -1,5 +1,31 @@
 # Matrix TODO
 
+## Promotion: Qwen3.8-27B NVFP4 → main coding setup (2026-08-24)
+
+The `experiment-qwen38-27b-nvfp4` experiment (`unsloth/Qwen3.8-27B-NVFP4`) is promoted to the
+primary coding model (`matrix-coder`), replacing Qwen3.6-27B INT4 + MTP.
+
+### Done
+- [x] `compose/qwen-coder.yml` — now serves `unsloth/Qwen3.8-27B-NVFP4` as `qwen38-27b` (verified experiment config, benchmark `20260823_160055`)
+- [x] `models/profiles/matrix-coder.yaml` — updated to Qwen3.8-27B NVFP4
+- [x] `models/profiles/experiment-qwen38-27b-nvfp4.yaml` — marked `promoted`
+- [x] Docs updated: `README.md`, `EXPERIMENTS_RESULTS.md`
+- [x] Switched to production mode (benchmark `20260823_210603` ran against matrix-coder with the new model)
+- [x] Thor: LiteLLM `matrix-coder` entry updated `openai/qwen36-27b` → `openai/qwen38-27b` (`thor.litellm.config.yml`)
+- [x] Verified in production: benchmark `20260825_222844` — 123.95 tok/s, 80/80 stress
+
+### Speed fix (2026-08-25) — applied + verified
+- [x] Removed `--enforce-eager` from `compose/qwen-coder.yml` (it disabled torch.compile + CUDA graphs; decode was CPU-launch-bound at 58-63 tok/s @ 56-59% GPU util)
+- [x] MTP 3 → 2 speculative tokens (3rd token acceptance ~55%; 2 matches the vLLM Qwen3-Next recipe)
+- [x] Verified: benchmark `20260825_222844` — **123.95 tok/s** @ 92% GPU util (up from 58-63 tok/s), TTFT 35.5 ms, stress 80/80
+- Fallback if CUDA graph capture OOMs: `--compilation-config '{"cudagraph_mode":"PIECEWISE"}'`
+
+Notes:
+- Container renamed `qwen36` → `qwen38` (model-manager + all primary-slot compose files updated); served model name is `qwen38-27b`
+- `qwen-long` mode still serves Qwen3.6-27B INT4 (240K ctx) — separate compose file (container `qwen38`, serves `qwen38-27b`)
+
+---
+
 ## Experiment System (2026-07-03) — COMPLETE ✅
 
 ### Experiment profiles created and compose files ready
@@ -8,6 +34,8 @@
 - [x] `experiment-qwen36-27b-w8a16-128k-mtp` — Qwen3.6-27B W8A16, 128K ctx, 3 threads + MTP (Path A)
 - [x] `experiment-qwen-long-w8a16-mtp` — Qwen3.6-27B W8A16, 262K ctx, 4 threads + MTP
 - [x] `experiment-qwen36-int4-mtp` — Qwen3.6-27B INT4 + MTP (Path B — same model, just MTP added)
+- [x] `experiment-qwen38-27b-fp8` — Qwen3.8-27B FP8, 128K ctx, 3 threads + MTP, vision, tool calling
+- [x] `experiment-qwen38-27b-nvfp4` — Qwen3.8-27B NVFP4 (NVIDIA 4-bit) — **PROMOTED to matrix-coder 2026-08-24**
 
 ### Removed incompatible experiments
 - [x] **Qwen3-Next-80B-A3B-Thinking-NVFP4** — REMOVED. NVFP4 is TensorRT-LLM-only.
@@ -51,7 +79,7 @@ cat data/benchmarks/results/*/report.md
 ```bash
 # Start
 ./scripts/model-manager experiment start --profile experiment-gemma4-31b
-# Container: qwen36 | Model: google/gemma-4-31b-it | ~35-45 GB VRAM
+# Container: gemma4-31b | Model: google/gemma-4-31b-it | ~35-45 GB VRAM
 # 128K context, 4 seqs, --quantization fp8 (runtime BF16→FP8)
 
 # Benchmark
@@ -110,6 +138,38 @@ cat data/benchmarks/results/*/report.md
 # Focus on: long-context retrieval (needle-in-haystack), MTP at extreme lengths
 ```
 
+### Experiment 6: Qwen3.8-27B FP8 (Vision + Tool Calling + MTP)
+```bash
+# Start
+./scripts/model-manager experiment start --profile experiment-qwen38-27b-fp8
+# Container: qwen38-fp8 | Model: Qwen/Qwen3.8-27B-FP8 | ~40-50 GB VRAM
+# 128K context, 3 seqs, MTP (3 tokens), FP8 KV, vision + tool calling
+# Uses: --reasoning-parser qwen3, --tool-call-parser qwen3_coder
+
+# Benchmark
+./scripts/benchmark.sh --profile experiment-qwen38-27b-fp8 --category all --baseline
+# Focus on: reasoning quality, tool calling accuracy, vision quality vs Qwen3.6
+
+# Test vision: python3 qwen3.8-experiment/test_image_analysis.py --image /path/to/photo.jpg
+# Test tools: python3 qwen3.8-experiment/test_tool_calling.py --backend vllm
+```
+
+### Experiment 7: Qwen3.8-27B NVFP4 (Most Efficient + Vision + Tool Calling) — PROMOTED 2026-08-24
+```bash
+# Start (still available in the experiment slot for re-testing)
+./scripts/model-manager experiment start --profile experiment-qwen38-27b-nvfp4
+# Container: qwen38 | Model: unsloth/Qwen3.8-27B-NVFP4 | ~58 GB VRAM (measured)
+# 196K context, 3 seqs, 75% VRAM, FP8 KV, vision + tool calling
+# ⚠️ NVFP4 is Blackwell-only (RTX PRO 5000) — won't work on Ada/Hopper
+
+# Benchmark
+./scripts/benchmark.sh --profile experiment-qwen38-27b-nvfp4 --category all --baseline
+# Focus on: NVFP4 quality vs FP8, VRAM efficiency, throughput
+
+# Test vision: python3 qwen3.8-experiment/test_image_analysis.py --image /path/to/photo.jpg
+# Test tools: python3 qwen3.8-experiment/test_tool_calling.py --backend vllm
+```
+
 ---
 
 ## Running a Full Benchmark
@@ -138,78 +198,6 @@ Coding quality > raw throughput. Roll back if quality degrades.
 
 ---
 
-## Upgrading vLLM for Daily Coder
-
-### Current state
-- **Image**: `vllm/vllm-openai:latest` (v0.21.0, CUDA 12.9) ✅
-- **Model**: `Lorbus/Qwen3.6-27b-int4-AutoRound` (INT4 quantization)
-- **Container**: `qwen36`
-
-### Path A — INT4 → W8A16 (recommended, better quality)
-
-The W8A16 model (`88plug/Qwen3.6-27B-W8A16`) is **~99% MMLU recovery vs BF16**, much better
-than INT4. Test it via the experiment profile, then promote:
-
-```bash
-# 1. Test the W8A16 experiment first
-./scripts/model-manager experiment start --profile experiment-qwen36-27b-w8a16-128k-mtp
-
-# 2. Benchmark it against baseline
-./scripts/benchmark.sh --category all --baseline
-
-# 3. Review quality outputs manually
-cat data/benchmarks/results/latest/quality_*.md
-
-# 4. If quality is equal or better → promote to daily:
-#    - Copy compose/experiments/qwen36-27b-w8a16-128k-mtp.yml → compose/qwen-coder.yml
-#    - Update models/profiles/matrix-coder.yaml with new model path + args
-#    - Or: model-manager mode rollback (to go back to INT4)
-```
-
-### Path B — Keep INT4, add MTP (minimal change)
-
-Add MTP speculative decoding to the existing INT4 model. Same VRAM, same model, just faster:
-
-```bash
-# 1. Test MTP on current model
-./scripts/model-manager experiment start --profile experiment-qwen36-int4-mtp
-
-# 2. Benchmark it against baseline
-./scripts/benchmark.sh --category all --baseline
-
-# 3. Review quality outputs manually
-cat data/benchmarks/results/latest/quality_*.md
-
-# 4. If MTP works on INT4 → promote to daily:
-#    - Edit compose/qwen-coder.yml, add these 3 flags to the command:
-#      --reasoning-parser qwen3
-#      --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
-#      --default-chat-template-kwargs '{"preserve_thinking":true}'
-#    - Remove --enable-auto-tool-choice and --tool-call-parser qwen3_xml (redundant)
-#    - Or: model-manager mode rollback (to go back to current config)
-```
-
-### Head-to-head comparison
-
-| | Path A (W8A16) | Path B (INT4 + MTP) |
-|---|---|---|
-| Quality | ~99% MMLU vs BF16 | Same as current (INT4) |
-| Throughput | MTP + W8A16 decode speed | MTP decode speed only |
-| VRAM | ~40-48 GB | ~48-52 GB (same as now) |
-| Context | 128K | 200K (same as now) |
-| Risk | Medium (new model + new quant) | Low (same model, 3 new flags) |
-| Recommendation | Best overall upgrade | Quick win if W8A16 has issues |
-
-### vLLM version considerations
-- **Latest tag** → v0.21.0 — supports compressed-tensors W8A16 ✅
-- **v0.21.0-cu129-ubuntu2404** — pinned version used by W8A16 experiments
-- **For experiments with MTP** (qwen3_next_mtp): needs v0.21.0+ ✅
-- **To upgrade**: `docker pull vllm/vllm-openai:latest` then restart the container
-
-
-
----
-
 ## Manual Testing
 
 ### model-manager script fixes
@@ -220,7 +208,7 @@ cat data/benchmarks/results/latest/quality_*.md
 - [ ] Switch to qwen-long mode with new settings and verify it starts and serves:
   - `model-manager mode switch qwen-long`
   - Check: vLLM comes up, `http://localhost:8000/v1/models` responds
-  - Check: `docker logs qwen36` shows MTP enabled without errors
+  - Check: `docker logs qwen38` shows MTP enabled without errors
   - Test: 2 concurrent requests work (or note if VRAM is exceeded)
   - Compare throughput vs old single-seq baseline using `benchmark.sh`
   - Roll back: `model-manager mode rollback`

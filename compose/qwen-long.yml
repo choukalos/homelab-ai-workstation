@@ -4,9 +4,9 @@
 # Usage: docker compose -f compose/draft/qwen-long.yml up -d
 
 services:
-  qwen36:
+  qwen38:
     image: vllm/vllm-openai:latest
-    container_name: qwen36
+    container_name: qwen38
     restart: "no"
     ipc: host
     shm_size: "16gb"
@@ -23,7 +23,7 @@ services:
     command: >
       --chat-template /templates/qwen3-fixed-chat-template.jinja
       --model Lorbus/Qwen3.6-27b-int4-AutoRound
-      --served-model-name qwen36-27b
+      --served-model-name qwen38-27b
       --host 0.0.0.0
       --port 8000
       --max-model-len 240000

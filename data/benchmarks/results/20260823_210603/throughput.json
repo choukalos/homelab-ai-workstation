@@ -1,0 +1,8 @@
+{
+  "tokens_per_sec_mean": 63.23,
+  "tokens_per_sec_median": 63.37,
+  "tokens_per_sec_min": 57.13,
+  "tokens_per_sec_max": 66.83,
+  "target_tokens": 512,
+  "total_runs": 20
+}

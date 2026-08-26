@@ -13,7 +13,7 @@ model:
   expected_vram: 52-58 GB
 
 launch:
-  container: qwen36
+  container: qwen38
   image: vllm/vllm-openai:latest
   compose: compose/qwen-long.yml
   restart: "no"
@@ -41,7 +41,7 @@ launch:
 
 health:
   endpoint: http://localhost:8000/v1/models
-  expected_model_name: qwen36-27b
+  expected_model_name: qwen38-27b
 
 compatible_modes:
   - qwen-long

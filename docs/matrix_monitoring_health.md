@@ -28,7 +28,7 @@ not part of the Thor integration contract.
 | Container | `node-exporter` |
 | Image | `prom/node-exporter:latest` |
 | Port | `9100` |
-| Compose | `compose.metrics.yml` |
+| Compose | `compose/metrics.yml` |
 | Health check | `curl -s http://localhost:9100/metrics` |
 
 **Key metrics available:**
@@ -44,7 +44,7 @@ not part of the Thor integration contract.
 | Container | `dcgm-exporter` |
 | Image | `nvidia/dcgm-exporter:latest` |
 | Port | `9400` |
-| Compose | `compose.metrics.yml` |
+| Compose | `compose/metrics.yml` |
 | Health check | `curl -s http://localhost:9400/metrics` |
 
 **Key metrics available:**
@@ -75,10 +75,10 @@ These are checked by `preflight.sh` and the model manager during mode switches.
 
 | Property | Value |
 |---|---|
-| Container | `qwen36` |
+| Container | `qwen38` |
 | Port | `8000` |
 | Health endpoint | `GET /v1/models` |
-| Compose | `compose.qwen36.yml` |
+| Compose | `compose/qwen-coder.yml` |
 
 **Health check:**
 ```bash
@@ -90,7 +90,7 @@ curl -sf --max-time 3 http://localhost:8000/v1/models
 {
   "object": "list",
   "data": [
-    { "id": "qwen36-27b", "object": "model", "root": "Lorbus/Qwen3.6-27b-int4-AutoRound" }
+    { "id": "qwen38-27b", "object": "model", "root": "unsloth/Qwen3.8-27B-NVFP4" }
   ]
 }
 ```
@@ -110,7 +110,7 @@ image. Latency/request metrics flow through LiteLLM on Thor.
 | Port | `11434` |
 | Health endpoint | `GET /` |
 | Model list | `GET /api/tags` |
-| Compose | `compose.ollama.yml` |
+| Compose | `compose/gemma4-moe.yml` |
 
 **Health check:**
 ```bash
@@ -145,7 +145,7 @@ is tracked via `nvidia-smi` / dcgm-exporter.
 | Container | `comfyui_backend` |
 | Port | `8188` |
 | Health check | `GET /` (HTTP 200 on any response) |
-| Compose | `compose.comfyui.yml` (profile: `image`) |
+| Compose | `compose/comfyui.yml` (profile: `image`) |
 
 **Health check:**
 ```bash
@@ -211,15 +211,15 @@ nvidia-smi --query-gpu=name,temperature.gpu,memory.used,memory.total,utilization
 
 **Current typical output (daily mode):**
 ```
-NVIDIA RTX PRO 5000 72GB Blackwell, 84, 48840 MiB, 73415 MiB, 100 %, 300.63 W
+NVIDIA RTX PRO 5000 72GB Blackwell, 84, 56575 MiB, 73415 MiB, 92 %, 300.63 W
 ```
 
 ### VRAM Budget by Mode
 
 | Mode | vLLM | Ollama | ComfyUI | Total | Headroom |
 |---|---|---|---|---|---|
-| `daily` | ~48.7 GB | ~17 GB + 0.3 GB | — | ~66 GB | ~6 GB |
-| `qwen-coder` | ~55-60 GB | ~0.3 GB | — | ~55-60 GB | ~12-17 GB |
+| `daily` | ~55 GB (0.75 util) | ~17 GB + 0.3 GB | — | ~72 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
+| `qwen-coder` | ~55 GB (0.75 util) | ~0.3 GB | — | ~55 GB | ~17 GB |
 | `qwen-long` | ~50-55 GB | ~0.3 GB | — | ~50-55 GB | ~17-22 GB |
 | `experiment` | varies | varies | — | varies | varies |
 | `images` | — | ~17 GB + 0.3 GB | ~30-40 GB | ~48-58 GB | ~14-24 GB |
@@ -256,12 +256,12 @@ cat /home/chuck/homelab/state/current_mode 2>/dev/null || echo "unknown"
   "gpu": {
     "name": "NVIDIA RTX PRO 5000 72GB Blackwell",
     "temperature_c": 84,
-    "vram_used_gb": 48.7,
+    "vram_used_gb": 55.2,
     "vram_total_gb": 72.0,
     "utilization_pct": 100
   },
   "services": {
-    "matrix-coder": { "status": "up", "port": 8000, "model": "qwen36-27b" },
+    "matrix-coder": { "status": "up", "port": 8000, "model": "qwen38-27b" },
     "matrix-gemma4-moe": { "status": "up", "port": 11434, "model": "gemma4:26b" },
     "embeddings": { "status": "up", "port": 11434, "model": "nomic-embed-text" }
   },
@@ -294,13 +294,13 @@ bash scripts/matrix_health.sh
 Matrix Health — 2026-07-03T14:30:00
 Mode: daily
 
-  vLLM  : UP   (qwen36-27b, port 8000)
+  vLLM  : UP   (qwen38-27b, port 8000)
   Ollama: UP   (gemma4:26b, nomic-embed-text, port 11434)
   ComfyUI: DOWN (not running — expected in daily mode)
   node-exporter: UP (port 9100)
   dcgm-exporter: UP (port 9400)
 
-  GPU: 48.7 GB / 72.0 GB (67%), 84°C, 300W
+  GPU: 55.2 GB / 72.0 GB (77%), 84°C, 300W
   Disk: 1.4 TB free / 1.7 TB
 
   Status: HEALTHY
@@ -342,7 +342,7 @@ via Thor's Prometheus:
 
 | File | Purpose |
 |---|---|
-| `compose.metrics.yml` | node-exporter + dcgm-exporter compose |
+| `compose/metrics.yml` | node-exporter + dcgm-exporter compose |
 | `scripts/preflight.sh` | Health checks during mode validation |
 | `state/current_mode` | Active mode name |
 | `state/active_profiles` | Running profile list |

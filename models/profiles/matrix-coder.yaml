@@ -1,5 +1,7 @@
 # matrix-coder — Primary daily model
 # Status: ACTIVE
+# 2026-08-24: Promoted Qwen3.8-27B NVFP4 from experiment-qwen38-27b-nvfp4
+#            (replaces Lorbus/Qwen3.6-27b-int4-AutoRound + MTP)
 
 name: matrix-coder
 alias: matrix-coder
@@ -7,39 +9,61 @@ backend: vllm
 status: active
 
 model:
-  path: Lorbus/Qwen3.6-27b-int4-AutoRound
-  quantization: int4-AutoRound
-  format: vLLM native
-  expected_vram: 48.7 GB
+  path: unsloth/Qwen3.8-27B-NVFP4
+  quantization: NVFP4 (NVIDIA 4-bit, Blackwell native)
+  format: modelopt
+  expected_vram: ~58 GB (measured 2026-08-23)
+  parameters: 27B dense (hybrid GDN + vision)
+  context: 196608
+  vision: true
 
 launch:
-  container: qwen36
+  container: qwen38
   image: vllm/vllm-openai:latest
   compose: compose/qwen-coder.yml
   port: 8000
   shm_size: 16g
   volumes:
     - /home/chuck/data/models:/data/models
+    - /home/chuck/homelab/scripts/templates:/templates:ro
   env:
     HF_HOME: /data/models
-    HF_TOKEN: ""
+    HF_TOKEN: "${HF_TOKEN}"
+    HF_XET_HIGH_PERFORMANCE: "1"
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
   args:
-    --max-model-len: 200000
+    --model: unsloth/Qwen3.8-27B-NVFP4
+    --served-model-name: qwen38-27b
+    --host: 0.0.0.0
+    --port: 8000
+    --max-model-len: 196608
     --max-num-seqs: 3
     --max-num-batched-tokens: 8192
-    --gpu-memory-utilization: 0.66
+    --gpu-memory-utilization: 0.75
     --kv-cache-dtype: fp8
     --enable-prefix-caching: true
     --enable-chunked-prefill: true
     --enable-auto-tool-choice: true
-    --tool-call-parser: qwen3_xml
+    --tool-call-parser: qwen3_coder
     --trust-remote-code: true
+    --limit-mm-per-prompt: '{"image": 5, "video": 2}'
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking": true, "reasoning_effort": "high"}'
+    --override-generation-config: '{"temperature": 0.7, "top_p": 0.95}'
 
 health:
   endpoint: http://localhost:8000/v1/models
-  expected_model_name: qwen36-27b
+  expected_model_name: qwen38-27b
 
 compatible_modes:
   - daily
+  - qwen-coder
   - llms
+
+notes:
+  - "NVFP4 requires Blackwell (RTX PRO 5000) — verified compatible"
+  - "Served name changed qwen36-27b → qwen38-27b; Thor LiteLLM matrix-coder entry points to openai/qwen38-27b (thor.litellm.config.yml updated 2026-08-25)"
+  - "Container renamed qwen36 → qwen38 (2026-08-24); model-manager and all primary-slot compose files updated"
+  - "2026-08-25 speed fix (applied + verified): removed --enforce-eager (it disabled torch.compile + CUDA graphs → decode was CPU-launch-bound at 58-63 tok/s @ 56-59% GPU util) and set MTP 3 → 2 (3rd token acceptance ~55%). Result: 123.95 tok/s @ 92% GPU util (benchmark 20260825_222844)"
+  - "Rollback: point compose/qwen-coder.yml back at Lorbus/Qwen3.6-27b-int4-AutoRound (see compose/legacy/)"

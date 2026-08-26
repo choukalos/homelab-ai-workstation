@@ -247,8 +247,8 @@ write_active_profiles() {
         port=$(profile_port "$p")
         local status="running"
         if [[ "$backend" != "ollama" ]] && ! container_running "$container"; then
-            # For vLLM profiles in mode, check the actual qwen36 container
-            if [[ "$backend" == "vllm" ]] && container_running "qwen36"; then
+            # For vLLM profiles in mode, check the actual qwen38 container
+            if [[ "$backend" == "vllm" ]] && container_running "qwen38"; then
                 status="running"
             elif [[ "$backend" == "comfyui" ]] && container_running "comfyui_backend"; then
                 status="running"
@@ -285,11 +285,11 @@ cmd_init() {
     local has_ollama=false
     local has_comfyui=false
     
-    container_running "qwen36" && has_vllm=true
+    container_running "qwen38" && has_vllm=true
     container_running "ollama" && has_ollama=true
     container_running "comfyui_backend" && has_comfyui=true
     
-    echo "  vLLM (qwen36):               $([ "$has_vllm" = true ] && echo 'running' || echo 'stopped')"
+    echo "  vLLM (qwen38):               $([ "$has_vllm" = true ] && echo 'running' || echo 'stopped')"
     echo "  Ollama (ollama):              $([ "$has_ollama" = true ] && echo 'running' || echo 'stopped')"
     echo "  ComfyUI (comfyui_backend):    $([ "$has_comfyui" = true ] && echo 'running' || echo 'stopped')"
     echo ""
@@ -415,10 +415,10 @@ cmd_status() {
     fi
     
     # Check each profile
-    # For vLLM, multiple profiles share container 'qwen36' and port 8000.
+    # For vLLM, multiple profiles share container 'qwen38' and port 8000.
     # When mode is known, use the mode mapping. When unknown, default to matrix-coder.
     local active_vllm_profile=""
-    if container_running "qwen36"; then
+    if container_running "qwen38"; then
         if [[ -n "$mode" && "$mode" != "unknown" && "$mode" != "none" ]]; then
             # Use current mode's vLLM profile
             for p in ${MODE_PROFILES[$mode]:-}; do
@@ -619,7 +619,7 @@ cmd_mode_switch() {
     echo ""
     
     # --- Determine backend-level actions ---
-    # vLLM profiles share container 'qwen36' and port 8000.
+    # vLLM profiles share container 'qwen38' and port 8000.
     # Ollama profiles share container 'ollama' and port 11434.
     # ComfyUI is standalone.
     # We plan by backend, not by individual profile.
@@ -657,7 +657,7 @@ cmd_mode_switch() {
     # vLLM plan
     local vllm_action="none"
     if [[ -n "$target_vllm" ]]; then
-        if container_running "qwen36"; then
+        if container_running "qwen38"; then
             # vLLM is running — check if we need a different profile
             # When mode is known, check against current mode's vLLM profile
             if [[ -n "$current" && "$current" != "unknown" && "$current" != "none" ]]; then
@@ -685,7 +685,7 @@ cmd_mode_switch() {
             vllm_action="start $target_vllm"
         fi
     else
-        if container_running "qwen36"; then
+        if container_running "qwen38"; then
             vllm_action="stop (no vLLM in target mode)"
         fi
     fi
@@ -800,9 +800,9 @@ cmd_mode_switch() {
     # Stop vLLM if needed (before starting a new one)
     if [[ "$vllm_action" == *"stop"* || "$vllm_action" == *"swap"* ]]; then
         sub_section "Stopping vLLM..."
-        if container_running "qwen36"; then
-            docker stop qwen36 2>&1 | sed 's/^/    /'
-            docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+        if container_running "qwen38"; then
+            docker stop qwen38 2>&1 | sed 's/^/    /'
+            docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
             echo -e "    ${GREEN}✓ Stopped${NC}"
         fi
     fi
@@ -833,7 +833,7 @@ cmd_mode_switch() {
             ((waited += 5))
         done
         if (( waited >= 180 )); then
-            echo -e "    ${YELLOW}⚠ vLLM did not respond within 180s — check docker logs qwen36${NC}"
+            echo -e "    ${YELLOW}⚠ vLLM did not respond within 180s — check docker logs qwen38${NC}"
         fi
     fi
     
@@ -959,9 +959,9 @@ cmd_mode_rollback() {
     local exp_compose="$COMPOSE_DIR/compose/experiment-active.yml"
     if [[ -f "$exp_compose" ]]; then
         echo -e "  ${YELLOW}Cleaning up experiment artifacts...${NC}"
-        if container_running "qwen36"; then
-            docker stop qwen36 2>/dev/null || true
-            docker rm qwen36 2>/dev/null || true
+        if container_running "qwen38"; then
+            docker stop qwen38 2>/dev/null || true
+            docker rm qwen38 2>/dev/null || true
         fi
         rm -f "$exp_compose"
         echo -e "  ${GREEN}Removed $exp_compose${NC}"
@@ -1267,9 +1267,9 @@ cmd_experiment_start() {
 
         # Stop current vLLM
         sub_section "Stopping current vLLM..."
-        if container_running "qwen36"; then
-            docker stop qwen36 2>&1 | sed 's/^/    /'
-            docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+        if container_running "qwen38"; then
+            docker stop qwen38 2>&1 | sed 's/^/    /'
+            docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
             echo -e "    ${GREEN}✓ Stopped${NC}"
         fi
 
@@ -1309,7 +1309,7 @@ except:
             ((waited += 5))
         done
         if (( waited >= max_wait )); then
-            echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+            echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
         fi
 
         # Update state
@@ -1388,8 +1388,8 @@ except:
     
     # Safety: stop current vLLM first
     sub_section "Stopping current vLLM..."
-    if container_running "qwen36"; then
-        docker stop qwen36 2>&1 | sed 's/^/    /'
+    if container_running "qwen38"; then
+        docker stop qwen38 2>&1 | sed 's/^/    /'
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -1409,9 +1409,9 @@ except:
 # MTP: $mtp_enabled
 # Created: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 services:
-  qwen36:
+  qwen38:
     image: vllm/vllm-openai:latest
-    container_name: qwen36
+    container_name: qwen38
     restart: "no"
     ipc: host
     shm_size: "16gb"
@@ -1426,7 +1426,7 @@ services:
       - ../data/models:/data/models
     command: >
       --model $model_path
-      --served-model-name qwen36-27b
+      --served-model-name qwen38-27b
       --host 0.0.0.0
       --port 8000
       --max-model-len $max_len
@@ -1471,7 +1471,7 @@ except:
         ((waited += 5))
     done
     if (( waited >= max_wait )); then
-        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
     fi
     
     # Update state
@@ -1611,9 +1611,9 @@ cmd_experiment_switch() {
 
     # Stop current vLLM
     sub_section "Stopping current experiment..."
-    if container_running "qwen36"; then
-        docker stop qwen36 2>&1 | sed 's/^/    /'
-        docker rm qwen36 2>/dev/null | sed 's/^/    /' || true
+    if container_running "qwen38"; then
+        docker stop qwen38 2>&1 | sed 's/^/    /'
+        docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
 
@@ -1649,7 +1649,7 @@ except:
         ((waited += 5))
     done
     if (( waited >= max_wait )); then
-        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen36${NC}"
+        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
     fi
 
     # Update state

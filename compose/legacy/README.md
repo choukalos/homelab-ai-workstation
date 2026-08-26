@@ -1,7 +1,7 @@
-# Compose Layout — Draft
+# Compose Layout — Draft (ARCHIVED)
 
-> Status: **DRAFT ONLY** — do not use until explicitly promoted in Phase 15.
-> Original compose files in `../` remain the active production config.
+> Status: **MIGRATED** — the `compose/` layout is the active production config (promoted in Phase 15).
+> The files in this directory (`compose.legacy/`) are the original root-level compose files, kept for rollback reference.
 
 ## Directory Layout
 

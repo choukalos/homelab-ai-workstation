@@ -57,7 +57,7 @@
 
 | Container | Image | Port(s) | Role | Status |
 |---|---|---|---|---|
-| `qwen36` | vllm/vllm-openai:latest | 8000 | Primary inference (Qwen3.6-27B) | Running |
+| `qwen38` | vllm/vllm-openai:latest | 8000 | Primary inference (Qwen3.8-27B NVFP4) | Running |
 | `ollama` | ollama/ollama:latest | 11434 | Light inference + embeddings | Running |
 | `node-exporter` | prom/node-exporter:latest | 9100 | Metrics (CPU, disk, etc.) | Running |
 | `dcgm-exporter` | nvidia/dcgm-exporter:latest | 9400 | GPU metrics | Running |
@@ -66,22 +66,25 @@
 | `comfyui_backend` | mmartial/comfyui-nvidia-docker:latest | 8188 | Image generation | **Stopped** |
 | `ollama-model-puller` | curlimages/curl:latest | — | One-off model pull | **Stopped** |
 
-### vLLM-Qwen (active)
+### vLLM-Qwen3.8 (active)
 
-- **Model:** `Lorbus/Qwen3.6-27b-int4-AutoRound`
-- **Served as:** `qwen36-27b`
-- **Image:** `vllm/vllm-openai:v0.21.0`
-- **Compose file:** `compose.qwen36.yml`
-- **GPU memory util:** 0.66 (set via compose; overridden to 0.66 in container)
-- **Max model len:** 200,000 tokens
+- **Model:** `unsloth/Qwen3.8-27B-NVFP4`
+- **Served as:** `qwen38-27b`
+- **Image:** `vllm/vllm-openai:latest` (v0.24.0)
+- **Compose file:** `compose/qwen-coder.yml`
+- **GPU memory util:** 0.75
+- **Max model len:** 196,608 tokens
 - **Max num seqs:** 3
 - **Max batched tokens:** 8192
 - **KV cache dtype:** fp8
 - **Prefix caching:** enabled
 - **Chunked prefill:** enabled
-- **Tool call parser:** qwen3_xml
+- **Tool call parser:** qwen3_coder
+- **Reasoning parser:** qwen3 (`preserve_thinking`, `reasoning_effort=high`)
+- **MTP:** 2 speculative tokens (tuned from 3 on 2026-08-25 — 3rd token acceptance ~55%)
 - **Auto tool choice:** enabled
-- **HF model cache:** `/home/chuck/data/models` (34 GB)
+- **Vision:** enabled (image + video)
+- **HF model cache:** `/home/chuck/data/models`
 - **shm_size:** 16 GB
 
 ### Ollama (active)
@@ -97,16 +100,18 @@
 
 | Project | Status | Config Files |
 |---|---|---|
-| `homelab` | running(4) | `compose.metrics.yml`, `compose.qwen36.yml`, `compose.ollama.yml` |
+| `homelab` | running(4) | `compose/metrics.yml`, `compose/qwen-coder.yml`, `compose/gemma4-moe.yml` |
 
 ### Compose Files Present
 
 | File | Service(s) | Role |
 |---|---|---|
-| `compose.qwen36.yml` | `qwen36` | vLLM Qwen3.6-27B |
-| `compose.ollama.yml` | `ollama` | Ollama (Gemma4 MoE + embeddings) |
-| `compose.metrics.yml` | `node-exporter`, `dcgm-exporter` | Monitoring |
-| `compose.comfyui.yml` | `comfyui` (profile: `image`) | ComfyUI / FLUX |
+| `compose/qwen-coder.yml` | `qwen38` | vLLM Qwen3.8-27B NVFP4 (primary) |
+| `compose/qwen-long.yml` | `qwen38` | vLLM Qwen3.6-27B INT4 (long-context mode, 240K ctx) |
+| `compose/gemma4-moe.yml` | `ollama` | Ollama (Gemma4 MoE + embeddings) |
+| `compose/metrics.yml` | `node-exporter`, `dcgm-exporter` | Monitoring |
+| `compose/comfyui.yml` | `comfyui` (profile: `image`) | ComfyUI / FLUX |
+| `compose/experiment.yml` | — | vLLM template for candidate models (copy & edit) |
 
 ## Docker Networks
 
@@ -150,9 +155,9 @@ for Thor to scrape. No monitoring stack installed locally.
 
 | Variable | Value |
 |---|---|
-| `HF_TOKEN` | *(empty)* |
-| `QWEN_VLLM_MODEL` | `Lorbus/Qwen3.6-27b-int4-AutoRound` |
-| `QWEN_GPU_MEM` | `0.56` (but compose overrides to `0.66`) |
+| `HF_TOKEN` | *(set — used by vLLM to pull gated models)* |
+| `QWEN_VLLM_MODEL` | `Lorbus/Qwen3.6-27b-int4-AutoRound` (legacy — compose hardcodes the model path) |
+| `QWEN_GPU_MEM` | `0.56` (legacy — compose hardcodes `0.75`) |
 
 ## Model Storage
 
@@ -166,7 +171,7 @@ for Thor to scrape. No monitoring stack installed locally.
 ## Discrepancies Found
 
 1. ~~`switch.sh` references non-existent compose files~~ — **RESOLVED**: `switch.sh` deleted in Phase 1, replaced by model manager design.
-2. **vLLM container runs at gpu-memory-utilization 0.66** but `.env` has `QWEN_GPU_MEM=0.56`. The compose file hardcodes 0.66, so the env var is ignored for the main setting.
+2. **vLLM container runs at gpu-memory-utilization 0.75** but `.env` has `QWEN_GPU_MEM=0.56`. The compose file hardcodes 0.75, so the env var is ignored (legacy value).
 3. ~~`OLLAMA_KEEP_ALIVE` differs between compose and runtime~~ — **RESOLVED**: aligned to `5m` across compose and profiles.
 4. **Two old stopped vLLM containers** (`vllm-gemma`, `vllm-qwen`) from prior modes. Stale containers take up disk.
 5. ~~Grafana/Prometheus not running on Matrix~~ — **RESOLVED**: Grafana/Prometheus run on Thor. Matrix exporters are scraped by Thor.

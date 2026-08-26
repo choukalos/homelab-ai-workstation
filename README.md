@@ -16,7 +16,7 @@ Thor clients & tools
 
 | Component | Service | Port | Role |
 |---|---|---|---|
-| **vLLM** | qwen36 | 8000 | Primary inference (Qwen3.6-27B) |
+| **vLLM** | qwen38 | 8000 | Primary inference (Qwen3.8-27B NVFP4) |
 | **Ollama** | ollama | 11434 | Light tasks (Gemma4 26B MoE) + embeddings |
 | **node-exporter** | node-exporter | 9100 | System metrics |
 | **dcgm-exporter** | dcgm-exporter | 9400 | GPU metrics |
@@ -26,7 +26,7 @@ All ports are LAN-only. Never exposed publicly.
 
 ## Current Mode: `daily`
 
-- **matrix-coder** — Qwen3.6-27B via vLLM (primary model for chat, coding, tools, agents)
+- **matrix-coder** — Qwen3.8-27B NVFP4 via vLLM (primary model for chat, coding, tools, agents, vision)
 - **matrix-gemma4-moe** — Gemma4 26B MoE via Ollama (light/fast tasks)
 - **embeddings** — Nomic Embed Text via Ollama
 
@@ -34,8 +34,8 @@ All ports are LAN-only. Never exposed publicly.
 
 | Mode | vLLM | Ollama | ComfyUI | Use Case |
 |---|---|---|---|---|
-| `daily` | Qwen3.6-27B | Gemma4 + embeddings | — | Normal use |
-| `qwen-coder` | Qwen3.6-27B | embeddings only | — | Max coding performance |
+| `daily` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | — | Normal use |
+| `qwen-coder` | Qwen3.8-27B NVFP4 | embeddings only | — | Max coding performance |
 | `qwen-long` | Qwen3.6-27B (240K ctx) | embeddings only | — | Long-context work |
 | `experiment` | Candidate model | embeddings | — | Test new models |
 | `images` | — | Gemma4 + embeddings | ComfyUI/FLUX | Image generation |
@@ -83,9 +83,11 @@ Named experiments are defined by a YAML profile and a Docker Compose file:
 |---|---|---|---|
 | `experiment-gemma4-31b` | google/gemma-4-31b-it | ~35-45 GB | Dense 31B, FP8 runtime quantization, good for general tasks |
 | `experiment-qwen3-next-80b-thinking-fp8-mtp` | Qwen/Qwen3-Next-80B-A3B-Thinking-FP8 | ~55-62 GB | 80B MoE (3B active), FP8 + MTP, thinking mode, nightly vLLM |
-| `experiment-qwen36-27b-w8a16-128k-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~40-48 GB | W8A16 INT8, 128K ctx, 3 threads, MTP — best daily-coder candidate (Path A) |
-| `experiment-qwen36-int4-mtp` | Lorbus/Qwen3.6-27b-int4-AutoRound | ~48-52 GB | Same model as daily + MTP — minimal-risk throughput upgrade (Path B) |
+| `experiment-qwen36-27b-w8a16-128k-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~40-48 GB | W8A16 INT8, 128K ctx, 3 threads, MTP — best daily-coder candidate (Path A, superseded by Qwen3.8 NVFP4) |
+| `experiment-qwen36-int4-mtp` | Lorbus/Qwen3.6-27b-int4-AutoRound | ~48-52 GB | Same model as the old daily driver (Qwen3.6 INT4) + MTP — minimal-risk throughput upgrade (Path B) |
 | `experiment-qwen-long-w8a16-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~35-42 GB | W8A16 INT8, 262K ctx, 4 threads, MTP — max long context |
+| `experiment-qwen38-27b-fp8` | Qwen/Qwen3.8-27B-FP8 | ~40-50 GB | Official FP8, 128K ctx, 3 threads, MTP, vision, tool calling |
+| `experiment-qwen38-27b-nvfp4` | unsloth/Qwen3.8-27B-NVFP4 | ~58 GB | NVFP4 4-bit, 196K ctx, 3 threads, vision, tool calling — **promoted to matrix-coder 2026-08-24** |
 
 > **Note:** The `--profile` flag lets you jump between experiments without rolling back to production. Use `mode rollback` to return to the previous production mode.
 
@@ -96,7 +98,7 @@ Named experiments are defined by a YAML profile and a Docker Compose file:
 ```
 home/
   compose/              # Docker Compose configs (canonical)
-    qwen-coder.yml      # vLLM Qwen3.6-27B (primary)
+    qwen-coder.yml      # vLLM Qwen3.8-27B NVFP4 (primary)
     qwen-long.yml       # vLLM Qwen3.6-27B (long-context, optimized)
     gemma4-moe.yml      # Ollama (gemma4 + embeddings)
     experiment.yml      # vLLM template (copy & edit)
@@ -104,8 +106,14 @@ home/
     metrics.yml         # node-exporter + dcgm-exporter
     experiments/        # Named experiment compose files
       gemma4-31b.yml
-      nemotron-3-nano-30b.yml
-      qwen3-next-80b-nvfp4.yml
+      nemotron-puzzle-75b-nvfp4.yml
+      qwen3-next-80b-thinking-fp8-mtp.yml
+      qwen36-27b-w8a16-128k-mtp.yml
+      qwen36-int4-mtp.yml
+      qwen38-27b-fp8.yml
+      qwen38-27b-instruct-4bit.yml
+      qwen38-27b-nvfp4.yml
+      qwen-long-w8a16-mtp.yml
     legacy/             # Archived pre-migration files
   models/profiles/      # Declarative model profiles
     experiment-*.yaml   # Experiment profile definitions

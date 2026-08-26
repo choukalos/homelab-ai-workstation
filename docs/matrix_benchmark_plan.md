@@ -98,14 +98,14 @@ The script writes these outputs to the result directory with filenames like
 # TTFT + total time for 5 warmup + 20 real runs
 curl -s -w "%{time_starttransfer} %{time_total}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen36-27b","prompt":"Hello","max_tokens":1}' \
+  -d '{"model":"qwen38-27b","prompt":"Hello","max_tokens":1}' \
   http://localhost:8000/v1/completions
 ```
 
 ### Throughput
 ```bash
 # Generate a fixed 1024-token response, measure tokens/sec
-curl -s -d '{"model":"qwen36-27b","prompt":"Explain quantum computing in detail...","max_tokens":1024}' \
+curl -s -d '{"model":"qwen38-27b","prompt":"Explain quantum computing in detail...","max_tokens":1024}' \
   http://localhost:8000/v1/completions
 # Parse response tokens / total time
 ```
@@ -140,11 +140,11 @@ Each benchmark run writes a JSON summary and a human-readable markdown report:
 {
   "timestamp": "2026-07-03T12:00:00Z",
   "profile": "matrix-coder",
-  "model": "Lorbus/Qwen3.6-27b-int4-AutoRound",
-  "vllm_args": { "gpu_memory_utilization": 0.56, "max_model_len": 32768 },
-  "latency": { "ttft_ms": 450, "ttft_p95_ms": 520 },
-  "throughput": { "tokens_per_sec": 18.5 },
-  "gpu": { "vram_used_gb": 48.7, "gpu_util_pct": 65 },
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "vllm_args": { "gpu_memory_utilization": 0.75, "max_model_len": 196608 },
+  "latency": { "ttft_ms": 35.5, "ttft_p95_ms": 39.1 },
+  "throughput": { "tokens_per_sec": 123.95 },
+  "gpu": { "vram_used_gb": 55.2, "gpu_util_pct": 92 },
   "quality": { "code_gen": "pending_review", "tool_calling": "pending_review" }
 }
 ```

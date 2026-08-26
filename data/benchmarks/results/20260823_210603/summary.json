@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-08-23T21:06:03Z",
+  "profile": "matrix-coder",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "endpoint": "http://localhost:8000/v1",
+  "category": "all",
+  "params": {
+    "warmup": 5,
+    "runs": 20,
+    "concurrent": 4,
+    "tokens": 512
+  },
+  "gpu": {
+    "vram_used_before_mb": 58211,
+    "vram_used_after_mb": 58217,
+    "gpu_util_before_pct": 0,
+    "gpu_util_after_pct": 59
+  },
+  "latency": {
+    "ttft_ms_mean": 72.52,
+    "ttft_ms_median": 72.34,
+    "ttft_ms_p95": 74.39,
+    "ttft_ms_min": 71.89,
+    "ttft_ms_max": 74.39,
+    "total_ms_mean": 73.44,
+    "total_ms_median": 73.33,
+    "total_runs": 20
+  },
+  "throughput": {
+    "tokens_per_sec_mean": 63.23,
+    "tokens_per_sec_median": 63.37,
+    "tokens_per_sec_min": 57.13,
+    "tokens_per_sec_max": 66.83,
+    "target_tokens": 512,
+    "total_runs": 20
+  },
+  "stress": {
+    "concurrent": 4,
+    "rounds": 20,
+    "total_requests": 80,
+    "success": 80,
+    "fail": 0,
+    "avg_time_per_request_s": 1.522,
+    "total_throughput_req_per_s": 13.14
+  }
+}

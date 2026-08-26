@@ -1,7 +1,6 @@
 # Matrix Runtime Modes
 
-> Documented: 2026-07-03
-> Current active mode: `daily`
+> Documented: 2026-07-03, updated 2026-08-25 (Qwen3.8-27B NVFP4 promotion + speed fix; primary container renamed `qwen36` → `qwen38`)
 
 ## How Modes Work
 
@@ -13,27 +12,31 @@ there is "the main model" to clients.
 
 ---
 
-## `daily` — Normal Chat/Coding Use (CURRENT)
+## `daily` — Normal Chat/Coding Use
 
 **What's running:**
 
 | Service | Container | Model | Port | Backend | VRAM |
 |---|---|---|---|---|---|
-| Primary model | `qwen36` | Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~48.7 GB |
+| Primary model | `qwen38` | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~54 GB (0.75 util) |
 | Light model | `ollama` | gemma4:26b (Q4_K_M) | 11434 | Ollama | ~17 GB (on demand) |
 | Embeddings | `ollama` | nomic-embed-text (F16) | 11434 | Ollama | ~274 MB |
 | Metrics | `node-exporter`, `dcgm-exporter` | — | 9100, 9400 | — | N/A |
 
-**vLLM args (from compose.qwen36.yml):**
-- `--gpu-memory-utilization 0.66` → ~48.7 GB
-- `--max-model-len 200000`
+**vLLM args (from compose/qwen-coder.yml):**
+- `--gpu-memory-utilization 0.75` → ~54 GB reserved (~58 GB measured with other services running)
+- `--max-model-len 196608`
 - `--max-num-seqs 3`
 - `--max-num-batched-tokens 8192`
 - `--kv-cache-dtype fp8`
 - `--enable-prefix-caching`
 - `--enable-chunked-prefill`
 - `--enable-auto-tool-choice`
-- `--tool-call-parser qwen3_xml`
+- `--tool-call-parser qwen3_coder`
+- `--reasoning-parser qwen3`
+- `--speculative-config '{"method":"mtp","num_speculative_tokens":2}'`
+- `--default-chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "high"}'`
+- `--override-generation-config '{"temperature": 0.7, "top_p": 0.95}'`
 
 **Ollama config:**
 - `OLLAMA_MAX_LOADED_MODELS=2`
@@ -45,9 +48,9 @@ there is "the main model" to clients.
 **Startup (rebuild after reboot):**
 ```bash
 cd /home/chuck/homelab
-docker compose -f compose.metrics.yml up -d
-docker compose -f compose.qwen36.yml up -d
-docker compose -f compose.ollama.yml up -d
+docker compose -f compose/metrics.yml up -d
+docker compose -f compose/qwen-coder.yml up -d
+docker compose -f compose/gemma4-moe.yml up -d
 ```
 
 **Health checks:**
@@ -70,12 +73,12 @@ curl -s http://localhost:9400/metrics | head -1 # dcgm-exporter
 
 | Service | Container | Model | Port | Backend | VRAM |
 |---|---|---|---|---|---|
-| Primary model | `qwen36` | Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~55-60 GB (gpu-mem 0.75-0.80) |
+| Primary model | `qwen38` | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~54 GB (gpu-mem 0.75) |
 | Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
 
 **Changes from daily:**
-- Stop Ollama (or keep running for embeddings only, unload gemma4)
-- Restart vLLM with `--gpu-memory-utilization 0.75` or higher
+- Same model and vLLM args as daily (`compose/qwen-coder.yml`)
+- Ollama runs embeddings only (gemma4 unloaded)
 
 **LiteLLM aliases valid:** `matrix-coder`, `embeddings`
 **Aliases offline:** `matrix-gemma4-moe` (gemma4 unloaded from Ollama)
@@ -84,14 +87,14 @@ curl -s http://localhost:9400/metrics | head -1 # dcgm-exporter
 ```bash
 # Stop Gemma in Ollama
 docker exec ollama ollama unload gemma4:26b
-# Restart vLLM with higher VRAM
-docker compose -f compose.qwen36.yml down
-QWEN_GPU_MEM=0.75 docker compose -f compose.qwen36.yml up -d
+# vLLM: standard production config
+docker compose -f compose/qwen-coder.yml down
+docker compose -f compose/qwen-coder.yml up -d
 ```
 
 **Health check:** `curl -s http://localhost:8000/v1/models`
 
-**Rollback to daily:** Stop vLLM, restart at 0.66; restart Ollama with gemma4 loaded.
+**Rollback to daily:** Restart Ollama with gemma4 loaded (vLLM unchanged).
 
 ---
 
@@ -103,26 +106,26 @@ QWEN_GPU_MEM=0.75 docker compose -f compose.qwen36.yml up -d
 
 | Service | Container | Model | Port | Backend | VRAM |
 |---|---|---|---|---|---|
-| Primary model | `qwen36` | Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~50-55 GB |
+| Primary model | `qwen38` | Lorbus/Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~50-55 GB |
 | Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
 
 **Changes from daily:**
-- Same model, different vLLM args: `--max-model-len 300000` or higher
-- May need `--max-num-seqs 1` and `--max-num-batched-tokens 4096` for stability
-- `--gpu-memory-utilization` may need to drop to ~0.60 to fit larger KV cache
+- Different model: `Lorbus/Qwen3.6-27b-int4-AutoRound` (240K ctx) vs daily's Qwen3.8-27B NVFP4
+- `--max-model-len 240000`, `--max-num-seqs 2`, `--gpu-memory-utilization 0.50`, `--chunked-prefill-size 16384`
+- Serves as `qwen38-27b` — the alias follows port 8000 (see design principle above), so `matrix-coder` routes to the long-context model while this mode is active
 
 **LiteLLM aliases valid:** `matrix-coder`, `embeddings`
 **Aliases offline:** `matrix-gemma4-moe`
 
 **Startup:**
 ```bash
-# Need to adjust compose args for long context
-# This requires a new compose file or manual override
+docker compose -f compose/qwen-coder.yml down
+docker compose -f compose/qwen-long.yml up -d
 ```
 
-**⚠️ Not yet implemented — requires a new compose variant.** See Phase 3 for profile drafts.
+**⚠️ Compose + profile exist** (`compose/qwen-long.yml`, `models/profiles/qwen-long.yaml`) **but the mode switch has not been verified end-to-end yet** (see TODO).
 
-**Rollback to daily:** Restart vLLM with standard `compose.qwen36.yml` args.
+**Rollback to daily:** Restart vLLM with standard `compose/qwen-coder.yml` args.
 
 ---
 
@@ -134,7 +137,7 @@ QWEN_GPU_MEM=0.75 docker compose -f compose.qwen36.yml up -d
 
 | Service | Container | Model | Port | Backend | VRAM |
 |---|---|---|---|---|---|
-| Primary model | `qwen36` | Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~48 GB |
+| Primary model | `qwen38` | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~54 GB |
 | Light model | `ollama` | gemma4:26b | 11434 | Ollama | ~17 GB |
 | Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
 
@@ -155,7 +158,7 @@ in `llms` mode you're actively using both models together.
 
 | Service | Container | Model | Port | Backend | VRAM |
 |---|---|---|---|---|---|
-| Experiment | `qwen36` (same container, different model) | *[candidate]* | 8000 | vLLM | varies |
+| Experiment | `qwen38` (same container, different model) | *[candidate]* | 8000 | vLLM | varies |
 | Light/embed | `ollama` | depends on candidate size | 11434 | Ollama | varies |
 
 **Key principle:** The LiteLLM alias `matrix-coder` points at port 8000. Whatever model
@@ -164,9 +167,9 @@ serves port 8000 IS `matrix-coder` to clients. No config changes needed.
 **Startup:**
 ```bash
 # Stop current vLLM
-docker compose -f compose.qwen36.yml down
+docker compose -f compose/qwen-coder.yml down
 # Start vLLM with different model (manual command or new compose)
-docker run --rm -d --name qwen36 \
+docker run --rm -d --name qwen38 \
   --gpus all --shm-size 16g -p 8000:8000 \
   -v /home/chuck/data/models:/data/models \
   -e HF_HOME=/data/models \
@@ -179,8 +182,8 @@ restore the production Qwen model immediately.
 
 **Rollback to daily:**
 ```bash
-docker compose -f compose.qwen36.yml down
-docker compose -f compose.qwen36.yml up -d
+docker compose -f compose/qwen-coder.yml down
+docker compose -f compose/qwen-coder.yml up -d
 ```
 
 ---
@@ -205,8 +208,8 @@ with Gemma4 for a working LLM fallback during image work.
 
 **Startup:**
 ```bash
-docker compose -f compose.qwen36.yml down
-docker compose -f compose.comfyui.yml --profile image up -d
+docker compose -f compose/qwen-coder.yml down
+docker compose -f compose/comfyui.yml --profile image up -d
 # Ollama stays running — no need to touch it
 ```
 
@@ -214,8 +217,8 @@ docker compose -f compose.comfyui.yml --profile image up -d
 
 **Rollback to daily:**
 ```bash
-docker compose -f compose.comfyui.yml --profile image down
-docker compose -f compose.qwen36.yml up -d
+docker compose -f compose/comfyui.yml --profile image down
+docker compose -f compose/qwen-coder.yml up -d
 ```
 
 **⚠️ Expected downtime:** 5-10 min to switch in or out of image mode.
@@ -241,8 +244,8 @@ docker compose -f compose.qwen36.yml up -d
 
 | Mode | vLLM | Ollama | Total | Headroom |
 |---|---|---|---|---|
-| `daily` | ~48.7 GB | ~17 GB (gemma4) + 274 MB | ~66 GB | ~6 GB |
-| `qwen-coder` | ~55-60 GB | ~274 MB (embed only) | ~55-60 GB | ~12-17 GB |
+| `daily` | ~54 GB (0.75 util) | ~17 GB (gemma4) + 274 MB | ~71 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
+| `qwen-coder` | ~54 GB (0.75 util) | ~274 MB (embed only) | ~54 GB | ~18 GB |
 | `qwen-long` | ~50-55 GB | ~274 MB | ~50-55 GB | ~17-22 GB |
 | `experiment` | varies | varies | varies | varies |
 | `images` | *(stopped)* | ~30-40 GB (ComfyUI) + ~17 GB (gemma4) + 274 MB | ~48-58 GB | ~14-24 GB |

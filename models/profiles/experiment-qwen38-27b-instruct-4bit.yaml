@@ -1,0 +1,94 @@
+# qwen38-27b-int4 — Qwen3.8-27B INT4 with 196K context, 3 concurrent seqs, high reasoning
+# Balanced setup: leaves ~18GB free on 72GB RTX 5000 for ComfyUI and Ollama
+# Hybrid GDN architecture with native vision, MTP, and tunable reasoning effort
+
+name: qwen38-27b-int4
+alias: matrix-coder
+backend: vllm
+status: planned
+experiment: true
+
+model:
+  path: unsloth/Qwen3.8-27B-Instruct-4bit
+  quantization: INT4 (4-bit AutoRound/Unsloth format)
+  format: safetensors
+  expected_vram: 52-54 GB total (model weights + 3x KV @ 196K with fp8 cache)
+  parameters: 27B dense hybrid (Gated DeltaNet + Gated Attention)
+  context: 196608
+  architecture: "Qwen3_5ForConditionalGeneration (hybrid GDN + vision)"
+  vision: true
+  mtp: true
+  hybrid_attention:
+    gated_delta_net: "48 V heads + 16 QK heads, head_dim=128"
+    gated_attention: "24 Q heads + 4 KV heads, head_dim=256, rope_dim=64"
+    layers: "64 total — 16 x (3xGDN→FFN, 1xGatedAttention→FFN)"
+  ffn_intermediate: 17408
+
+launch:
+  container: qwen38
+  image: vllm/vllm-openai:latest
+  compose: compose/experiments/qwen38-27b-int4.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+    - /home/chuck/homelab/scripts/templates:/templates:ro
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: "${HF_TOKEN}"
+    HF_XET_HIGH_PERFORMANCE: "1"
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --chat-template: /templates/qwen3-fixed-chat-template.jinja
+    --model: unsloth/Qwen3.8-27B-Instruct-4bit
+    --served-model-name: qwen38-27b
+    --host: 0.0.0.0
+    --port: 8000
+    --max-model-len: 196608
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.75
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_coder
+    --trust-remote-code: true
+    --enforce-eager: true
+    --limit-mm-per-prompt: '{"image": 5, "video": 2}'
+    --reasoning-parser: qwen3
+    --default-chat-template-kwargs: '{"preserve_thinking": true, "reasoning_effort": "high"}'
+    --override-generation-config: '{"temperature": 0.7, "top_p": 0.95}'
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen38-27b
+
+compatible_modes:
+  - experiment
+
+performance_targets:
+  concurrent_sequences: 3
+  context_window: 196608
+  prefix_cache_hit: "30%+ TTFT improvement on repeated system prompts"
+  estimated_vram: ~54 GB of 72 GB (~18 GB free headroom)
+
+comparison_to_current:
+  current_model: Qwen3.6-27B-int4-AutoRound
+  improvements:
+    - "Native vision and video understanding added"
+    - "Hybrid GDN architecture handles long contexts more efficiently"
+    - "High reasoning effort option prevents shallow coding responses"
+    - "Global temperature override locks behavior at 0.7 to curb erratic variation"
+  caveats:
+    - "196K context with 3 concurrent sequences pushes KV allocation closer to the 0.75 ceiling"
+    - "Requires monitoring VRAM when ComfyUI and Ollama (Gemini 4 26B) are running concurrently"
+
+notes:
+  - "gpu-memory-utilization set to 0.75 to guarantee ~18GB free space for ComfyUI/Ollama"
+  - "reasoning-parser qwen3: handles thinking tags correctly in vLLM stream"
+  - "tool-call-parser qwen3_coder: required for Qwen3.8 XML-style tool calling"
+  - "Rollback: restore production qwen-coder.yml profile"
+
+

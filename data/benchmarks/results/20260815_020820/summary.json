@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-08-15T02:08:20Z",
+  "profile": "experiment-qwen38-27b-fp8",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "endpoint": "http://localhost:8000/v1",
+  "category": "all",
+  "params": {
+    "warmup": 5,
+    "runs": 20,
+    "concurrent": 4,
+    "tokens": 512
+  },
+  "gpu": {
+    "vram_used_before_mb": 62877,
+    "vram_used_after_mb": 71765,
+    "gpu_util_before_pct": 0,
+    "gpu_util_after_pct": 96
+  },
+  "latency": {
+    "ttft_ms_mean": 44.12,
+    "ttft_ms_median": 43.99,
+    "ttft_ms_p95": 46.84,
+    "ttft_ms_min": 43.42,
+    "ttft_ms_max": 46.84,
+    "total_ms_mean": 45.02,
+    "total_ms_median": 44.91,
+    "total_runs": 20
+  },
+  "throughput": {
+    "tokens_per_sec_mean": 95.35,
+    "tokens_per_sec_median": 95.53,
+    "tokens_per_sec_min": 90.67,
+    "tokens_per_sec_max": 99.04,
+    "target_tokens": 512,
+    "total_runs": 20
+  },
+  "stress": {
+    "concurrent": 4,
+    "rounds": 20,
+    "total_requests": 80,
+    "success": 80,
+    "fail": 0,
+    "avg_time_per_request_s": 1.049,
+    "total_throughput_req_per_s": 19.06
+  }
+}

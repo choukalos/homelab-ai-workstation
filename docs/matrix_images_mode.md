@@ -1,7 +1,7 @@
 # Images Mode — ComfyUI/FLUX Image Generation
 
 > Created: 2026-07-03
-> Compose: `compose.comfyui.yml` (profile: `image`)
+> Compose: `compose/comfyui.yml` (profile: `image`)
 > Profile: `models/profiles/comfyui.yaml`
 
 ## Overview
@@ -50,10 +50,10 @@ cd /home/chuck/homelab
 bash scripts/preflight.sh images
 
 # 2. Stop vLLM (releases ~48 GB VRAM)
-docker compose -f compose.qwen36.yml down
+docker compose -f compose/qwen-coder.yml down
 
 # 3. Start ComfyUI
-docker compose -f compose.comfyui.yml --profile image up -d
+docker compose -f compose/comfyui.yml --profile image up -d
 
 # 4. Verify Ollama is still running (it should be — don't touch it)
 curl -s http://localhost:11434 | head -1
@@ -85,10 +85,10 @@ echo ""
 cd /home/chuck/homelab
 
 # 1. Stop ComfyUI
-docker compose -f compose.comfyui.yml --profile image down
+docker compose -f compose/comfyui.yml --profile image down
 
 # 2. Start vLLM
-docker compose -f compose.qwen36.yml up -d
+docker compose -f compose/qwen-coder.yml up -d
 
 # 3. Verify
 curl -s http://localhost:8000/v1/models | head -1
@@ -126,7 +126,7 @@ curl -s http://localhost:8000/v1/models | head -1
 
 ## ComfyUI Configuration
 
-### Compose file: `compose.comfyui.yml`
+### Compose file: `compose/comfyui.yml`
 
 | Setting | Value | Purpose |
 |---|---|---|
@@ -274,7 +274,7 @@ the model requires auth. Check `/home/chuck/data/comfyui/run/` for downloaded fi
 ## Compose File Reference
 
 ```yaml
-# compose.comfyui.yml
+# compose/comfyui.yml
 services:
   comfyui:
     image: mmartial/comfyui-nvidia-docker:latest

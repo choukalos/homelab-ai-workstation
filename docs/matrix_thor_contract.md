@@ -58,7 +58,7 @@ Thor's `thor.litellm.config.yml` defines these aliases that route to Matrix:
 
 | Alias | Thor LiteLLM Config | Matrix Endpoint | Valid In Modes |
 |---|---|---|---|
-| `matrix-coder` | `openai/qwen36-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment` |
+| `matrix-coder` | `openai/qwen38-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment` |
 | `matrix-gemma4-moe` | `ollama/gemma4:26b` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `images` |
 | `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `images`, `experiment` |
 
@@ -194,11 +194,11 @@ If a mode switch causes problems:
 cd /home/chuck/homelab
 
 # Emergency: restore daily mode regardless of current state
-docker compose -f compose.qwen36.yml down    # Stop whatever is on port 8000
-docker compose -f compose.comfyui.yml --profile image down  # Stop ComfyUI if running
-docker compose -f compose.metrics.yml up -d
-docker compose -f compose.qwen36.yml up -d
-docker compose -f compose.ollama.yml up -d
+docker compose -f compose/qwen-coder.yml down    # Stop whatever is on port 8000
+docker compose -f compose/comfyui.yml --profile image down  # Stop ComfyUI if running
+docker compose -f compose/metrics.yml up -d
+docker compose -f compose/qwen-coder.yml up -d
+docker compose -f compose/gemma4-moe.yml up -d
 
 # Verify
 curl -s http://localhost:8000/v1/models       # vLLM
@@ -240,7 +240,7 @@ Content-Type: application/json
 Authorization: Bearer unused  (Matrix vLLM ignores API keys)
 
 {
-  "model": "qwen36-27b",
+  "model": "qwen38-27b",
   "messages": [{"role": "user", "content": "..."}],
   "max_tokens": 4096,
   "temperature": 0.7
@@ -249,7 +249,7 @@ Authorization: Bearer unused  (Matrix vLLM ignores API keys)
 
 ```
 GET http://matrix:8000/v1/models
-→ {"object": "list", "data": [{"id": "qwen36-27b", ...}]}
+→ {"object": "list", "data": [{"id": "qwen38-27b", ...}]}
 ```
 
 ### Ollama (port 11434)

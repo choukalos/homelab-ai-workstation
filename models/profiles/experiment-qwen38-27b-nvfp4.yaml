@@ -1,0 +1,99 @@
+# qwen38-27b-nvfp4 — Qwen3.8-27B NVFP4 (NVIDIA 4-bit) with 196K context, 3 concurrent seqs
+# Optimized balance: ~25.5GB model leaves ample room for deep FP8 KV cache and ~18GB free VRAM on 72GB RTX 5000
+# Native vision + MTP + hybrid GDN architecture with tuned high reasoning and 0.7 temperature
+
+name: qwen38-27b-nvfp4
+alias: matrix-coder
+backend: vllm
+status: promoted  # 2026-08-24: promoted to matrix-coder (compose/qwen-coder.yml)
+experiment: true
+
+model:
+  path: unsloth/Qwen3.8-27B-NVFP4
+  quantization: NVFP4 (NVIDIA 4-bit, modelopt format by Inferact)
+  format: modelopt
+  expected_vram: ~54 GB total (model weights + 3x KV @ 196K with fp8 cache, leaving ~18GB free)
+  parameters: 27B dense (no MoE)
+  context: 196608
+  architecture: "Qwen3_5ForConditionalGeneration (hybrid GDN + vision)"
+  vision: true
+  mtp: true
+  hybrid_attention:
+    gated_delta_net: "48 V heads + 16 QK heads, head_dim=128"
+    gated_attention: "24 Q heads + 4 KV heads, head_dim=256, rope_dim=64"
+    layers: "64 total — 16 x (3xGDN→FFN, 1xGatedAttention→FFN)"
+  ffn_intermediate: 17408
+
+launch:
+  container: qwen38-nvfp4
+  image: vllm/vllm-openai:latest
+  compose: compose/experiments/qwen38-27b-nvfp4.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+    - /home/chuck/homelab/scripts/templates:/templates:ro
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: "${HF_TOKEN}"
+    HF_XET_HIGH_PERFORMANCE: "1"
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --chat-template: /templates/qwen3-fixed-chat-template.jinja
+    --model: Inferact/Qwen3.8-27B-NVFP4
+    --served-model-name: qwen38-27b
+    --host: 0.0.0.0
+    --port: 8000
+    --max-model-len: 196608
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.75
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_coder
+    --trust-remote-code: true
+    --enforce-eager: true
+    --limit-mm-per-prompt: '{"image": 5, "video": 2}'
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking": true, "reasoning_effort": "high"}'
+    --override-generation-config: '{"temperature": 0.7, "top_p": 0.95}'
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen38-27b
+
+compatible_modes:
+  - experiment
+
+performance_targets:
+  concurrent_sequences: 3
+  context_window: 196608
+  mtp_speedup: "~1.3-1.5x decode with 2 speculative tokens"
+  prefix_cache_hit: "30%+ TTFT improvement on repeated system prompts"
+  estimated_vram: ~54 GB of 72 GB (~18 GB free headroom for ComfyUI / Ollama)
+
+comparison_to_current:
+  current_model: Qwen3.6-27B-int4-AutoRound
+  improvements:
+    - "Native vision + video understanding support"
+    - "Hybrid GDN architecture optimized for long-context efficiency"
+    - "High reasoning effort option provides deep structural analysis without getting stuck in loops"
+    - "Global temperature override set to 0.7 to keep generation creative yet deterministic"
+    - "NVFP4 native Blackwell acceleration via vLLM cutlass path"
+  caveats:
+    - "NVFP4 requires Blackwell architecture (RTX PRO 5000) — verified compatible"
+    - "Requires monitoring VRAM headroom when ComfyUI and Ollama are active simultaneously"
+
+notes:
+  - "PROMOTED 2026-08-24: the verified config (this compose file) is now compose/qwen-coder.yml serving as qwen38-27b; MTP was added at promotion (3 tokens, tuned to 2 on 2026-08-25)"
+  - "2026-08-25 production speed fix (compose/qwen-coder.yml only): removed --enforce-eager (it disabled torch.compile + CUDA graphs → 58-63 tok/s @ 56-59% GPU) and set MTP 3 → 2. Verified: 123.95 tok/s @ 92% GPU (benchmark 20260825_222844). This experiment profile keeps its historical experiment args (enforce-eager, Inferact model path)."
+  - "gpu-memory-utilization set to 0.75 to carve out ~18GB of unallocated GPU RAM"
+  - "reasoning-parser qwen3: required for parsing thinking block tokens properly"
+  - "tool-call-parser qwen3_coder: handles XML-style tool syntax natively"
+  - "Rollback: model-manager mode rollback to production config"
+
+

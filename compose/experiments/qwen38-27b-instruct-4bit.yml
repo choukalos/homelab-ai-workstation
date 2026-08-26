@@ -1,0 +1,48 @@
+# vLLM Qwen3.8-27B — Primary model configuration
+# Usage: docker compose -f compose/qwen38-coder.yml up -d
+
+services:
+  qwen38:
+    image: vllm/vllm-openai:latest
+    container_name: qwen38
+    restart: unless-stopped
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+      - /home/chuck/homelab/scripts/templates:/templates:ro
+    command: >
+      --model unsloth/Qwen3.8-27B-Instruct-4bit
+      --served-model-name qwen38-27b
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 196608
+      --max-num-seqs 3
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.75
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --trust-remote-code
+      --enforce-eager
+      --limit-mm-per-prompt '{"image": 5, "video": 2}'
+      --reasoning-parser qwen3
+      --default-chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "high"}'
+      --override-generation-config '{"temperature": 0.7, "top_p": 0.95}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+

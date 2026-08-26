@@ -1,6 +1,6 @@
-# Experiment Results — 2026-07-05
+# Experiment Results
 
-## Summary
+## Round 2026-07-05 — Summary
 
 Ran 5 experiments on vLLM 0.24.0 (latest) against the daily driver. **2 succeeded, 3 failed** due to a vLLM CLI change.
 
@@ -192,7 +192,9 @@ The daily driver numbers come from the running `qwen36` container logs (post-war
 
 ---
 
-## Daily Driver Recommendation
+## Daily Driver Recommendation (2026-07-05) — SUPERSEDED
+
+> ✅ **Applied 2026-08-14** — INT4+MTP became the daily driver, then **superseded 2026-08-24** by the Qwen3.8-27B NVFP4 promotion (see below).
 
 Add these 3 lines to `compose/qwen-coder.yml` (between `--enable-chunked-prefill` and the existing flags):
 
@@ -290,9 +292,56 @@ docker compose -f compose/experiments/nemotron-puzzle-75b-nvfp4.yml down
 # Restore daily driver (qwen-coder mode)
 ```
 
+---
+
+## Qwen3.8-27B Round (2026-08-14 → 2026-08-24)
+
+Three Qwen3.8-27B candidates were tested against the INT4+MTP daily driver (baseline `20260814_233938`: 137.4 tok/s, TTFT 30.9 ms, ~50 GB VRAM):
+
+| Date | Experiment | Model | Config | tok/s | TTFT (ms) | VRAM (GB) | Notes |
+|---|---|---|---|---|---|---|---|
+| 2026-08-15 | `experiment-qwen38-27b-nvfp4` | Inferact/Qwen3.8-27B-NVFP4 | MTP (2 tokens) | 92.1 | 43.5 | 62.7 | First NVFP4 run |
+| 2026-08-15 | `experiment-qwen38-27b-fp8` | Qwen/Qwen3.8-27B-FP8 | MTP (3 tokens) | 95.4 | 44.1 | 62.9 | Official FP8 |
+| 2026-08-23 | `experiment-qwen38-27b-nvfp4` | Inferact/Qwen3.8-27B-NVFP4 | No MTP, 196K ctx, 75% VRAM, `--enforce-eager` | 58.0 | 66.6 | 58.0 | Final config, stress 80/80 OK |
+| 2026-08-23 | `matrix-coder` (post-promotion) | unsloth/Qwen3.8-27B-NVFP4 | No MTP, 196K ctx, 75% VRAM, `--enforce-eager` | 63.2 | 72.5 | 56.8 | Pre-fix verification run (`20260823_210603`) |
+
+Final NVFP4 quality review (`20260823_160055`): proper thinking blocks on all coding prompts, valid code output, working tool calls (`qwen3_coder` parser), vision enabled.
+
+### ✅ Promotion: qwen38-27b-nvfp4 → matrix-coder (2026-08-24)
+
+The final NVFP4 config (`unsloth/Qwen3.8-27B-NVFP4`, 196K ctx, 75% VRAM) was promoted to the main coding setup, with MTP (3 speculative tokens) added at promotion:
+
+- `compose/qwen-coder.yml` now serves `unsloth/Qwen3.8-27B-NVFP4` as `qwen38-27b` (container renamed `qwen36` → `qwen38`; model-manager + all primary-slot compose files updated to match)
+- `models/profiles/matrix-coder.yaml` updated accordingly
+- MTP (3 speculative tokens) added to the daily config — later tuned to 2 on 2026-08-25 (see speed fix below)
+- Served model name changed `qwen36-27b` → `qwen38-27b` — the Thor LiteLLM `matrix-coder` entry points to `openai/qwen38-27b` (updated 2026-08-25)
+- Supersedes the INT4+MTP recommendation above
+
+**Tradeoff accepted:** raw decode throughput dropped from ~137 tok/s (INT4+MTP) to ~58-63 tok/s (NVFP4 with `--enforce-eager`, measured without MTP), in exchange for Qwen3.8 quality, native vision, and 196K context. **Resolved 2026-08-25:** the speed fix below recovered most of the gap — 123.95 tok/s, within ~10% of the INT4 baseline.
+
+### ⚡ Speed fix: 2026-08-25 (benchmark `20260825_222844`)
+
+Post-promotion runs (`20260823_210603`: 63.2 tok/s @ 59% GPU util) showed decode was CPU-launch-bound: `--enforce-eager` disabled torch.compile + CUDA graphs. Fix applied to `compose/qwen-coder.yml`:
+
+- **Removed `--enforce-eager`** — restores torch.compile + CUDA graphs (92 tok/s @ 97% util on the same model without it, benchmark `20260815_011859`)
+- **MTP 3 → 2 tokens** — the 3rd speculative token was only accepted ~55% of the time (live metrics); vLLM warns that multi-forward on the same MTP layer lowers acceptance
+
+**Result (2026-08-25, verified in production):**
+
+| Metric | Before fix | After fix |
+|---|---|---|
+| Throughput (mean) | 58-63 tok/s | **123.95 tok/s** (117-131) |
+| TTFT (mean) | 66-73 ms | 35.5 ms |
+| GPU util (under load) | 56-59% | 92% |
+| Stress (4 concurrent × 20) | 80/80 | 80/80, 0.837 s/req |
+| VRAM | ~57-58 GB | ~55.2 GB |
+
+Fallback if CUDA graph capture OOMs: `--compilation-config '{"cudagraph_mode":"PIECEWISE"}'`.
+
 ## Next Steps
 
-1. ~~Update daily driver with MTP~~ (you're doing this manually)
+1. ~~Update daily driver with MTP~~ (applied 2026-08-14, superseded by the Qwen3.8 NVFP4 promotion on 2026-08-24)
 2. Rerun experiments 3, 4, 5 (all fixed, ready to go)
 3. **Run experiment 6: Nemotron-3-Puzzle-75B NVFP4** (config + profile ready, ⚠️ pull latest vLLM first)
 4. Consider testing W8A16 + MTP as a potential quality upgrade over INT4 + MTP
+5. ~~Verify MTP (3 tokens) on the promoted NVFP4 model after the restart~~ (done 2026-08-25: MTP tuned to 2 tokens, benchmarked at 123.95 tok/s — see speed fix above)

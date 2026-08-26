@@ -59,13 +59,13 @@ case "$feature" in
         COMPOSE_FILE="compose.experiment-mtp.yml"
         DESCRIPTION="MTP (Multi-Token Prediction) — speculative decoding with n_predict=1"
         FLAGS="--speculative-config '{\"n_predict\": 1}'"
-        ROLLBACK_COMPOSE="compose.qwen36.yml"
+        ROLLBACK_COMPOSE="compose/qwen-coder.yml"
         ;;
     nvfp4)
         COMPOSE_FILE="compose.experiment-nvfp4.yml"
         DESCRIPTION="NVFP4 KV Cache — lower precision KV cache for Blackwell"
         FLAGS="--kv-cache-dtype nvfp4"
-        ROLLBACK_COMPOSE="compose.qwen36.yml"
+        ROLLBACK_COMPOSE="compose/qwen-coder.yml"
         ;;
     speculative)
         echo -e "${RED}External speculative decoding requires a draft model.${NC}"
@@ -87,7 +87,7 @@ echo ""
 # Check compose file exists
 if [[ ! -f "$COMPOSE_BASE/$COMPOSE_FILE" ]]; then
     echo -e "${RED}Compose file not found: $COMPOSE_BASE/$COMPOSE_FILE${NC}"
-    echo -e "${YELLOW}Create it first based on compose.qwen36.yml with the feature flags added.${NC}"
+    echo -e "${YELLOW}Create it first based on compose/qwen-coder.yml with the feature flags added.${NC}"
     exit 1
 fi
 
@@ -96,11 +96,11 @@ if [[ "$apply" == false ]]; then
     echo ""
     echo "This would:"
     echo "  1. Run baseline benchmark"
-    echo "  2. Stop current vLLM (compose.qwen36.yml)"
+    echo "  2. Stop current vLLM (compose/qwen-coder.yml)"
     echo "  3. Start $COMPOSE_FILE"
     echo "  4. Run benchmark with --baseline"
     echo "  5. Compare results"
-    echo "  6. Roll back to compose.qwen36.yml"
+    echo "  6. Roll back to compose/qwen-coder.yml"
     echo ""
     echo "Run with --apply to actually do it."
     exit 0
@@ -167,5 +167,5 @@ echo ""
 echo "Summary:"
 echo "  - Baseline and feature benchmarks are in data/benchmarks/"
 echo "  - Review the delta to decide whether to promote"
-echo "  - To promote: add the flags to compose.qwen36.yml"
+echo "  - To promote: add the flags to compose/qwen-coder.yml"
 echo "  - To reject: document in docs/matrix_vllm_features.md rejection log"

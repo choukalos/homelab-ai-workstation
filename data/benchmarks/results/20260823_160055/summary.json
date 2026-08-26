@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-08-23T16:00:55Z",
+  "profile": "experiment-qwen38-27b-nvfp4",
+  "model": "Inferact/Qwen3.8-27B-NVFP4",
+  "endpoint": "http://localhost:8000/v1",
+  "category": "all",
+  "params": {
+    "warmup": 5,
+    "runs": 20,
+    "concurrent": 4,
+    "tokens": 512
+  },
+  "gpu": {
+    "vram_used_before_mb": 58029,
+    "vram_used_after_mb": 58035,
+    "gpu_util_before_pct": 0,
+    "gpu_util_after_pct": 56
+  },
+  "latency": {
+    "ttft_ms_mean": 66.57,
+    "ttft_ms_median": 66.21,
+    "ttft_ms_p95": 68.75,
+    "ttft_ms_min": 65.85,
+    "ttft_ms_max": 68.75,
+    "total_ms_mean": 67.4,
+    "total_ms_median": 67.02,
+    "total_runs": 20
+  },
+  "throughput": {
+    "tokens_per_sec_mean": 57.98,
+    "tokens_per_sec_median": 58.13,
+    "tokens_per_sec_min": 54.34,
+    "tokens_per_sec_max": 60.92,
+    "target_tokens": 512,
+    "total_runs": 20
+  },
+  "stress": {
+    "concurrent": 4,
+    "rounds": 20,
+    "total_requests": 80,
+    "success": 80,
+    "fail": 0,
+    "avg_time_per_request_s": 2.896,
+    "total_throughput_req_per_s": 6.9
+  }
+}

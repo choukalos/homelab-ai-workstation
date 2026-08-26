@@ -1,10 +1,24 @@
-# vLLM Qwen3.6-27B — Primary model (daily / qwen-coder / experiment)
-# Usage: docker compose -f compose/draft/qwen-coder.yml up -d
+# vLLM Qwen3.8-27B NVFP4 — Primary model (daily / qwen-coder / llms)
+# Promoted from experiment-qwen38-27b-nvfp4 on 2026-08-24 (verified config, benchmark 20260823_160055)
+# Serves as qwen38-27b on port 8000. Container is qwen38 (renamed from qwen36 on 2026-08-24).
+# Usage: docker compose -f compose/qwen-coder.yml up -d
+#
+# 2026-08-25 speed fix (applied + verified, benchmark 20260825_222844: 123.95 tok/s
+# @ 92% GPU util, up from 58-63 tok/s @ 56-59% with --enforce-eager):
+#   - removed --enforce-eager (it disabled torch.compile + CUDA graphs -> decode was
+#     CPU-launch-bound: 58-63 tok/s @ 56-59% GPU util vs 92 tok/s @ 97% util on the
+#     same model without it, benchmark 20260815_011859)
+#   - MTP 3 -> 2 tokens: 3rd speculative token only accepted ~55% of the time (live
+#     metrics) and vLLM warns multi-forward on the same MTP layer lowers acceptance;
+#     2 matches the vLLM Qwen3-Next recipe and the old INT4 daily-driver config
+#     (137 tok/s baseline).
+# If CUDA graph capture OOMs/crashes on restart, fall back to
+# --compilation-config '{"cudagraph_mode":"PIECEWISE"}' instead of full eager.
 
 services:
-  qwen36:
+  qwen38:
     image: vllm/vllm-openai:latest
-    container_name: qwen36
+    container_name: qwen38
     restart: unless-stopped
     ipc: host
     shm_size: "16gb"
@@ -19,24 +33,25 @@ services:
       - /home/chuck/data/models:/data/models
       - /home/chuck/homelab/scripts/templates:/templates:ro
     command: >
-      --chat-template /templates/qwen3-fixed-chat-template.jinja
-      --model Lorbus/Qwen3.6-27b-int4-AutoRound
-      --served-model-name qwen36-27b
+      --model unsloth/Qwen3.8-27B-NVFP4
+      --served-model-name qwen38-27b
       --host 0.0.0.0
       --port 8000
-      --max-model-len 200000
+      --max-model-len 196608
       --max-num-seqs 3
       --max-num-batched-tokens 8192
-      --gpu-memory-utilization 0.66
+      --gpu-memory-utilization 0.75
       --kv-cache-dtype fp8
       --enable-prefix-caching
       --enable-chunked-prefill
       --enable-auto-tool-choice
-      --tool-call-parser qwen3_xml
+      --tool-call-parser qwen3_coder
       --trust-remote-code
-      --reasoning-parser qwen3                                                                                                                                                                                                                  
-      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'                                                                                                                                                                        
-      --default-chat-template-kwargs '{"preserve_thinking":true}'          
+      --limit-mm-per-prompt '{"image": 5, "video": 2}'
+      --reasoning-parser qwen3
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      --default-chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "high"}'
+      --override-generation-config '{"temperature": 0.7, "top_p": 0.95}'
     deploy:
       resources:
         reservations:

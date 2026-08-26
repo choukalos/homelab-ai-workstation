@@ -1,0 +1,10 @@
+{
+  "ttft_ms_mean": 66.57,
+  "ttft_ms_median": 66.21,
+  "ttft_ms_p95": 68.75,
+  "ttft_ms_min": 65.85,
+  "ttft_ms_max": 68.75,
+  "total_ms_mean": 67.4,
+  "total_ms_median": 67.02,
+  "total_runs": 20
+}
