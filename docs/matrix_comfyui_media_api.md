@@ -4,6 +4,10 @@
 > **Status:** verified end-to-end 2026-08-26 (all flows tested on this box, VRAM + OCR checked).
 > **Replaces:** any prior ComfyUI integration (old SDXL/FLUX-era workflows).
 > **Ops doc:** see `docs/matrix_images_mode.md` for operator-facing details (mode, VRAM, maintenance).
+> **Higher-level orchestrator:** this doc covers the low-level ComfyUI image create/edit API. For full
+> media production (storyboard → shots → TTS/music/SFX → upscale → assembly) use the **media-pipeline**
+> service on port 8189 (see `docs/matrix_images_mode.md` §Media pipeline orchestrator, `media-pipeline/`,
+> and the remote client in `media-mcp-client/`).
 
 ---
 

@@ -190,22 +190,27 @@ docker compose -f compose/qwen-coder.yml up -d
 
 ## Image generation (ComfyUI) — not a mode
 
-> Updated 2026-08-26: image generation no longer requires stopping vLLM.
+> Updated 2026-08-27: image generation no longer requires stopping vLLM.
 > ComfyUI (Qwen-Image) runs **concurrently with any mode** at a ~12 GB VRAM
-> budget (`--reserve-vram 60`). `matrix-coder` stays online.
+> budget (`--reserve-vram 60`). `matrix-coder` stays online. The **media-pipeline**
+> orchestrator (port 8189) runs in the same `image` profile and starts/stops with ComfyUI.
 
 **Start / stop:**
 ```bash
-docker compose -f compose/comfyui.yml --profile image up -d    # start
-curl -s http://localhost:8188/system_stats | head -c 100       # verify
-docker compose -f compose/comfyui.yml --profile image down     # stop
+docker compose -f compose/comfyui.yml --profile image up -d    # start (ComfyUI + media-pipeline)
+curl -s http://localhost:8188/system_stats | head -c 100       # verify ComfyUI
+curl -s http://localhost:8189/health                           # verify media-pipeline
+docker compose -f compose/comfyui.yml --profile image down     # stop (both)
 ```
 
 **VRAM:** ~12 GB cap; 9.3–14.4 GB measured peaks; total-GPU peak ≤ ~71.2 GB.
 Idle cost ~0.7 GB — safe to leave running.
 
+**Media-pipeline rebuild** (after code changes): `model-manager rebuild media-pipeline`.
+
 **Details:** [ComfyUI Media API](matrix_comfyui_media_api.md) (tooling contract) ·
-[ComfyUI Ops](matrix_images_mode.md) (operations)
+[ComfyUI Ops](matrix_images_mode.md) (operations) · `media-pipeline/` (service) ·
+`media-mcp-client/` (remote MCP client)
 
 ---
 

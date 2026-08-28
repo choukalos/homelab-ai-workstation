@@ -1,0 +1,8 @@
+# venv + python artifacts (never commit)
+.venv/
+__pycache__/
+*.pyc
+
+# local runtime state / logs
+*.log
+nohup.out

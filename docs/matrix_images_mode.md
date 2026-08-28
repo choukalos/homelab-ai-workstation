@@ -36,6 +36,26 @@ under the ~70 GB acceptance gate, vLLM memory identical before/after.
 Full API contract (endpoints, workflow JSON, reference client, error handling):
 **`docs/matrix_comfyui_media_api.md`**.
 
+## Media pipeline orchestrator (port 8189)
+
+The **media-pipeline** service (container `media_pipeline`, image `media-pipeline:latest`) runs in the
+**same compose file + `image` profile** as ComfyUI, so it starts/stops with it. It is a thin FastAPI
+orchestrator (no GPU of its own) that drives ComfyUI + vLLM to produce full media: storyboard →
+keyframes → I2V shots → TTS/music/SFX → SeedVR2 upscale → ffmpeg assembly. It binds `0.0.0.0:8189`
+(LAN/remote-MCP only) and uses host networking + the docker socket to reach ComfyUI/VLLM and run
+`docker exec`/`cp` into `comfyui_backend`.
+
+```bash
+curl -s http://localhost:8189/health                 # {ok, max_concurrent, max_queue_depth, max_pending, pending, running, queued, queue_depth}
+model-manager rebuild media-pipeline                 # rebuild image from source + recreate (after code changes)
+```
+
+Bounded job queue: at most `MAX_CONCURRENT_JOBS` (default 1) media jobs run at once; the rest wait
+with `status=queued`. Waiting depth is capped by `MAX_QUEUE_DEPTH` (default 5) — total in-flight
+= `MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH` (default 6); when full, new jobs are rejected with
+`HTTP 503` + a `retry_after_seconds` back-off. Both set in `/home/chuck/homelab/.env`.
+See `media-pipeline/` (build context) and the remote client in `media-mcp-client/`.
+
 ## Operations
 
 ### Start / stop
@@ -100,3 +120,5 @@ Idle ComfyUI retains ~0.7 GB (model cache) — normal.
 - 2026-08-26: Qwen-Image-2512 + Qwen-Image-Edit-2511 (GGUF) at a 12 GB budget
   via `--reserve-vram 60`; full coexistence with vLLM; create + edit flows
   verified end-to-end (VRAM, timing, OCR).
+- 2026-08-27: **media-pipeline** orchestrator containerized (Docker, `image` profile) and integrated
+  into `model-manager` (starts/stops with ComfyUI; `model-manager rebuild media-pipeline`).

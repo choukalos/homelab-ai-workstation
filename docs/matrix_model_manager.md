@@ -24,7 +24,13 @@ model-manager profile validate <P>      # Validate a profile's compose/args/env
 model-manager health                    # Check all running services
 model-manager preflight <MODE>          # Run preflight checks without switching
 model-manager benchmark <PROFILE>       # Run benchmark harness against a profile
+model-manager rebuild [SERVICE]        # Rebuild a service image from source + recreate (default: media-pipeline)
 ```
+
+> **`rebuild`** (added 2026-08-27): rebuilds a service's Docker image from its build context and
+> recreates the running container, so code changes go live without a manual `docker build`/`up`.
+> `media-pipeline` is the default. ComfyUI stop uses `--profile image down` (profile services need the
+> profile flag or a bare `down` silently no-ops).
 
 ## Architecture
 

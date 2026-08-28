@@ -1,0 +1,57 @@
+# media-pipeline — thin FastAPI orchestrator (port 8189) that drives ComfyUI + VLLM
+# for the full media pipeline (storyboard, images, shots, TTS, music, SFX, upscale, assemble).
+# Status: ACTIVE — containerized; started/stopped as a unit with ComfyUI.
+# Updated: 2026-08-27
+
+name: media-pipeline
+alias: none  # not an LLM — no LiteLLM alias
+backend: media-pipeline
+status: active
+
+model:
+  description: >
+    Thin orchestrator (no GPU, no models). Submits ComfyUI workflows, calls VLLM for
+    storyboards, runs TTS/ACE-Step workers + ffmpeg via `docker exec` into comfyui_backend.
+    Bounded job queue (MAX_CONCURRENT_JOBS, default 1 — set in /home/chuck/homelab/.env).
+  docs: docs/media-todo.md
+  expected_vram: "0 GB (all heavy lifting happens in comfyui_backend / VLLM)"
+
+launch:
+  container: media_pipeline
+  image: media-pipeline:latest
+  compose: compose/comfyui.yml
+  profile: image
+  port: 8189
+  network: host  # reaches ComfyUI 127.0.0.1:8188 + VLLM 127.0.0.1:8000 on the host loopback
+  build:
+    context: media-pipeline
+    dockerfile: Dockerfile
+  rebuild: "model-manager rebuild media-pipeline"   # rebuild image from source + recreate
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock     # docker exec/cp into comfyui_backend
+    - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run
+    - /home/chuck/data/comfyui/basedir:/home/chuck/data/comfyui/basedir
+    - /home/chuck/homelab/.env:/home/chuck/homelab/.env:ro
+
+health:
+  endpoint: http://localhost:8189/health
+  note: Returns {ok, gpu_locked, jobs, max_concurrent, running, queued, queue_depth}
+
+compatible_modes:
+  - images  # rides along with ComfyUI (same compose file + profile "image")
+
+mode_requirements:
+  must_stop: []
+  must_keep:
+    - ComfyUI (comfyui_backend) — REQUIRED (this service drives it)
+  must_have:
+    - VLLM (qwen38) — for /storyboard (Qwen)
+
+security:
+  - Binds 0.0.0.0:8189 — LAN/internal only, do NOT expose publicly (same posture as ComfyUI)
+  - Mounts /var/run/docker.sock — needed for docker exec/cp into comfyui_backend (trusted host)
+
+notes:
+  - "2026-08-27: containerized (was a host nohup process + staged systemd unit). Now built from media-pipeline/Dockerfile and managed via compose/comfyui.yml (profile image); starts/stops with ComfyUI. Rebuild: model-manager rebuild media-pipeline."
+  - "Config source: /home/chuck/homelab/.env (MAX_CONCURRENT_JOBS, ...). Loaded at startup."
+  - "Remote media-mcp client reaches it at http://<gpu-host>:8189 (LAN). See media-mcp-client/."

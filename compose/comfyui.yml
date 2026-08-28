@@ -28,3 +28,27 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # media-pipeline — thin FastAPI orchestrator (port 8189) that drives ComfyUI + VLLM
+  # for the full media pipeline (storyboard/images/shots/TTS/music/SFX/upscale/assemble).
+  # Runs with HOST networking (reaches ComfyUI 127.0.0.1:8188 + VLLM 127.0.0.1:8000 on the
+  # host loopback) and mounts the docker socket so it can `docker exec`/`docker cp` into
+  # comfyui_backend (workers, ffmpeg, job dirs). Started/stopped as a unit with ComfyUI
+  # (same profile "image"). Rebuild after code changes: model-manager rebuild media-pipeline
+  media-pipeline:
+    build:
+      context: ../media-pipeline
+      dockerfile: Dockerfile
+    image: media-pipeline:latest
+    container_name: media_pipeline
+    restart: unless-stopped
+    profiles: ["image"]
+    network_mode: host
+    environment:
+      - PIPELINE_HOST=0.0.0.0   # LAN-reachable for the remote media-mcp client (do NOT expose publicly)
+      - PIPELINE_PORT=8189
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock          # docker exec/cp into comfyui_backend
+      - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run          # job dir (media_jobs)
+      - /home/chuck/data/comfyui/basedir:/home/chuck/data/comfyui/basedir # ComfyUI input/output
+      - /home/chuck/homelab/.env:/home/chuck/homelab/.env:ro              # config (MAX_CONCURRENT_JOBS, ...)

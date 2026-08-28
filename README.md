@@ -21,6 +21,7 @@ Thor clients & tools
 | **node-exporter** | node-exporter | 9100 | System metrics |
 | **dcgm-exporter** | dcgm-exporter | 9400 | GPU metrics |
 | **ComfyUI** | comfyui_backend | 8188 | Image generation + editing (Qwen-Image; runs concurrently with vLLM) |
+| **Media pipeline** | media_pipeline | 8189 | Media orchestrator (storyboard→shots→TTS/music/SFX→upscale→assemble); drives ComfyUI + vLLM, runs in a Docker container managed by model-manager |
 
 All ports are LAN-only. Never exposed publicly.
 
@@ -40,7 +41,9 @@ All ports are LAN-only. Never exposed publicly.
 | `experiment` | Candidate model | embeddings | — | Test new models |
 
 > Image generation is **not a mode** — ComfyUI (Qwen-Image, ~12 GB VRAM cap) runs
-> concurrently with vLLM. See [ComfyUI Media API](docs/matrix_comfyui_media_api.md).
+> concurrently with vLLM. The **media-pipeline** service (port 8189) orchestrates the full
+> media flow on top of ComfyUI + vLLM and is managed as a unit with ComfyUI (see
+> [ComfyUI Media API](docs/matrix_comfyui_media_api.md) and `media-pipeline/`).
 
 ### Switching Modes
 
@@ -104,7 +107,7 @@ home/
     qwen-long.yml       # vLLM Qwen3.6-27B (long-context, optimized)
     gemma4-moe.yml      # Ollama (gemma4 + embeddings)
     experiment.yml      # vLLM template (copy & edit)
-    comfyui.yml         # ComfyUI (Qwen-Image create + edit)
+    comfyui.yml         # ComfyUI (Qwen-Image create + edit) + media-pipeline orchestrator
     metrics.yml         # node-exporter + dcgm-exporter
     experiments/        # Named experiment compose files
       gemma4-31b.yml
@@ -126,6 +129,8 @@ home/
     matrix_health.sh    # Quick health checks
     vllm_feature_eval.sh # vLLM feature testing
   docs/                 # Design docs & reference materials
+  media-pipeline/       # Media orchestrator service (Docker build context: server.py, workflows.py, Dockerfile)
+  media-mcp-client/     # Remote MCP client (thin HTTP client + FastMCP tools for the media pipeline)
   state/                # Runtime state (gitignored)
     experiment_archive.md  # Experiment start/end history
   .env                  # Environment vars (gitignored)
@@ -155,6 +160,7 @@ home/
 | Switch experiments | `./scripts/model-manager experiment switch <NAME>` |
 | Experiment history | `./scripts/model-manager experiment archive` |
 | Health check (JSON) | `./scripts/matrix_health.sh --json` |
+| Rebuild media-pipeline | `./scripts/model-manager rebuild media-pipeline` |
 
 ## Docs
 

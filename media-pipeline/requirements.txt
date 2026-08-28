@@ -1,0 +1,7 @@
+# media-pipeline service (GPU host) — thin orchestrator, no GPU deps.
+# Host install: uv venv .venv && uv pip install -r requirements.txt
+# Container: see Dockerfile (python:3.12-slim + docker CLI + these).
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+requests>=2.31

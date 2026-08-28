@@ -42,7 +42,7 @@ MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
 MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[experiment]="experiment embeddings"
-MODE_PROFILES[images]="comfyui matrix-gemma4-moe embeddings"
+MODE_PROFILES[images]="comfyui media-pipeline matrix-gemma4-moe embeddings"
 
 # Colors
 RED='\033[0;31m'
@@ -807,10 +807,11 @@ cmd_mode_switch() {
         fi
     fi
     
-    # Stop ComfyUI if needed
+    # Stop ComfyUI if needed (also stops media-pipeline — same compose file + profile "image").
+    # NOTE: must pass --profile image, else `down` leaves profile services running.
     if [[ "$comfyui_action" == "stop" ]]; then
-        sub_section "Stopping ComfyUI..."
-        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" down 2>&1 | sed 's/^/    /' || true
+        sub_section "Stopping ComfyUI (+ media-pipeline)..."
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down 2>&1 | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -1195,6 +1196,55 @@ except:
         echo -e "  ${GREEN}dcgm-exporter${NC}: UP (port 9400)"
     else
         echo -e "  ${RED}dcgm-exporter${NC}: DOWN"
+    fi
+}
+
+# Rebuild a containerized service's image from its source, then recreate the running
+# container so it picks up the new code. Currently supports media-pipeline.
+#   model-manager rebuild                # defaults to media-pipeline
+#   model-manager rebuild media-pipeline
+cmd_rebuild() {
+    local service="${1:-media-pipeline}"
+    local compose_file
+    case "$service" in
+        media-pipeline)
+            compose_file="compose/comfyui.yml"
+            ;;
+        *)
+            echo -e "  ${RED}Unknown service: $service${NC}"
+            echo -e "  Supported: media-pipeline"
+            return 1
+            ;;
+    esac
+
+    section "Rebuilding $service"
+    echo -e "  Compose file: ${BOLD}$compose_file${NC}"
+    echo -e "  Building image (first run pulls base + docker CLI — can take a minute)..."
+    if ! docker compose -f "$COMPOSE_DIR/$compose_file" --profile image build "$service" 2>&1 | sed 's/^/    /'; then
+        echo -e "  ${RED}✗ Build failed — see output above${NC}"
+        return 1
+    fi
+    echo -e "  ${GREEN}✓ Image built${NC}"
+
+    # If the container is running, recreate it so it runs the new image.
+    local container
+    container=$(profile_container "$service")
+    if [[ -z "$container" ]]; then
+        container="media_pipeline"
+    fi
+    if container_running "$container"; then
+        echo -e "  Recreating running container ($container)..."
+        docker compose -f "$COMPOSE_DIR/$compose_file" --profile image up -d "$service" 2>&1 | sed 's/^/    /'
+        sleep 2
+        if container_running "$container"; then
+            echo -e "  ${GREEN}✓ $service rebuilt + restarted${NC}"
+        else
+            echo -e "  ${RED}✗ Container did not come up — check: docker logs $container${NC}"
+            return 1
+        fi
+    else
+        echo -e "  ${YELLOW}Container not running — image rebuilt only.${NC}"
+        echo -e "  Start it with: model-manager mode switch images"
     fi
 }
 
@@ -1729,6 +1779,7 @@ usage() {
     echo "  profile show <PROFILE>    Show a profile's full spec"
     echo "  profile validate <P>      Validate a profile"
     echo "  health                    Check all running services"
+    echo "  rebuild [SERVICE]         Rebuild a service image from source + recreate (default: media-pipeline)"
     echo "  preflight <MODE>          Run preflight checks without switching"
     echo "  benchmark <PROFILE>       Run benchmark harness"
     echo ""
@@ -1789,6 +1840,9 @@ case "$CMD" in
         ;;
     health)
         cmd_health
+        ;;
+    rebuild)
+        cmd_rebuild "$@"
         ;;
     preflight)
         cmd_preflight "$@"

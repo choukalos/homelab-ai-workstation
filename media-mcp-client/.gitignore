@@ -1,0 +1,4 @@
+# python artifacts (never commit)
+__pycache__/
+*.pyc
+.venv/
