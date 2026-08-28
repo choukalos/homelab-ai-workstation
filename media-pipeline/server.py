@@ -291,7 +291,7 @@ def flow_storyboard(payload: dict, jid: str):
         "model": VLLM_MODEL,
         "messages": [{"role": "system", "content": sys},
                      {"role": "user", "content": f"Brief: {brief}"}],
-        "temperature": 0.7, "max_tokens": 2000,
+        "temperature": 0.7, "max_tokens": 16000,
     }).encode()
     req = urllib.request.Request(VLLM, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
@@ -360,10 +360,11 @@ def flow_tts(payload: dict, jid: str):
 def flow_music(payload: dict, jid: str):
     out_host = JOB_DIR / jid / "music.wav"
     out_container = f"{JOB_DIR_CONTAINER}/{jid}/music.wav"  # worker runs inside container
-    run_worker("acestep_worker.py", ["--prompt", payload["prompt"],
-                "--lyrics", payload.get("lyrics", ""),
-                "--duration", str(int(payload.get("duration", 30))),
-                "--seed", str(int(payload.get("seed", 42))), "--out", out_container], timeout=3600)
+    with GPU_LOCK:
+        run_worker("acestep_worker.py", ["--prompt", payload["prompt"],
+                    "--lyrics", payload.get("lyrics", ""),
+                    "--duration", str(int(payload.get("duration", 30))),
+                    "--seed", str(int(payload.get("seed", 42))), "--out", out_container], timeout=3600)
     return {"audio": str(out_host)}
 
 
