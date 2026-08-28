@@ -71,7 +71,7 @@ dashboards. Matrix remains a compute-only appliance — no monitoring stack inst
 
 These are checked by `preflight.sh` and the model manager during mode switches.
 
-### vLLM (Qwen3.6-27B)
+### vLLM (Qwen3.8-27B NVFP4)
 
 | Property | Value |
 |---|---|
@@ -138,7 +138,7 @@ for m in data.get('models', []):
 **Note:** Ollama has no `/metrics` endpoint. GPU memory used by Ollama models
 is tracked via `nvidia-smi` / dcgm-exporter.
 
-### ComfyUI
+### ComfyUI + media-pipeline
 
 | Property | Value |
 |---|---|
@@ -154,6 +154,21 @@ curl -sf --max-time 5 http://localhost:8188 > /dev/null
 
 ComfyUI has no standardized health endpoint. Port responsiveness is the best indicator.
 
+| Property | Value |
+|---|---|
+| Container | `media_pipeline` |
+| Port | `8189` |
+| Health endpoint | `GET /health` → `{"ok": true, ...}` |
+| Compose | `compose/comfyui.yml` (profile: `image`) |
+
+**Health check:**
+```bash
+curl -sf --max-time 5 http://localhost:8189/health
+```
+
+The media-pipeline runs in the same `image` profile and starts/stops with ComfyUI.
+See `docs/matrix_comfyui_media_api.md` for the full API.
+
 ---
 
 ## Operational Status (CLI)
@@ -163,7 +178,10 @@ ComfyUI has no standardized health endpoint. Port responsiveness is the best ind
 **File:** `state/current_mode`
 
 Plain text file containing the active mode name (`daily`, `qwen-coder`, `qwen-long`,
-`llms`, `experiment`, `images`). Set by the model manager during mode switches.
+`llms`, `experiment`). Set by the model manager during mode switches.
+
+> The old `images` mode is retired (2026-08-27) — image generation runs concurrently
+> with every mode; see `docs/matrix_runtime_modes.md`.
 
 ```bash
 cat /home/chuck/homelab/state/current_mode
@@ -216,13 +234,15 @@ NVIDIA RTX PRO 5000 72GB Blackwell, 84, 56575 MiB, 73415 MiB, 92 %, 300.63 W
 
 ### VRAM Budget by Mode
 
-| Mode | vLLM | Ollama | ComfyUI | Total | Headroom |
+| Mode | vLLM | Ollama | ComfyUI + media-pipeline | Total | Headroom |
 |---|---|---|---|---|---|
-| `daily` | ~55 GB (0.75 util) | ~17 GB + 0.3 GB | — | ~72 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
-| `qwen-coder` | ~55 GB (0.75 util) | ~0.3 GB | — | ~55 GB | ~17 GB |
-| `qwen-long` | ~50-55 GB | ~0.3 GB | — | ~50-55 GB | ~17-22 GB |
-| `experiment` | varies | varies | — | varies | varies |
-| `images` | — | ~17 GB + 0.3 GB | ~30-40 GB | ~48-58 GB | ~14-24 GB |
+| `daily` | ~55 GB (0.75 util) | ~17 GB + 0.3 GB | ~12 GB cap (concurrent) | ~72 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
+| `qwen-coder` | ~55 GB (0.75 util) | ~0.3 GB | ~12 GB cap (concurrent) | ~67 GB | ~5 GB |
+| `qwen-long` | ~50-55 GB | ~0.3 GB | ~12 GB cap (concurrent) | ~62-67 GB | ~5-10 GB |
+| `experiment` | varies | varies | ~12 GB cap (concurrent) | varies | varies |
+
+> ComfyUI runs at a `--reserve-vram 60` cap (~12 GB; 9.3–14.4 GB measured peaks).
+> Idle cost ~0.7 GB — safe to leave running alongside vLLM in any mode.
 
 ### VRAM Warning Thresholds
 
@@ -296,7 +316,7 @@ Mode: daily
 
   vLLM  : UP   (qwen38-27b, port 8000)
   Ollama: UP   (gemma4:26b, nomic-embed-text, port 11434)
-  ComfyUI: DOWN (not running — expected in daily mode)
+  ComfyUI: UP (port 8188) + media-pipeline: UP (port 8189)
   node-exporter: UP (port 9100)
   dcgm-exporter: UP (port 9400)
 

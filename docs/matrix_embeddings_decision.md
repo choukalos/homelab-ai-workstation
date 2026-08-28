@@ -75,7 +75,7 @@ Re-evaluate if any of the following change:
 - Ollama on Matrix becomes a bottleneck (unlikely given current load)
 - Matrix needs every MB of VRAM reclaimed (embeddings uses <100 MB)
 
-### Interim Rule (from matrix_todo.md)
+### Interim Rule (from the original matrix todo, now `TODO.md`)
 
 > Keep current embeddings path working. Do not move embeddings during the Matrix refactor.
 

@@ -25,20 +25,24 @@ Thor clients & tools
 
 All ports are LAN-only. Never exposed publicly.
 
-## Current Mode: `daily`
+## Current Mode: `qwen-coder`
+
+> Check live mode with `cat state/current_mode` (source of truth). Last switch: 2026-08-23 experiment → qwen-coder.
 
 - **matrix-coder** — Qwen3.8-27B NVFP4 via vLLM (primary model for chat, coding, tools, agents, vision)
-- **matrix-gemma4-moe** — Gemma4 26B MoE via Ollama (light/fast tasks)
 - **embeddings** — Nomic Embed Text via Ollama
+- **matrix-gemma4-moe** — offline in this mode (Gemma4 26B MoE loads on demand; available in `daily`/`llms`)
+- **media pipeline** — ComfyUI + media-pipeline run concurrently (image/video/music generation)
 
 ## Modes
 
 | Mode | vLLM | Ollama | ComfyUI | Use Case |
 |---|---|---|---|---|
-| `daily` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | — | Normal use |
-| `qwen-coder` | Qwen3.8-27B NVFP4 | embeddings only | — | Max coding performance |
-| `qwen-long` | Qwen3.6-27B (240K ctx) | embeddings only | — | Long-context work |
-| `experiment` | Candidate model | embeddings | — | Test new models |
+| `daily` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | ✅ (concurrent) | Normal use |
+| `qwen-coder` | Qwen3.8-27B NVFP4 | embeddings only | ✅ (concurrent) | Max coding performance |
+| `qwen-long` | Qwen3.6-27B (240K ctx) | embeddings only | ✅ (concurrent) | Long-context work |
+| `llms` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | ✅ (concurrent) | Multi-model tool experiments |
+| `experiment` | Candidate model | embeddings | ✅ (concurrent) | Test new models |
 
 > Image generation is **not a mode** — ComfyUI (Qwen-Image, ~12 GB VRAM cap) runs
 > concurrently with vLLM. The **media-pipeline** service (port 8189) orchestrates the full
@@ -128,11 +132,17 @@ home/
     benchmark.sh        # Performance benchmarks
     matrix_health.sh    # Quick health checks
     vllm_feature_eval.sh # vLLM feature testing
+    comfyui_venv_deps.sh # Reinstall custom-node deps after a ComfyUI venv rebuild (numpy<2.5 pin)
   docs/                 # Design docs & reference materials
   media-pipeline/       # Media orchestrator service (Docker build context: server.py, workflows.py, Dockerfile)
   media-mcp-client/     # Remote MCP client (thin HTTP client + FastMCP tools for the media pipeline)
+  qwen3.8-experiment/   # Qwen3.8 validation scripts (image analysis, tool-calling tests)
+  data/benchmarks/      # Benchmark baseline + result snapshots
   state/                # Runtime state (gitignored)
     experiment_archive.md  # Experiment start/end history
+  thor.litellm.config.yml  # Thor LiteLLM proxy config (deployed on Thor)
+  EXPERIMENTS_RESULTS.md # Experiment round results & promotion history
+  TODO.md               # Consolidated open work
   .env                  # Environment vars (gitignored)
 ```
 
@@ -172,6 +182,12 @@ Detailed design docs are in `docs/`:
 - [Optimization Profiles](docs/matrix_optimization_profiles.md) — Arg rationale & VRAM budget
 - [vLLM Features](docs/matrix_vllm_features.md) — Feature status & eval plans
 - [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
-- [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — image create/edit API for tooling integration
+- [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — media pipeline tooling contract (images, video, TTS, music, SFX, upscale, assemble)
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
+- [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision
+- [Inventory](docs/matrix_inventory.md) — Append-only system snapshots
+- [Manual Tasks](docs/matrix_manual_tasks.md) — Operator-approval tasks (resolved + open)
+- [Validation Log](docs/matrix_validation_log.md) — Post-change validation evidence
+- [TODO](TODO.md) — Consolidated open work
+- [Experiment Results](EXPERIMENTS_RESULTS.md) — Experiment rounds, fixes, promotions

@@ -1,7 +1,7 @@
 # Matrix — Thor Integration Contract
 
 > Created: 2026-07-03
-> Version: 1.0
+> Version: 1.1
 > Maintainer: Chuck (homelab operator)
 
 **This document defines the interface between Thor (application/orchestration layer)
@@ -31,7 +31,7 @@ not the IP address. The IP may change.
 
 | Port | Service | Protocol | Purpose | Always Available? |
 |---|---|---|---|---|
-| `8000` | vLLM | HTTP/JSON (OpenAI-compatible) | Primary model inference (`matrix-coder`) | ✅ Yes (except `images` mode) |
+| `8000` | vLLM | HTTP/JSON (OpenAI-compatible) | Primary model inference (`matrix-coder`) | ✅ Yes (except during mode switches) |
 | `11434` | Ollama | HTTP/JSON | Light model + embeddings (`matrix-gemma4-moe`, `embeddings`) | ✅ Yes (all modes except `qwen-coder`/`qwen-long`) |
 
 ### Infrastructure Endpoints (Thor Prometheus Scrape)
@@ -48,7 +48,8 @@ not the IP address. The IP may change.
 
 | Port | Service | Protocol | Available In |
 |---|---|---|---|
-| `8188` | ComfyUI | HTTP/JSON | `images` mode only (internal, not for Thor) |
+| `8188` | ComfyUI | HTTP/JSON | Concurrent with all modes (internal, not for Thor) |
+| `8189` | media-pipeline | HTTP/JSON | Concurrent with all modes, when the `image` profile is up (internal; consumed by the MCP client via `MEDIA_PIPELINE_URL`, not by Thor LiteLLM) |
 
 ---
 
@@ -59,8 +60,8 @@ Thor's `thor.litellm.config.yml` defines these aliases that route to Matrix:
 | Alias | Thor LiteLLM Config | Matrix Endpoint | Valid In Modes |
 |---|---|---|---|
 | `matrix-coder` | `openai/qwen38-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment` |
-| `matrix-gemma4-moe` | `ollama/gemma4:26b` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `images` |
-| `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `images`, `experiment` |
+| `matrix-gemma4-moe` | `ollama/gemma4:26b` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms` |
+| `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `qwen-coder`, `qwen-long`, `experiment` |
 
 ### Critical Rule: The `matrix-coder` Alias Is Stable
 
@@ -70,12 +71,13 @@ alias stays the same. Clients never need config changes.
 
 | Mode | `matrix-coder` → | `matrix-gemma4-moe` → | `embeddings` → |
 |---|---|---|---|
-| `daily` | Qwen3.6-27B (vLLM :8000) ✅ | Gemma4-26B (Ollama :11434) ✅ | nomic-embed-text (Ollama :11434) ✅ |
-| `qwen-coder` | Qwen3.6-27B @ higher VRAM ✅ | ❌ OFFLINE (gemma4 unloaded) | ✅ |
-| `qwen-long` | Qwen3.6-27B long-context ✅ | ❌ OFFLINE | ✅ |
-| `llms` | Qwen3.6-27B ✅ | Gemma4-26B ✅ | ✅ |
+| `daily` | Qwen3.8-27B NVFP4 (vLLM :8000) ✅ | Gemma4-26B (Ollama :11434) ✅ | nomic-embed-text (Ollama :11434) ✅ |
+| `qwen-coder` | Qwen3.8-27B NVFP4 @ higher VRAM ✅ | ❌ OFFLINE (gemma4 unloaded) | ✅ |
+| `qwen-long` | Qwen3.6-27B INT4 long-context (240K) ✅ | ❌ OFFLINE | ✅ |
+| `llms` | Qwen3.8-27B NVFP4 ✅ | Gemma4-26B ✅ | ✅ |
 | `experiment` | *Candidate model* on :8000 ✅ | Depends on candidate size | Depends on candidate size |
-| `images` | ❌ OFFLINE (vLLM stopped) | Gemma4-26B ✅ | ✅ |
+
+> **Note (v1.1):** the old `images` mode is retired. Image generation (ComfyUI + media-pipeline) runs **concurrently** with vLLM in every mode at a ~12 GB VRAM budget; `matrix-coder` never goes offline for image work.
 
 ---
 
@@ -123,7 +125,7 @@ Timeout: 5s
 
 ### vLLM (port 8000) is Down
 
-- **Cause:** Mode switch to `images`, manual stop, or crash
+- **Cause:** Mode switch (vLLM restart), manual stop, or crash
 - **Thor impact:** `matrix-coder` alias fails after `num_retries: 2` (~3-6 seconds)
 - **Client sees:** HTTP 503/504 from LiteLLM
 - **Thor behavior:** No automatic failover. The alias remains configured; errors propagate to the client.
@@ -165,15 +167,14 @@ Mode switches are **operator-initiated on Matrix**. Thor is NOT notified in adva
 
 | Transition | Duration | Impact on Thor |
 |---|---|---|
-| `daily` → `images` | ~2-5 min | `matrix-coder` offline during switch, then permanently offline while in `images` |
-| `images` → `daily` | ~2-5 min | `matrix-coder` offline during switch, then recovers |
 | `daily` → `qwen-coder` | ~2-5 min | `matrix-gemma4-moe` offline during/after; `matrix-coder` briefly down during restart |
 | `daily` → `qwen-long` | ~2-5 min | `matrix-gemma4-moe` offline during/after; `matrix-coder` briefly down during restart |
 | `daily` → `experiment` | ~2-5 min | `matrix-coder` alias works but points to a different model temporarily |
 | `daily` → `llms` | ~0 min | No change (same as daily) |
 
 **Thor should expect brief outages (~30 sec) for any mode switch that involves restarting
-a service. Extended outages indicate a longer mode change (e.g., `images` mode).**
+a service. Image generation never causes an outage — ComfyUI + media-pipeline run
+concurrently with vLLM (see `docs/matrix_comfyui_media_api.md`).**
 
 ---
 
@@ -195,7 +196,7 @@ cd /home/chuck/homelab
 
 # Emergency: restore daily mode regardless of current state
 docker compose -f compose/qwen-coder.yml down    # Stop whatever is on port 8000
-docker compose -f compose/comfyui.yml --profile image down  # Stop ComfyUI if running
+docker compose -f compose/comfyui.yml --profile image down  # Stop ComfyUI + media-pipeline if running
 docker compose -f compose/metrics.yml up -d
 docker compose -f compose/qwen-coder.yml up -d
 docker compose -f compose/gemma4-moe.yml up -d
@@ -292,3 +293,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-03 | Initial contract document |
+| 1.1 | 2026-08-28 | Retired `images` mode (image generation now concurrent with all modes); added media-pipeline :8189 to optional endpoints; updated `matrix-coder` to Qwen3.8-27B NVFP4 (qwen-long stays Qwen3.6-27B INT4) |

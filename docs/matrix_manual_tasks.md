@@ -17,20 +17,13 @@
 
 ---
 
-## MANUAL TASK FOR CHUCK: Clean up stale containers
+## RESOLVED: Clean up stale containers
 
-**Reason:** `vllm-gemma` (exited 13 days ago), `vllm-qwen` (exited 12 days ago), `comfyui_backend` (exited 2 weeks ago), and `ollama-model-puller` (never started) are stopped containers consuming disk space.
+**Status:** **RESOLVED 2026-08-28** — `vllm-gemma`, `vllm-qwen`, and `ollama-model-puller` no longer exist (removed earlier). `comfyui_backend` is a **live service** (ComfyUI + media-pipeline run concurrently with vLLM) and must not be removed.
 
-**Command:**
-```bash
-docker rm vllm-gemma vllm-qwen comfyui_backend ollama-model-puller
-```
+**Remaining (optional):** 7 stopped experiment containers (`qwen36`, `qwen38-fp8`, `qwen38-nvfp4`, `qwen36-long`, `qwen3-next-80b`, `qwen36-perf`, `qwen36-mtp`) hold minor disk. Safe to `docker rm` — configs live in `compose/experiments/`. Left in place in case experiments are rerun (TODO: rerun 3/4/5, run 6).
 
-**Expected impact:** Frees minor disk space. No impact on running services.
-
-**Rollback:** None — containers are already stopped and have no live state.
-
-**Validation:** `docker ps -a` shows only running containers + any new ones.
+**Validation:** `docker ps -a` shows only running containers + stopped experiment leftovers.
 
 ---
 
@@ -56,7 +49,7 @@ All Ollama compose files and profiles updated to `5m`. No more drift between com
 
 ## RESOLVED: Decide on `switch.sh` mode names vs. plan modes
 
-**Status:** **RESOLVED** — `switch.sh` was deleted in Phase 1. The model manager (Phase 4) uses the plan mode names: `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment`, `images`.
+**Status:** **RESOLVED** — `switch.sh` was deleted in Phase 1. The model manager (Phase 4) uses the plan mode names: `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment`. (The `images` mode was retired 2026-08-27 — image generation now runs concurrently with all modes.)
 
 ---
 

@@ -369,3 +369,10 @@ png = run(edit_prompt(instruction="Change the title to …", image=name, seed=42
 - **Unique filename prefixes** per job — the counter (`_00001_`) only increments per prefix.
 - **Seeds:** lock seeds when iterating on a specific image; randomize for fresh generations.
 - **Watch item:** Qwen-Image-2.0 (better typography, native 2K) is API-only as of 2026-08; when open weights release, the same graph works with the new model file (node 1 swap).
+## 11. Changelog
+
+| Date | Change |
+|---|---|
+| 2026-08-28 | **Legacy cleanup.** Removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints, LTXV 0.9.8 fp8, SeedVR2 int8 build, duplicate XTTS dir, junk VAEs/bigvgan discriminator), 6 legacy workflow JSONs (kept `qwen-image-2512-infographic-720p.json` as reference), 4 obsolete custom nodes (animatediff-evolved, UltimateSDUpscale, ollamagemini, VideoConcat), and scratch/venv caches. All §6 in-use models verified intact; pipeline + ComfyUI health re-verified. |
+| 2026-08-28 | **Ops note:** the ComfyUI Python venv + uv cache live in `run/` (bind-mounted). Deleting them is safe — the container entrypoint self-heals and rebuilds the venv on restart (verified: full rebuild from network in ~15 min, no jobs lost). **Caveat:** the rebuilt venv has base ComfyUI deps only and resolves numpy 2.5 (breaks numba → comfyui-mmaudio import fails). Run `scripts/comfyui_venv_deps.sh restart` after any venv rebuild to (re)install the 4 custom-node dep sets with `numpy<2.5` pinned (verified 2026-08-28: all 5 custom nodes import, 726+ node classes registered). |
+| 2026-08-27 | Image generation runs concurrently with vLLM (no more exclusive `images` mode); media-pipeline added to the `image` compose profile. |
