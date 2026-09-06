@@ -7,7 +7,7 @@
 > (deleted 2026-09-06 — project complete).
 > **Related:** `docs/matrix_images_mode.md` §Media pipeline orchestrator (ops),
 > `docs/matrix_comfyui_media_api.md` (low-level ComfyUI :8188 API),
-> `matrix_media_work.md` (metering spec + implementation log),
+> `docs/matrix_validation_log.md` (2026-09-06 run — metering verification + calibration),
 > `media-mcp-client/README.md` (remote-side client + MCP tools).
 
 The **media-pipeline** service (container `media_pipeline`, image
@@ -109,7 +109,7 @@ Notes:
 | `upscale` | SeedVR2 3B FP8 (`b`) / 4xUltrasharp (`a2`) |
 | `assemble` | ffmpeg (in-container, CPU) |
 
-## 5. Metering (implemented 2026-09-06 — spec: `matrix_media_work.md`)
+## 5. Metering (implemented + calibrated 2026-09-06)
 
 The pipeline attributes each job to its `user`/`client` and measures the work:
 

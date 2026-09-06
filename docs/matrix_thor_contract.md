@@ -287,7 +287,7 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | `docs/matrix_media_pipeline_api.md` | Media-pipeline :8189 API contract + metering |
 | `docs/matrix_monitoring_health.md` | Health endpoints and metrics |
 | `docs/matrix_model_manager.md` | Model manager CLI (operator tool, not Thor-facing) |
-| `thor.litellm.config.yml` | Thor's LiteLLM proxy config (deployed on Thor) |
+| Thor's `thor.litellm.config.yml` | Thor's LiteLLM proxy config — **lives on Thor, not in this repo** (repo copy removed 2026-09-06 to avoid stale mirrors) |
 
 ---
 

@@ -2,7 +2,7 @@
 
 Drop this into the REMOTE machine's media-mcp server. The pipeline client
 forwards caller identity (`user`/`client`) on every job POST for metering
-attribution on the GPU host (spec: matrix_media_work.md §4.1): set
+attribution on the GPU host (docs/matrix_media_pipeline_api.md §5): set
 `MEDIA_USER` / `MEDIA_CLIENT` env vars (or rely on the OS username) on the
 media-mcp server; per-request overrides go through `MediaPipelineClient(user=, client=)`. It exposes one MCP tool
 per pipeline flow. Each tool BLOCKS until the GPU-host job finishes and returns

@@ -366,19 +366,12 @@ section "Network"
 HOSTNAME=$(hostname)
 echo "  Hostname: $HOSTNAME"
 
-# Check if Thor can reach Matrix (try Thor's LiteLLM config reference)
-LITELLM_CONFIG="$BASE_DIR/thor.litellm.config.yml"
-if [[ -f "$LITELLM_CONFIG" ]]; then
-    MATRIX_HOST=$(grep -oP 'matrix(?::\d+)?' "$LITELLM_CONFIG" 2>/dev/null | head -1 || true)
-    if [[ -n "$MATRIX_HOST" ]]; then
-        echo "  Thor config references: $MATRIX_HOST"
-        pass "LiteLLM config present and references matrix"
-    else
-        warn "LiteLLM config found but no matrix reference detected"
-    fi
-else
-    warn "thor.litellm.config.yml not found — cannot validate Thor connectivity"
-fi
+# Thor's LiteLLM proxy config lives on Thor (not in this repo — the repo copy was
+# removed 2026-09-06 to avoid stale mirrors). Matrix can't validate Thor-side
+# connectivity from here (no matrix→thor route); the alias contract is in
+# docs/matrix_thor_contract.md.
+echo "  Thor LiteLLM config: on Thor (not in repo) — contract: docs/matrix_thor_contract.md"
+pass "Thor contract doc present (config is Thor-side)"
 
 # ============================================================
 # 9. HEALTH ENDPOINTS (if applicable)

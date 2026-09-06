@@ -140,7 +140,6 @@ home/
   data/benchmarks/      # Benchmark baseline + result snapshots
   state/                # Runtime state (gitignored)
     experiment_archive.md  # Experiment start/end history
-  thor.litellm.config.yml  # Thor LiteLLM proxy config (deployed on Thor)
   EXPERIMENTS_RESULTS.md # Experiment round results & promotion history
   TODO.md               # Consolidated open work
   .env                  # Environment vars (gitignored)

@@ -181,7 +181,7 @@ See `docs/matrix_media_pipeline_api.md` for the full API.
 | Kill switch | `MEDIA_METRICS_ENABLED` in `/home/chuck/homelab/.env` (`false` → 404, no JSONL, zero behavior change) |
 | Durable log | `/home/chuck/data/comfyui/run/media_jobs/metrics/jobs.jsonl` (one line per job; 10 MB cap, keep-newest rotation) |
 
-**Metrics** (spec: `matrix_media_work.md`):
+**Metrics** (full contract: `docs/matrix_media_pipeline_api.md` §5):
 - `media_jobs_total{user,client,stage,status}` — job count by status (`done`/`error`/`timeout`)
 - `media_job_duration_seconds{user,stage}` — histogram (running time; queue wait is in `jobs.jsonl`)
 - `media_tokens_total{user,stage,kind}` — real vLLM tokens (storyboard only; `kind=prompt|completion`)

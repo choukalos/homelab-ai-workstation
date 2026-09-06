@@ -611,7 +611,7 @@ def health():
 
 @app.get("/metrics")
 def metrics():
-    """Prometheus text format (spec: matrix_media_work.md §3.2).
+    """Prometheus text format (contract: docs/matrix_media_pipeline_api.md §5).
     404 when MEDIA_METRICS_ENABLED=false (kill switch = zero behavior change)."""
     if not metering.ENABLED:
         raise HTTPException(404, "metrics disabled")

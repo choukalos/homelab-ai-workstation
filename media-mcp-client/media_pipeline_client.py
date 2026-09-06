@@ -72,7 +72,7 @@ class MediaPipelineClient:
         self.base = (base_url or DEFAULT_URL).rstrip("/")
         self.poll = poll
         # Identity for metering attribution on the GPU host (spec:
-        # matrix_media_work.md §4.1). Precedence: explicit arg > MEDIA_USER /
+        # docs/matrix_media_pipeline_api.md §5). Precedence: explicit arg > MEDIA_USER /
         # MEDIA_CLIENT env > OS username. Forwarded as `user`/`client` fields
         # on every job POST; the pipeline records them in /metrics + jobs.jsonl.
         self.user = user or os.environ.get("MEDIA_USER") or _default_user()

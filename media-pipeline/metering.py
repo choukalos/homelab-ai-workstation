@@ -1,6 +1,6 @@
 """Media-work metering — attributes per-job GPU work to user/client as work units + $.
 
-Design (spec: matrix_media_work.md v2.1):
+Design (contract: docs/matrix_media_pipeline_api.md §5):
   * Work units: steps×MP (images), frames×MP (video), output audio seconds
     (tts/music/sfx). Output artifacts are measured (ffprobe / image headers)
     where the payload doesn't carry the values.

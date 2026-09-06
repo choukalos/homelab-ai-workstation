@@ -57,18 +57,12 @@ with `status=queued`. Waiting depth is capped by `MAX_QUEUE_DEPTH` (default 5) â
 See `media-pipeline/` (build context) and the remote client in `media-mcp-client/`.
 
 **Full API contract + metering:** `docs/matrix_media_pipeline_api.md` (endpoints, job model,
-queue, VRAM budget, commercial recipe). Since 2026-09-06 the pipeline exposes `GET /metrics`
-(Prometheus `media_*` job/cost metrics, scraped by Thor) and appends one durable line per job to
-`/home/chuck/data/comfyui/run/media_jobs/metrics/jobs.jsonl`; every job POST accepts optional
-`user`/`client` fields for attribution. Kill switch: `MEDIA_METRICS_ENABLED=false` in `.env`
-(spec: `matrix_media_work.md`).
-
-**Metering (since 2026-09-06):** the pipeline attributes every job to its `user`/`client`
-(optional fields on every job POST) and measures work units (mpix_steps / mpix_frames /
-audio_seconds) at calibrated full-cost rates. `GET /metrics` (Prometheus, scraped by Thor)
-+ durable per-job log at `run/media_jobs/metrics/jobs.jsonl`. Kill switch:
-`MEDIA_METRICS_ENABLED` in `.env`. Full API contract: `docs/matrix_media_pipeline_api.md`;
-spec + calibration log: `matrix_media_work.md`.
+queue, VRAM budget, commercial recipe). Since 2026-09-06 the pipeline attributes every job to
+its `user`/`client` (optional fields on every job POST) and measures work units (mpix_steps /
+mpix_frames / audio_seconds) at calibrated full-cost rates: `GET /metrics` (Prometheus
+`media_*` job/cost metrics, scraped by Thor) + one durable line per job at
+`run/media_jobs/metrics/jobs.jsonl`. Kill switch: `MEDIA_METRICS_ENABLED=false` in `.env`.
+Verification + calibration log: `docs/matrix_validation_log.md` (2026-09-06 run).
 
 ## Operations
 
