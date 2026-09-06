@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import uvicorn
 
 import workflows as wf
@@ -76,6 +76,10 @@ def load_dotenv(path: str | None = None) -> None:
 
 
 load_dotenv()  # must run before MAX_CONCURRENT_JOBS is read below
+
+# Metering is imported AFTER load_dotenv() so the MEDIA_* env vars from .env
+# are visible to it (it reads config at import time).
+import metering  # noqa: E402
 
 # ------------------------------------------------------------------ job queue
 # Bounded FIFO queue + fixed worker pool. At most MAX_CONCURRENT_JOBS media jobs
@@ -183,9 +187,14 @@ def _worker_loop() -> None:
             set_status(jid, "running", started=time.time())
             result = FLOW_MAP[flow](payload, jid, **extra)
             set_status(jid, "done", output=result)
+        except subprocess.TimeoutExpired as e:
+            set_status(jid, "timeout", error=f"timeout: {e}")
+        except TimeoutError as e:
+            set_status(jid, "timeout", error=f"timeout: {e}")
         except Exception as e:  # noqa: BLE001 - keep the worker alive
             set_status(jid, "error", error=f"{type(e).__name__}: {e}")
         finally:
+            metering.record_job(JOBS.get(jid) or {})  # best-effort, never raises
             with _qcond:
                 if jid in _running:
                     _running.remove(jid)
@@ -221,6 +230,7 @@ def new_job(flow: str, payload: dict) -> str:
     _mkdir_job(jid)
     JOBS[jid] = {"id": jid, "flow": flow, "status": "queued", "created": time.time(),
                  "started": None, "finished": None, "output": {}, "error": None,
+                 "user": payload.get("user"), "client": payload.get("client"),
                  "payload": {k: v for k, v in payload.items() if k != "file_bytes"}}
     return jid
 
@@ -228,7 +238,7 @@ def new_job(flow: str, payload: dict) -> str:
 def set_status(jid: str, status: str, **kw):
     JOBS[jid]["status"] = status
     JOBS[jid].update(kw)
-    if status in ("done", "error"):
+    if status in ("done", "error", "timeout"):
         JOBS[jid]["finished"] = time.time()
 
 
@@ -295,7 +305,8 @@ def flow_storyboard(payload: dict, jid: str):
     }).encode()
     req = urllib.request.Request(VLLM, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
-        text = json.loads(r.read())["choices"][0]["message"]["content"]
+        resp = json.loads(r.read())
+    text = resp["choices"][0]["message"]["content"]
     text = text.strip()
     if text.startswith("```"):
         parts = text.split("```")
@@ -306,7 +317,11 @@ def flow_storyboard(payload: dict, jid: str):
     data = json.loads(text)
     out = JOB_DIR / jid / "storyboard.json"
     out.write_text(json.dumps(data, indent=2))
-    return {"storyboard": str(out), "n_shots": len(data.get("shots", []))}
+    # Real token usage from vLLM (metering prices storyboard at the live
+    # matrix-coder rate). prompt_tokens_details is null on this vLLM build,
+    # so no cached-token split.
+    return {"storyboard": str(out), "n_shots": len(data.get("shots", [])),
+            "usage": resp.get("usage") or {}}
 
 
 def flow_images(payload: dict, jid: str):
@@ -594,6 +609,18 @@ def health():
     }
 
 
+@app.get("/metrics")
+def metrics():
+    """Prometheus text format (spec: matrix_media_work.md §3.2).
+    404 when MEDIA_METRICS_ENABLED=false (kill switch = zero behavior change)."""
+    if not metering.ENABLED:
+        raise HTTPException(404, "metrics disabled")
+    with _qlock:
+        depth, active = len(_queue), len(_running)
+    metering.update_gauges(depth, active)
+    return Response(metering.render(), media_type=metering.CONTENT_TYPE_LATEST)
+
+
 @app.get("/jobs/{jid}")
 def job_status(jid: str):
     if jid not in JOBS:
@@ -630,14 +657,15 @@ async def api_images(payload: dict):
 
 @app.post("/images/edit")
 async def api_images_edit(file: UploadFile = File(...), prompt: str = Form(...),
-                          seed: int = Form(42), steps: int = Form(8)):
+                          seed: int = Form(42), steps: int = Form(8),
+                          user: str = Form(None), client: str = Form(None)):
     with job_slot():
-        jid = new_job("images_edit", {"prompt": prompt, "seed": seed, "steps": steps})
+        payload = {"prompt": prompt, "seed": seed, "steps": steps,
+                   "user": user, "client": client}
+        jid = new_job("images_edit", payload)
         await save_upload(jid, file)
         copy_to_comfy_input(jid, file.filename)
-        enqueue_job(jid, "images_edit",
-                    {"prompt": prompt, "seed": seed, "steps": steps},
-                    {"image_name": file.filename})
+        enqueue_job(jid, "images_edit", payload, {"image_name": file.filename})
     return {"job_id": jid}
 
 
@@ -646,21 +674,20 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
                     width: int = Form(768), height: int = Form(512),
                     frames: int = Form(97), fps: float = Form(25.0),
                     seed: int = Form(42), steps: int = Form(8),
-                    strength: float = Form(0.7)):
+                    strength: float = Form(0.7), user: str = Form(None),
+                    client: str = Form(None)):
     # strength: how strongly the keyframe anchors the clip. Lower = less
     # deviation/warble (empirically 0.7 is the knee; 0.6 marginally smoother,
     # 0.8+ adds motion but warble). Prompt for visual STYLE, not fast motion.
     with job_slot():
-        jid = new_job("shots", {"prompt": prompt, "width": width, "height": height,
-                                "frames": frames, "fps": fps, "seed": seed,
-                                "steps": steps, "strength": strength})
+        payload = {"prompt": prompt, "width": width, "height": height,
+                   "frames": frames, "fps": fps, "seed": seed,
+                   "steps": steps, "strength": strength,
+                   "user": user, "client": client}
+        jid = new_job("shots", payload)
         await save_upload(jid, file)
         copy_to_comfy_input(jid, file.filename)
-        enqueue_job(jid, "shots",
-                    {"prompt": prompt, "width": width, "height": height,
-                     "frames": frames, "fps": fps, "seed": seed,
-                     "steps": steps, "strength": strength},
-                    {"keyframe_name": file.filename})
+        enqueue_job(jid, "shots", payload, {"keyframe_name": file.filename})
     return {"job_id": jid}
 
 
@@ -683,32 +710,32 @@ async def api_music(payload: dict):
 @app.post("/sfx")
 async def api_sfx(file: UploadFile = File(...), duration: float = Form(8.0),
                   steps: int = Form(25), cfg: float = Form(4.5), seed: int = Form(42),
-                  prompt: str = Form(""), negative_prompt: str = Form(""), fps: int = Form(24)):
+                  prompt: str = Form(""), negative_prompt: str = Form(""), fps: int = Form(24),
+                  user: str = Form(None), client: str = Form(None)):
     with job_slot():
-        jid = new_job("sfx", {"duration": duration, "steps": steps, "cfg": cfg, "seed": seed,
-                              "prompt": prompt, "negative_prompt": negative_prompt, "fps": fps})
+        payload = {"duration": duration, "steps": steps, "cfg": cfg, "seed": seed,
+                   "prompt": prompt, "negative_prompt": negative_prompt, "fps": fps,
+                   "user": user, "client": client}
+        jid = new_job("sfx", payload)
         await save_upload(jid, file)
         video_rel = f"media_jobs/{jid}/input/{file.filename}"
-        enqueue_job(jid, "sfx",
-                    {"duration": duration, "steps": steps, "cfg": cfg, "seed": seed,
-                     "prompt": prompt, "negative_prompt": negative_prompt, "fps": fps},
-                    {"video_rel": video_rel})
+        enqueue_job(jid, "sfx", payload, {"video_rel": video_rel})
     return {"job_id": jid}
 
 
 @app.post("/upscale")
 async def api_upscale(file: UploadFile = File(...), pipeline: str = Form("b"),
                       resolution: int = Form(1080), noise_scale: float = Form(0.0),
-                      fps: int = Form(24), seed: int = Form(42)):
+                      fps: int = Form(24), seed: int = Form(42),
+                      user: str = Form(None), client: str = Form(None)):
     with job_slot():
-        jid = new_job("upscale", {"pipeline": pipeline, "resolution": resolution,
-                                  "noise_scale": noise_scale, "fps": fps, "seed": seed})
+        payload = {"pipeline": pipeline, "resolution": resolution,
+                   "noise_scale": noise_scale, "fps": fps, "seed": seed,
+                   "user": user, "client": client}
+        jid = new_job("upscale", payload)
         await save_upload(jid, file)
         video_rel = f"media_jobs/{jid}/input/{file.filename}"
-        enqueue_job(jid, "upscale",
-                    {"pipeline": pipeline, "resolution": resolution,
-                     "noise_scale": noise_scale, "fps": fps, "seed": seed},
-                    {"video_rel": video_rel})
+        enqueue_job(jid, "upscale", payload, {"video_rel": video_rel})
     return {"job_id": jid}
 
 

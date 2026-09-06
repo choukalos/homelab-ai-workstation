@@ -26,7 +26,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py workflows.py comfy_client.py .
+COPY server.py workflows.py comfy_client.py metering.py .
 
 # Default bind 0.0.0.0 so the remote media-mcp client can reach <gpu-host>:8189 (LAN-only).
 ENV PIPELINE_HOST=0.0.0.0 \
