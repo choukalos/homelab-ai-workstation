@@ -1,67 +1,135 @@
 model_list:
-
-  # ─── Custom pricing for budget tracking ─────────────────────────
-  # Self-hosted models have no real $ cost, so we set nominal pricing
-  # so that key budgets actually work. At $0.000001/token:
-  #   $1 budget  = ~1M tokens  (~3-5k chat turns with ~200-300 tokens each)
-  #   $10 budget = ~10M tokens
-  #   $100 budget = ~100M tokens
-  # Embeddings are 10x cheaper since they're short vectors.
-  # Adjust to taste — the real "cost" is just your GPU time.
-
-  # -- Gemma-4b via LMStudio on Mac Studio M1 -----------------------
-  - model_name: studio-gemma4-4b
+  # -- Gemma-4 via OMLX on Mac Studio M1 (Backup LLM) -----------------------
+  - model_name: studio-gemma4-26b
     model_info:
-      input_cost_per_token: 0.000001
-      output_cost_per_token: 0.000001
+      input_cost_per_token: 0.00000025
+      output_cost_per_token: 0.000002
+      cache_creation_input_token_cost: 0.000000025
+      cache_read_input_token_cost: 0.0000000025
     litellm_params:
-      model: openai/gemma-4b
-      api_base: http://macstudio:1234/v1
-      api_key: "not-needed"
+      model: openai/gemma-4-26B-A4B-it-QAT-MLX-4bit
+      api_base: http://macstudio:8000/v1
+      api_key: "unused"
+      num_retries: 2
 
-  # ── Qwen3.8-27B NVFP4 via vLLM (port 8000) ─────────────────────────
+  # ── Qwen3.6-27B via vLLM (port 8000) ─────────────────────────────
   - model_name: matrix-coder
     model_info:
-      input_cost_per_token: 0.000001
-      output_cost_per_token: 0.000001
+      input_cost_per_token: 0.00000075
+      output_cost_per_token: 0.0000045
+      cache_creation_input_token_cost: 0.000000075
+      cache_read_input_token_cost: 0.0000000075
     litellm_params:
       model: openai/qwen38-27b
       api_base: http://matrix:8000/v1
       api_key: "unused"
       num_retries: 2
 
-  - model_name: matrix-gemma4-moe
-    model_info:
-      input_cost_per_token: 0.000001
-      output_cost_per_token: 0.000001
-    litellm_params:
-      model: ollama/gemma4:26b
-      api_base: http://matrix:11434
-      api_key: "unused"
-      num_retries: 2
-      extra_body:
-        options:
-          think: false
-
   # ── Nomic embed-text for embeddings ──────────────────────────────
   - model_name: embeddings
     model_info:
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000001
+      cache_creation_input_token_cost: 0.0000001
+      cache_read_input_token_cost: 0.00000001
     litellm_params:
       model: ollama/nomic-embed-text
       api_base: http://matrix:11434
       api_key: "unused"
       num_retries: 2
 
+  # ── Nomic embed-text for long-term memory (versioned alias) ──────
+  - model_name: homelab-embedding-v1
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000001
+      cache_creation_input_token_cost: 0.0000001
+      cache_read_input_token_cost: 0.00000001
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: http://matrix:11434
+      api_key: "unused"
+      num_retries: 2
+      drop_params: true
+
+  - model_name: hf-sd3
+    litellm_params:
+      model: huggingface/stabilityai/stable-diffusion-3-medium
+      api_key: os.environ/HF_TOKEN
+      num_retries: 1
+      fallbacks:
+        - {model: openai/comfyui-flux, api_base: http://matrix:8188, api_key: ""}
+
 general_settings:
   master_key: "os.environ/LITELLM_MASTER_KEY"
   database_url: "os.environ/LITELLM_DATABASE_URL"
   set_verbose: true
   debug_level: "WARNING"
+  store_model_in_db: true
+  mcp_client_timeout: 30
+  disable_spend_logs: true
+  disable_spend_updates: true
 
-# Added to get token data into prometheus
 litellm_settings:
   callbacks:
     - prometheus
+  require_auth_for_metrics_endpoint: false
+
+mcp_servers:
+  mcp_search:
+    transport: http
+    url: http://mcp_search:8000/mcp
+    allow_all_keys: true
+
+  mcp_knowledge:
+    transport: http
+    url: http://mcp_knowledge:8000/mcp
+    allow_all_keys: true
+    timeout: 7200
+
+  mcp_crawl:
+    transport: http
+    url: http://mcp_crawl:8000/mcp
+    allow_all_keys: true
+
+  mcp_filesystem_readonly:
+    transport: http
+    url: http://mcp_filesystem_readonly:8000/mcp
+    allow_all_keys: true
+
+  mcp_mysql:
+    transport: http
+    url: http://mcp_mysql:8000/mcp
+    allow_all_keys: true
+
+  mcp_homelab_status:
+    transport: http
+    url: http://mcp_homelab_status:8000/mcp
+    allow_all_keys: true
+
+  mcp_filesystem:
+    transport: http
+    url: http://mcp_filesystem:8000/mcp
+    allow_all_keys: true
+
+  mcp_media:
+    transport: http
+    url: http://mcp_media:8000/mcp
+    allow_all_keys: true
+    timeout: 7200
+
+  mcp_vision:
+    transport: http
+    url: http://mcp_vision:8000/mcp
+    allow_all_keys: true
+    timeout: 7200
+
+  mcp_skills:
+    transport: http
+    url: http://mcp_skills:8000/mcp
+    allow_all_keys: true
+    extra_headers:
+      - Authorization
+    timeout: 7200
+
 
