@@ -338,10 +338,63 @@ Post-promotion runs (`20260823_210603`: 63.2 tok/s @ 59% GPU util) showed decode
 
 Fallback if CUDA graph capture OOMs: `--compilation-config '{"cudagraph_mode":"PIECEWISE"}'`.
 
+---
+
+## ⏳ Experiment 7: Qwen3.8-Flash-Next 125B MoE — 4-bit GGUF via llama.cpp (2026-08-28)
+
+**Not yet run — planned. New `qwen4_exp` architecture; vLLM path is not viable on a single 72 GiB GPU.**
+
+| Field | Detail |
+|---|---|
+| Model | `Qwen/Qwen3.8-Flash-Next` (released 2026-08-26, open weights) |
+| Architecture | 125B main (6B active/token) + 51B n-gram embedding (PLE) + 4B MTP; GDN+QSA hybrid attention; 262K native context; multimodal |
+| Quantization | Unsloth `UD-Q4_K_XL` GGUF — 111.3 GB, 92.3% top-1 accuracy retention (KLD 0.047) |
+| Runtime | llama.cpp `llama-server` (OpenAI-compatible API on port 8000) |
+| Context | 32K start (hybrid attention keeps KV cheap; raise later if stable) |
+| Compose | `compose/experiments/qwen38-flash-next-gguf.yml` |
+
+### Why not vLLM
+
+- Official FP8 checkpoint = **172.78 GiB** (BF16 = 335 GiB). vLLM's N-gram/PLE CPU offload
+  (`VLLM_PLE_CPU_OFFLOAD=1`) moves the 51B table (~51 GiB) to host RAM, but still leaves
+  **~122 GiB on the GPU** — more than 2x our 72 GiB VRAM.
+- vLLM INT4/NVFP4 for the new `qwen4_exp` arch is unverified; the official recipe requires
+  vLLM 0.29.0+ and a dedicated image (`vllm/vllm-openai:qwen38-flash-next`), and the
+  validated minimum is TP2 (2x GB300).
+- llama.cpp has day-0 support (text + vision) and degrades gracefully: `--n-gpu-layers 999`
+  offloads what fits to GPU, keeps the rest mmap'd in RAM. The PLE table is designed for
+  host-memory offload (async row prefetch), so RAM-resident weights are less punishing here
+  than for a typical MoE.
+
+### Memory math (fits)
+
+| Component | Size | Where |
+|---|---|---|
+| Weights (Q4_K_XL) | 111.3 GB | ~64 GB GPU + ~47 GB RAM (mmap) |
+| KV cache (32K, q8_0, 2 slots) | ~2–4 GB | GPU |
+| System RAM | 62 GiB total | ~47 GB weights + OS + ollama (tight but OK) |
+| **Total needed** | **~116 GB** | **vs ~134 GB available (72 GiB VRAM + 62 GiB RAM)** |
+
+Fallback if OOM: `UD-IQ3_XXS` (82 GB, 85.4% retention) or smaller `--ctx-size`.
+
+### Benchmarks (Qwen official, vs current daily driver Qwen3.8-27B)
+
+| Task | Flash-Next | Qwen3.8-27B |
+|---|---|---|
+| DeepSWE 1.1 (agentic coding) | **58.7** | 42.2 |
+| SWE-bench Pro | **62.5** | 61.7 |
+| SWE-bench Multilingual | **81.0** | 73.8 |
+| GPQA Diamond | **91.7** | 89.2 |
+| LiveCodeBench v6 | **91.9** | 90.3 |
+
+⚠️ The 4-bit quant gives up some of that headroom (Unsloth: 92.3% top-1 retention at Q4_K_XL).
+If it holds up, this is the strongest candidate to replace the 27B daily driver.
+
 ## Next Steps
 
 1. ~~Update daily driver with MTP~~ (applied 2026-08-14, superseded by the Qwen3.8 NVFP4 promotion on 2026-08-24)
-2. Rerun experiments 3, 4, 5 (all fixed, ready to go)
+2. ~~Rerun experiments 3, 4, 5~~ (2026-08-28: **dropped 4 & 5** — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8; **3 kept at low priority** — Qwen3-Next-80B FP8, config tweaked but never run, may drop in the future)
 3. **Run experiment 6: Nemotron-3-Puzzle-75B NVFP4** (config + profile ready, ⚠️ pull latest vLLM first)
-4. Consider testing W8A16 + MTP as a potential quality upgrade over INT4 + MTP
+4. Consider testing W8A16 + MTP as a potential quality upgrade over the current NVFP4 (4-bit) + MTP daily driver
 5. ~~Verify MTP (3 tokens) on the promoted NVFP4 model after the restart~~ (done 2026-08-25: MTP tuned to 2 tokens, benchmarked at 123.95 tok/s — see speed fix above)
+6. **Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)** — compose ready; 111 GB pre-download required (see Experiment 7 section)

@@ -7,9 +7,16 @@ Last consolidated: 2026-08-28.
 
 ### vLLM / model experiments
 
-- [ ] **Rerun experiments 3, 4, 5** (Qwen3-Next-80B FP8, Qwen3.6 W8A16 128K, Qwen-long W8A16 262K) — configs fixed after the vLLM 0.24.0 CLI change, ready to launch. *(EXPERIMENTS_RESULTS.md, Next Steps)*
+- [ ] **Run experiment 7: Qwen3.8-Flash-Next 125B MoE — 4-bit GGUF via llama.cpp** — Qwen4-arch preview (125B main / 6B active + 51B n-gram embedding, 262K ctx). 111 GB Q4_K_XL fits 72 GiB VRAM + 62 GiB RAM; vLLM path is a no-go (FP8 = 173 GiB). Steps:
+  1. Pre-download (111 GB, ~4 shards): `huggingface-cli download unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-Q4_K_XL/*" --local-dir /home/chuck/data/models/gguf`
+  2. Stop `qwen-coder` daily driver (frees port 8000 + GPU); let ollama idle-release the GPU (keep_alive 5m)
+  3. `docker compose -f compose/experiments/qwen38-flash-next-gguf.yml up -d`
+  4. Smoke-test via LiteLLM (`matrix-coder`), then benchmark vs the 27B daily driver
+  5. Restore `qwen-coder.yml` on port 8000 when done (or promote Flash-Next if it wins)
+  Fallback if RAM-tight: `UD-IQ3_XXS` (82 GB, 85.4% retention). *(EXPERIMENTS_RESULTS.md, Experiment 7)*
 - [ ] **Run experiment 6: Nemotron-3-Puzzle-75B-A9B NVFP4** — config + profile ready. ⚠️ Pull latest `vllm/vllm-openai:latest` first (NVFP4 Marlin fallback needs v0.22.1+). *(EXPERIMENTS_RESULTS.md, Next Steps)*
-- [ ] **Consider W8A16 + MTP** as a potential quality upgrade over the current NVFP4 daily driver. *(EXPERIMENTS_RESULTS.md, Next Steps)*
+- [ ] **Qwen3-Next-80B FP8 experiment (low priority)** — config tweaked but never run; may drop in the future. *(EXPERIMENTS_RESULTS.md, Experiment 3)*
+- [ ] **Consider W8A16 + MTP** as a potential quality upgrade over the current NVFP4 (4-bit) + MTP daily driver. *(EXPERIMENTS_RESULTS.md, Next Steps)*
 - [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
 
 ### Modes / switching
@@ -20,7 +27,11 @@ Last consolidated: 2026-08-28.
 ### Housekeeping
 
 - [x] **Clean up stale containers** — `vllm-gemma`, `vllm-qwen`, `ollama-model-puller` no longer exist (removed earlier); `comfyui_backend` is a live service. Remaining 7 stopped experiment containers are optional cleanup, left in place for the pending experiment reruns. *(docs/matrix_manual_tasks.md, resolved 2026-08-28)*
-- [ ] **Set `HF_TOKEN` in `.env`** — currently empty; latent issue, only matters when a future gated model needs authenticated download. *(docs/matrix_manual_tasks.md)*
+- [x] **Set `HF_TOKEN` in `.env`** — verified set (2026-08-28). *(docs/matrix_manual_tasks.md, resolved 2026-08-28)*
+
+## Dropped (2026-08-28)
+
+- ~~Rerun experiments 4 & 5~~ — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8 (current NVFP4 daily driver + Qwen3.8-Flash-Next candidate). *(EXPERIMENTS_RESULTS.md, Next Steps)*
 
 ## Done (this consolidation)
 

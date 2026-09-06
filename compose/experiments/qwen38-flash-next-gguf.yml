@@ -1,0 +1,85 @@
+# Experiment 7: Qwen3.8-Flash-Next 125B MoE (Qwen4-arch preview) — 4-bit GGUF via llama.cpp
+#
+# Model: Qwen/Qwen3.8-Flash-Next (released 2026-08-26)
+#   125B main (6B active/token) + 51B n-gram embedding (PLE) + 4B MTP
+#   262K native context, GDN+QSA hybrid attention (KV cache is cheap), multimodal
+# Quant: unsloth UD-Q4_K_XL GGUF — 111.3 GB, 92.3% top-1 accuracy retention
+#
+# Why llama.cpp and NOT vLLM:
+#   - Official FP8 checkpoint = 172.78 GiB. vLLM's PLE CPU offload
+#     (VLLM_PLE_CPU_OFFLOAD=1) moves the 51B table to host RAM but still
+#     leaves ~122 GiB on GPU — >2x our 72 GiB VRAM. vLLM INT4 for the new
+#     qwen4_exp arch is unverified (recipe requires vLLM 0.29.0+).
+#   - llama.cpp has day-0 support (text + vision) and degrades gracefully
+#     when -ngl 999 doesn't fit: offloads what fits to GPU, rest to RAM.
+#
+# Memory budget:
+#   Weights 111.3 GB → ~64 GB GPU + ~47 GB RAM (mmap, page-cache backed)
+#   RAM 62 GiB: ~47 GB weights + OS + ollama → tight but OK
+#   Fallback if OOM: UD-IQ3_XXS (82 GB, 85.4% retention) or smaller --ctx-size
+#
+# ⚠️ Pre-download (111 GB, ~4 shards):
+#   huggingface-cli download unsloth/Qwen3.8-Flash-Next-GGUF \
+#     --include "UD-Q4_K_XL/*" --local-dir /home/chuck/data/models/gguf
+#   (llama-server loads the split GGUF via the first shard)
+#
+# ⚠️ Before launching: stop the qwen-coder daily driver (port 8000 + GPU)
+#    and let ollama release the GPU (keep_alive 5m idle timeout).
+#
+# Usage:
+#   docker compose -f compose/experiments/qwen38-flash-next-gguf.yml up -d
+#   When done, restore qwen-coder.yml on port 8000.
+
+services:
+  qwen38-flash-next:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: qwen38-flash-next
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8080"
+    volumes:
+      - /home/chuck/data/models:/data/models:ro
+    command:
+      - --model
+      - /data/models/gguf/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+      - --alias
+      - qwen38-flash-next
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "999"
+      - --ctx-size
+      - "32768"
+      - --parallel
+      - "2"
+      - --cont-batching
+      - --jinja
+      - --n-predict
+      - "-1"
+      - --temp
+      - "0.7"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "20"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      # optional: enable vision (907 MB mmproj, loads vision tower):
+      #   - --mmproj
+      #   - /data/models/gguf/mmproj-BF16.gguf
+      # tuning: offload N MoE experts/layer to CPU instead of whole layers:
+      #   - --n-cpu-moe
+      #   - "400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
