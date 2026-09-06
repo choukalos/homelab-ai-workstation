@@ -61,6 +61,11 @@ thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
   are downloaded there and **local paths** are returned.
 
 ## Notes
+- **Identity / metering (since 2026-09-06):** the client forwards `user`/`client`
+  on every job POST so the GPU host can attribute cost in `/metrics` +
+  `jobs.jsonl`. Set `MEDIA_USER` and/or `MEDIA_CLIENT` on the media-mcp server
+  (defaults: OS username / `mcp`). See `docs/matrix_media_pipeline_api.md` §5 on
+  the GPU host.
 - All media jobs run through a **bounded FIFO queue** on the GPU host: at most `MAX_CONCURRENT_JOBS`
   (default 1, set in the GPU host's `.env`) run at once; the rest wait with `status=queued` (visible
   via `/health` + `queue_position`). GPU flows additionally serialize on a GPU lock.

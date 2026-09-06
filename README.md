@@ -183,6 +183,8 @@ Detailed design docs are in `docs/`:
 - [vLLM Features](docs/matrix_vllm_features.md) — Feature status & eval plans
 - [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
 - [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — media pipeline tooling contract (images, video, TTS, music, SFX, upscale, assemble)
+- [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — port 8189 contract: endpoints, job model, queue, VRAM budget, metering
+- [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — :8189 HTTP API contract + metering (jobs, queue, models, /metrics)
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision

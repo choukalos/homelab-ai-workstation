@@ -240,8 +240,10 @@ for Thor to scrape. No monitoring stack installed locally.
 | Component | Location | Role |
 |---|---|---|
 | `media-pipeline` service | `media-pipeline/` (repo) | FastAPI orchestrator, port 8189; builds ComfyUI workflows programmatically (no JSON workflow files) |
+| `metering` (in media-pipeline) | `media-pipeline/metering.py` (repo) | Work-unit metering since 2026-09-06: `GET /metrics` (Prometheus `media_*`), `jobs.jsonl` durable log, `user`/`client` attribution, `timeout` status; spec `matrix_media_work.md` |
 | `comfyui_backend` | `compose/comfyui.yml` (profile `image`) | ComfyUI + custom nodes (GGUF, SeedVR2, MMAudio, VideoHelperSuite, Manager) |
 | `media-mcp-client` | `media-mcp-client/` (repo) | Thin stdlib HTTP client + FastMCP tools for remote machines |
+| Metering (2026-09-06) | `media-pipeline/metering.py` | Work-unit pricing + Prometheus `/metrics` (:8189) + `jobs.jsonl`; spec `matrix_media_work.md` |
 | Model data | `/home/chuck/data/comfyui/basedir/models/` | ~77 GB after 2026-08-28 cleanup (was ~110 GB); total comfyui workspace 109 GB (was 152 GB) |
 
 **Cleanup 2026-08-28:** removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints,
@@ -269,3 +271,4 @@ pipeline models verified intact. See `docs/matrix_comfyui_media_api.md` changelo
 2. **`.env` legacy vars** `QWEN_VLLM_MODEL` / `QWEN_VLLM_GPU_MEM` are ignored (compose hardcodes values).
 3. **ComfyUI venv/uv_cache live in `run/` (bind-mounted)** — the container entrypoint self-heals and rebuilds the venv on restart (verified 2026-08-28: restart repopulated venv + uv_cache in ~15 min). **After any venv rebuild**, run `scripts/comfyui_venv_deps.sh restart` — the fresh venv lacks custom-node deps (numba/librosa/gguf/imageio-ffmpeg) and resolves numpy 2.5, which breaks numba (comfyui-mmaudio import failure).
 4. **`state/current_mode` = `qwen-coder`** (since 2026-08-23 experiment → qwen-coder switch).
+5. **Metering live (2026-09-06)**: `media_pipeline` exposes `:8189/metrics` (Thor Prometheus scrape target) + `jobs.jsonl` at `/home/chuck/data/comfyui/run/media_jobs/metrics/`. Calibrated rates in `.env`: `MEDIA_PRICE_MPPIX_STEP_USD=0.000053`, `MEDIA_PRICE_MPPIX_FRAME_USD=0.0000058`, `MEDIA_PRICE_AUDIO_SEC_USD=0.000031`; storyboard at live matrix-coder rate ($0.75/M in / $4.50/M out). Kill switch `MEDIA_METRICS_ENABLED` (currently `true`). DCGM still frozen on driver 595.71.05 — power sampling uses `docker exec comfyui_backend nvidia-smi`.

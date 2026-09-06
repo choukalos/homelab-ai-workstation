@@ -1,6 +1,10 @@
 """mcp_tools — MCP tool definitions that wrap the media-pipeline service.
 
-Drop this into the REMOTE machine's media-mcp server. It exposes one MCP tool
+Drop this into the REMOTE machine's media-mcp server. The pipeline client
+forwards caller identity (`user`/`client`) on every job POST for metering
+attribution on the GPU host (spec: matrix_media_work.md §4.1): set
+`MEDIA_USER` / `MEDIA_CLIENT` env vars (or rely on the OS username) on the
+media-mcp server; per-request overrides go through `MediaPipelineClient(user=, client=)`. It exposes one MCP tool
 per pipeline flow. Each tool BLOCKS until the GPU-host job finishes and returns
 the result (a host path, or inlined content for small assets).
 

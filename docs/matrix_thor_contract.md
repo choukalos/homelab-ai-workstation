@@ -50,6 +50,7 @@ not the IP address. The IP may change.
 |---|---|---|---|
 | `8188` | ComfyUI | HTTP/JSON | Concurrent with all modes (internal, not for Thor) |
 | `8189` | media-pipeline | HTTP/JSON | Concurrent with all modes, when the `image` profile is up (internal; consumed by the MCP client via `MEDIA_PIPELINE_URL`, not by Thor LiteLLM) |
+| `8189` | media-pipeline metrics | Prometheus text | `GET /metrics` — `media_*` job/cost metrics; **Thor Prometheus should scrape `http://matrix:8189/metrics`** when the `image` profile is up and `MEDIA_METRICS_ENABLED=true` (else 404 — scrape config should tolerate the absence) |
 
 ---
 
@@ -269,6 +270,7 @@ directly — use the LiteLLM aliases.
 | node-exporter :9100 | No (internal LAN only) | No auth on node-exporter |
 | dcgm-exporter :9400 | No (internal LAN only) | No auth on dcgm-exporter |
 | ComfyUI :8188 | No (internal LAN only) | `SECURITY_LEVEL=weak` — never expose publicly |
+| media-pipeline :8189 | No (internal LAN only) | Job API + `/metrics`; never expose publicly |
 
 **Network-level security:** All Matrix ports are bound to `0.0.0.0` but are only
 reachable on the homelab LAN. No ports are exposed to the internet.
@@ -282,6 +284,7 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | `docs/matrix_runtime_modes.md` | Mode definitions and alias availability per mode |
 | `docs/matrix_optimization_profiles.md` | vLLM arg rationale and VRAM budgets |
 | `docs/matrix_images_mode.md` | ComfyUI operational details (runs alongside vLLM; see also `docs/matrix_comfyui_media_api.md`) |
+| `docs/matrix_media_pipeline_api.md` | Media-pipeline :8189 API contract + metering |
 | `docs/matrix_monitoring_health.md` | Health endpoints and metrics |
 | `docs/matrix_model_manager.md` | Model manager CLI (operator tool, not Thor-facing) |
 | `thor.litellm.config.yml` | Thor's LiteLLM proxy config (deployed on Thor) |
@@ -294,3 +297,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 |---|---|---|
 | 1.0 | 2026-07-03 | Initial contract document |
 | 1.1 | 2026-08-28 | Retired `images` mode (image generation now concurrent with all modes); added media-pipeline :8189 to optional endpoints; updated `matrix-coder` to Qwen3.8-27B NVFP4 (qwen-long stays Qwen3.6-27B INT4) |
+| 1.2 | 2026-09-06 | Media-pipeline metering live: added `http://matrix:8189/metrics` as a Thor Prometheus scrape target (`media_*` metrics; 404 when the `image` profile is down or metering disabled); :8189 added to the auth table; new cross-ref `docs/matrix_media_pipeline_api.md` |

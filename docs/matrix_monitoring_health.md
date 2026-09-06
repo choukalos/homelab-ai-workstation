@@ -64,6 +64,8 @@ dashboards. Matrix remains a compute-only appliance — no monitoring stack inst
 **Thor Prometheus should scrape:**
 - `http://matrix:9100/metrics` (node-exporter)
 - `http://matrix:9400/metrics` (dcgm-exporter)
+- `http://matrix:8189/metrics` (media-pipeline — `media_*` job/cost metrics; only when the
+  `image` profile is up and `MEDIA_METRICS_ENABLED=true`, else 404/absent)
 
 ---
 
@@ -167,7 +169,34 @@ curl -sf --max-time 5 http://localhost:8189/health
 ```
 
 The media-pipeline runs in the same `image` profile and starts/stops with ComfyUI.
-See `docs/matrix_comfyui_media_api.md` for the full API.
+See `docs/matrix_media_pipeline_api.md` for the full API.
+
+### media-pipeline metrics (Prometheus, since 2026-09-06)
+
+| Property | Value |
+|---|---|
+| Container | `media_pipeline` |
+| Port | `8189` |
+| Metrics endpoint | `GET /metrics` (Prometheus text format) |
+| Kill switch | `MEDIA_METRICS_ENABLED` in `/home/chuck/homelab/.env` (`false` → 404, no JSONL, zero behavior change) |
+| Durable log | `/home/chuck/data/comfyui/run/media_jobs/metrics/jobs.jsonl` (one line per job; 10 MB cap, keep-newest rotation) |
+
+**Metrics** (spec: `matrix_media_work.md`):
+- `media_jobs_total{user,client,stage,status}` — job count by status (`done`/`error`/`timeout`)
+- `media_job_duration_seconds{user,stage}` — histogram (running time; queue wait is in `jobs.jsonl`)
+- `media_tokens_total{user,stage,kind}` — real vLLM tokens (storyboard only; `kind=prompt|completion`)
+- `media_cost_usd_total{user,stage}` — full-cost USD (electricity + GPU amortization)
+- `media_work_units_total{user,stage,kind}` — `mpix_steps` / `mpix_frames` / `audio_seconds`
+- `media_queue_depth`, `media_jobs_active`, `media_up` — gauges
+
+**Pricing** (calibrated 2026-09-06 against 1 Hz `nvidia-smi power.draw`):
+`$0.000053`/mpix_step, `$0.0000058`/mpix_frame, `$0.000031`/audio_s; storyboard at the
+live `matrix-coder` LiteLLM rate ($0.75/M in / $4.50/M out). Rates live in
+`/home/chuck/homelab/.env` (`MEDIA_PRICE_*`, `MEDIA_MATRIX_CODER_*_USD`).
+
+**Identity:** every job POST accepts optional `user`/`client` fields (forwarded by the
+media-mcp server); omitted → `unknown`. Per-job durable detail (work units, tokens,
+queue wait, params) is in `jobs.jsonl` — the Prometheus metrics are the aggregate view.
 
 ---
 

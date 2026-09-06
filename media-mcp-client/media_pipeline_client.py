@@ -16,6 +16,7 @@ Example:
     final = pipe.assemble(shots=[shot], vo="vo.wav", music="music.wav")
 """
 from __future__ import annotations
+import getpass
 import json
 import mimetypes
 import os
@@ -50,17 +51,41 @@ DEFAULT_URL = os.environ.get("MEDIA_PIPELINE_URL", "http://127.0.0.1:8189")
 _JOB_PREFIX = "/home/chuck/data/comfyui/run/media_jobs/"
 
 
+def _default_user() -> str:
+    for var in ("USER", "LOGNAME"):
+        v = os.environ.get(var)
+        if v:
+            return v
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "unknown"
+
+
 class PipelineError(RuntimeError):
     pass
 
 
 class MediaPipelineClient:
-    def __init__(self, base_url: str | None = None, poll: float = 5.0):
+    def __init__(self, base_url: str | None = None, poll: float = 5.0,
+                 user: str | None = None, client: str | None = None):
         self.base = (base_url or DEFAULT_URL).rstrip("/")
         self.poll = poll
+        # Identity for metering attribution on the GPU host (spec:
+        # matrix_media_work.md §4.1). Precedence: explicit arg > MEDIA_USER /
+        # MEDIA_CLIENT env > OS username. Forwarded as `user`/`client` fields
+        # on every job POST; the pipeline records them in /metrics + jobs.jsonl.
+        self.user = user or os.environ.get("MEDIA_USER") or _default_user()
+        self.client = client or os.environ.get("MEDIA_CLIENT") or "mcp"
+
+    def _identity(self) -> dict:
+        return {"user": self.user, "client": self.client}
 
     # ------------------------------------------------------------ low level
     def _post_json(self, endpoint: str, payload: dict) -> str:
+        payload = dict(payload)
+        for k, v in self._identity().items():
+            payload.setdefault(k, v)
         req = urllib.request.Request(
             f"{self.base}{endpoint}", data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
@@ -72,7 +97,7 @@ class MediaPipelineClient:
         fname = os.path.basename(filepath)
         ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         body = b""
-        for k, v in fields.items():
+        for k, v in {**fields, **self._identity()}.items():
             body += (f"--{boundary}\r\nContent-Disposition: form-data; "
                      f"name=\"{k}\"\r\n\r\n{v}\r\n").encode()
         with open(filepath, "rb") as f:
@@ -95,8 +120,8 @@ class MediaPipelineClient:
                 j = json.loads(r.read())
             if j.get("status") == "done":
                 return j.get("output", {})
-            if j.get("status") == "error":
-                raise PipelineError(f"job {jid} failed: {j.get('error')}")
+            if j.get("status") in ("error", "timeout"):
+                raise PipelineError(f"job {jid} {j.get('status')}: {j.get('error')}")
             time.sleep(self.poll)
         raise PipelineError(f"job {jid} timed out after {timeout:.0f}s")
 
