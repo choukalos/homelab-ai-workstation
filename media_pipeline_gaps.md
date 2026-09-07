@@ -176,6 +176,19 @@ GET /dl/<token>         # NO API key required — the token IS the credential
 
 **Acceptance:** contract doc lists all endpoints (old + new) with request/response examples; no stale "9 flows" / "9 tools" counts remain in the docs.
 
+**Done (2026-09-07).** All docs updated and cross-checked against the live server:
+1. `docs/matrix_media_pipeline_api.md` — canonical contract (12 job flows + 6 sync endpoints, §2 table, §4 models, §5 metering, §7 recipe post-tools, §9 changelog).
+2. `media-mcp-client/README.md` + `HANDOFF.md` — 17 tools; embedded code blocks regenerated from source.
+3. `media_jobs/PIPELINE_CHANGES.md` — change log.
+4. `docs/matrix_inventory.md` — 2026-09-07 addendum (append-only doc; supersedes the old role cell).
+5. `docs/matrix_validation_log.md` — 2026-09-07 run (38/38 + 7 bugs found/fixed).
+6. `docs/matrix_thor_contract.md` — v1.3 + :8189 auth-table note (no auth change; signed tokens).
+7. `docs/matrix_images_mode.md` — orchestrator section note (CPU flows + sync endpoints).
+
+Param-name audit done while updating: server uses `source` for trim/freeze/caption (not `video`),
+caption uses `font_size` (client was silently sending `size` — fixed), freeze `frame` is a frame
+index (not a second offset). All client methods re-verified end-to-end after the fixes.
+
 ---
 
 # PART 2 — THOR (only after Part 1 is verified)
@@ -277,11 +290,11 @@ Job-based endpoints return `{"job_id"}`; poll `GET /jobs/{id}` until `status=don
 
 | Endpoint | Kind | Request | Response (done) |
 |---|---|---|---|
-| `POST /trim` | job | `{source, start, end \| duration, reencode?=true, output_name?}` | `{video}` |
-| `POST /freeze` | job | `{source (image\|video), frame?=0, duration?=2.0, width?=1280, height?=720, fps?=24}` | `{video}` |
-| `POST /caption` | job | `{source, text, start?=0, end?=clip_end, position?="bottom", font_size?=5% of height, font?=DejaVuSans-Bold, color?="white", outline?=3, background_bar?=false}` | `{video}` |
+| `POST /trim` | job | `{source, start=0.0, end \| duration}` (exactly one of `end`/`duration`; always re-encodes, libx264 crf 18) + optional `fps?, width?, height?` | `{video}` |
+| `POST /freeze` | job | `{source (image\|video), frame?=0 (frame index), duration?=2.0, width?=1280, height?=720, fps?=24}` | `{video}` |
+| `POST /caption` | job | `{source, text, start?=0, end?=clip_end, position?="bottom", font_size?, font?=DejaVuSans-Bold.ttf, color?="white", outline?=3}` (multiline via textfile) | `{video}` |
 | `GET /info?path=` | sync | path (matrix, exists) | `{duration_s, width, height, fps, video_codec, audio_codecs[], size_bytes, bitrate_bps}` |
-| `POST /upload_local` | sync | `{source (any readable path on matrix), subdirectory?}` | `{path}` (media_jobs) |
+| `POST /upload_local` | sync | `{source (MUST be under the ComfyUI basedir — 400 otherwise), subdirectory?}` | `{path}` (media_jobs) |
 | `POST /download` | sync | `{url, subdirectory?, filename?}` | `{path}` (media_jobs) |
 | `POST /upload` | sync, multipart | file + optional `subdirectory` field; **no auth on matrix** | `{path}` (`media_jobs/uploads/`); 500MB cap (413) |
 | `POST /dl_token` | sync | `{path (must be inside media_jobs), ttl_hours?=24, max 168}` | `{token, url_path: "/dl/<token>", expires_at}` |

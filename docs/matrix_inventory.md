@@ -271,3 +271,24 @@ pipeline models verified intact. See `docs/matrix_comfyui_media_api.md` changelo
 3. **ComfyUI venv/uv_cache live in `run/` (bind-mounted)** — the container entrypoint self-heals and rebuilds the venv on restart (verified 2026-08-28: restart repopulated venv + uv_cache in ~15 min). **After any venv rebuild**, run `scripts/comfyui_venv_deps.sh restart` — the fresh venv lacks custom-node deps (numba/librosa/gguf/imageio-ffmpeg) and resolves numpy 2.5, which breaks numba (comfyui-mmaudio import failure).
 4. **`state/current_mode` = `qwen-coder`** (since 2026-08-23 experiment → qwen-coder switch).
 5. **Metering live (2026-09-06)**: `media_pipeline` exposes `:8189/metrics` (Thor Prometheus scrape target) + `jobs.jsonl` at `/home/chuck/data/comfyui/run/media_jobs/metrics/`. Calibrated rates in `.env`: `MEDIA_PRICE_MPPIX_STEP_USD=0.000053`, `MEDIA_PRICE_MPPIX_FRAME_USD=0.0000058`, `MEDIA_PRICE_AUDIO_SEC_USD=0.000031`; storyboard at live matrix-coder rate ($0.75/M in / $4.50/M out). Kill switch `MEDIA_METRICS_ENABLED` (currently `true`). DCGM still frozen on driver 595.71.05 — power sampling uses `docker exec comfyui_backend nvidia-smi`.
+
+## Addendum (2026-09-07) — media-pipeline Part 1 build
+
+Supersedes the `media_pipeline` role cell above ("storyboard→shots→assemble") and the
+`media-mcp-client` row in §Media Stack:
+
+- **`media_pipeline` (:8189)** now runs **12 job flows** (original 9 + `trim`, `freeze`,
+  `caption` — CPU ffmpeg, no generative model, metered as model `ffmpeg` at 0 GPU work
+  units) and **6 sync endpoints** (`info`, `upload_local`, `download`, `upload`,
+  `dl_token`, `dl/{token}`). `/assemble` gained object shots, timestamped SFX list,
+  `vo_start`, `loudnorm` (backward compatible). **No auth on :8189** (LAN trust; public
+  auth is the Caddy layer on thor) — off-LAN pulls use signed `dl_token` URLs
+  (HMAC-SHA256, path-bound, time-limited; `MEDIA_DL_SECRET` in `.env`). Canonical
+  contract: `docs/matrix_media_pipeline_api.md`; change log:
+  `/home/chuck/data/comfyui/run/media_jobs/PIPELINE_CHANGES.md`.
+- **`media-mcp-client`** now exposes **17 MCP tools** (was 9): added `media_trim`,
+  `media_freeze`, `media_caption`, `media_info`, `media_upload_local`,
+  `media_download_url`, `media_upload_file`, `media_dl_token`, `media_fetch_dl`.
+- **QA:** `media-pipeline/qa_part1.py` — 38/38 checks passing (fixtures in
+  `media_jobs/qa_tests/`). Plan: `media_pipeline_gaps.md` (Part 1 complete;
+  Part 2 = thor).

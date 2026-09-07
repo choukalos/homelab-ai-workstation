@@ -64,6 +64,16 @@ mpix_frames / audio_seconds) at calibrated full-cost rates: `GET /metrics` (Prom
 `run/media_jobs/metrics/jobs.jsonl`. Kill switch: `MEDIA_METRICS_ENABLED=false` in `.env`.
 Verification + calibration log: `docs/matrix_validation_log.md` (2026-09-06 run).
 
+**Since 2026-09-07 (Part 1 gap-fill):** the pipeline also runs **CPU ffmpeg job flows**
+(`trim`, `freeze`, `caption` — no generative model, metered as model `ffmpeg` at 0 GPU work
+units), an extended `/assemble` (object shots with in/out trims, timestamped SFX list,
+`vo_start`, `loudnorm`), and **sync endpoints** for client file transfer: `GET /info` (ffprobe),
+`POST /upload_local` (basedir-confined copy into `media_jobs/uploads/`), `POST /download`
+(URL ingest), `POST /upload` (multipart, 500 MB cap), `POST /dl_token` + `GET /dl/{token}`
+(signed, path-bound, time-limited pull URLs for off-LAN clients — :8189 itself stays
+unauthenticated; public auth is the Caddy layer on thor). QA: 38/38
+(`media-pipeline/qa_part1.py`, 2026-09-07 run in `docs/matrix_validation_log.md`).
+
 ## Operations
 
 ### Start / stop

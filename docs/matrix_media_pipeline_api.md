@@ -65,9 +65,9 @@ GET /jobs/{job_id}
 | POST | `/sfx` | multipart `file(video), duration=8, steps=25, cfg=4.5, seed=42, prompt="", negative_prompt="", fps=24` | `{"audio":"<path>.flac"}` |
 | POST | `/upscale` | multipart `file(video), pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, fps=24, seed=42` | `{"video":"<path>.mp4"}` |
 | POST | `/assemble` | JSON `{shots, vo?, music?, sfx?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9, vo_start=0.0, loudnorm=false, upscale_each=false, upscale_resolution=1080, upscale_noise_scale=0.0, upscale_fps=24, upscale_seed=42, text_overlays=[{text,start,end,position,size,color}]}` — `shots` items may be paths OR objects `{path, in?, out?, duration?}` (still images need `duration`); `sfx` may be a single path OR a list `[{path, at}]` (timestamped SFX); `vo_start` delays the VO (silence before it) | `{"video":"<path>/final.mp4"}` (+ `final_titled.mp4` when `text_overlays` given) |
-| POST | `/trim` | JSON `{video, start, end, fps?, width?, height?}` | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
-| POST | `/freeze` | JSON `{source, duration, frame?, fps=24, width?, height?}` — still image, or a video + `frame` (second offset) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
-| POST | `/caption` | JSON `{video, text, start?, end?, position="bottom", size?, color="white"}` (drawtext; multiline via `textfile`) | `{"video":"<path>/mp_<jid>_00001.mp4","caption":"<path>/caption.txt"}` |
+| POST | `/trim` | JSON `{source, start=0.0, end \| duration, fps?, width?, height?}` — exactly one of `end` (absolute seconds) / `duration` (length) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
+| POST | `/freeze` | JSON `{source, duration=2.0, frame?=0, fps=24, width=1280, height=720}` — still image, or a video + `frame` (frame index) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
+| POST | `/caption` | JSON `{source, text, start?, end?, position="bottom", font_size?, color="white", outline?=3}` (drawtext; multiline via `textfile`) | `{"video":"<path>/mp_<jid>_00001.mp4","caption":"<path>/caption.txt"}` |
 | GET | `/info?path=` | sync (not a job) — ffprobe metadata for any media file | `{duration_s, width, height, fps, video_codec, audio_codecs, size_bytes, bitrate_bps}` (404 missing, 400 unprobeable) |
 | POST | `/upload_local` | JSON `{source, subdirectory?}` — sync bridge of a **basedir/** host file into `media_jobs/uploads/` (source confined to the ComfyUI basedir; 400 otherwise) | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
 | POST | `/download` | JSON `{url, subdirectory?}` — sync ingest of an http(s) URL into `media_jobs/uploads/` | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
@@ -79,7 +79,7 @@ Notes:
 - `shots`, `upscale`, `sfx`, `images/edit` accept **multipart file uploads**
   (the server copies them into the job dir). `assemble`/`storyboard`/`images`/
   `tts`/`music` accept **JSON** with host paths (or paths relative to the run
-  dir). All 9 job routes accept optional `user` + `client` (JSON field or Form
+  dir). All 12 job routes accept optional `user` + `client` (JSON field or Form
   field).
 - `pipeline` for `/upscale`: `b` = SeedVR2 3B (quality, ~5 min), `a2` =
   4xUltrasharp (fast, ~1 min).

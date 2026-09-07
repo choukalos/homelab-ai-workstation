@@ -94,3 +94,52 @@ Notes:
 | 2 | `nvidia-smi energy.consumed` not a valid field on this GPU/driver | — | Documented; power sampling via `docker exec comfyui_backend nvidia-smi` |
 | 3 | 4 of 9 job endpoints are multipart (spec v2.1 table originally said 3 — `/upscale` corrected) | Low | Fixed in `docs/matrix_media_pipeline_api.md` |
 | 4 | `thor.litellm.config.yml` repo copy was stale ($1/M vs live $0.75/M) | Low | **RESOLVED** — file removed from repo 2026-09-06 (authoritative copy lives on Thor) |
+
+# Run: 2026-09-07 — media-pipeline Part 1 build (M1–M9 of `media_pipeline_gaps.md`)
+
+Change: 3 new job flows (`/trim`, `/freeze`, `/caption` — CPU ffmpeg via the existing
+`run_ffmpeg` helper, metered as model `ffmpeg` at 0 GPU work units), `/assemble`
+extensions (object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`,
+`vo_start`, `loudnorm`), 6 new sync endpoints (`/info`, `/upload_local` — basedir-confined,
+`/download`, `/upload` — 500 MB cap, `/dl_token` — HMAC-SHA256 path-bound time-limited,
+`/dl/{token}` — Range-capable). Image rebuilt (`media-pipeline:latest`), container
+recreated. QA: `media-pipeline/qa_part1.py` (fixtures in `media_jobs/qa_tests/`).
+
+## Results — 38/38 checks passing
+
+| Area | Checks | Result |
+|---|---|---|
+| M1 `/trim` | 4 | ✅ duration exact (2.000s), fps/width/height normalization, error cases (both end+duration, missing) |
+| M2 `/freeze` | 4 | ✅ duration exact (1.5s), still→clip, video-frame→clip, PSNR>40dB between frames (static) |
+| M3 `/caption` | 3 | ✅ burn-in present (OCR-free visual check via frame diff), multiline text, time window |
+| M4 `/assemble` | 10 | ✅ old-style backward compat, object shots (in/out), still `duration`, still no-duration=0s, sfx list at 1.0s/5.5s (silencedetect-verified), `vo_start` (silence-verified), `loudnorm`, audio-never-truncates-video (apad) |
+| M5 `/info` | 4 | ✅ video summary, audio-only file (no crash), 404 missing, 400 non-media |
+| M6 `/upload_local` | 3 | ✅ basedir file → media_jobs, **/etc/passwd → 400 (exfil vector closed)**, missing source → 400 |
+| M7 `/download` | 3 | ✅ URL ingest (local HTTP server), 400 on unreachable, subdirectory |
+| M8 file transfer | 7 | ✅ multipart upload, 413 over cap, `/dl_token` mint, `/dl` 200 + Range 206, tampered token → 404, expired token → 404, outside media_jobs → 404, ttl cap 168h |
+| Client | 3 | ✅ `info`, `trim`, `freeze`, `caption`, new-style `assemble`, `upload_file` → `dl_token` → `fetch_dl` round-trip (144,828 bytes), `download_url` |
+
+## Bugs found & fixed during QA
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| 1 | `/assemble` `-shortest` could truncate video when audio was shorter (unexplained 11.458s cut observed) | **High** | **RESOLVED** — audio mix now ends with `apad` (pads to infinity) so `-shortest` always fires at video EOF; verified old-style 21.5s and new-style 9.5s finals |
+| 2 | `MEDIA_DL_SECRET` silently empty — M8 constants read before the local `load_dotenv()` ran (config ordering, not a missing python-dotenv) | **High** | **RESOLVED** — config block moved after `load_dotenv()`; `/dl_token` verified live |
+| 3 | `/upload_local` accepted arbitrary host paths (data-exfiltration vector via `/dl_token`/`/files`) | **High** | **RESOLVED** — source confined to the ComfyUI basedir (realpath check → 400); one `/etc/passwd` leaked during early QA was purged from `media_jobs/uploads/` |
+| 4 | `GET /info` crashed (AttributeError) on audio-only files | Medium | **RESOLVED** — None-stream guard in `_probe_summary` |
+| 5 | Client `media_pipeline_client.upload_file` built malformed multipart (CRLF header terminator mangled) | Medium | **RESOLVED** — CRLF fixed; round-trip verified |
+| 6 | Client `assemble()` was missing `upscale_each`/`text_overlays` entirely | Medium | **RESOLVED** — added (plus `vo_start`, `loudnorm`, object shots, sfx list) |
+| 7 | Freeze QA initially used exact pixel-hash equality — impossible for CRF-18 static clips (P-frame quantization drift; ~67dB PSNR between frames measured) | Low (QA methodology) | **RESOLVED** — check is now PSNR>40dB between frames |
+
+## Notes
+
+1. Static-clip QA: exact pixel identity is unachievable with libx264 CRF-18 (P-frame
+   quantization drift on a still image); PSNR>40dB is the correct bar.
+2. `server.py` reads its own `.env` via a local `load_dotenv()` (the image has no
+   python-dotenv dependency) — new env-driven constants must be defined after the
+   `load_dotenv()` call.
+3. Multipart uploads (client or curl) must use CRLF line endings; the boundary in the
+   `Content-Type` header must match the body exactly.
+4. `media_jobs/PIPELINE_CHANGES.md` is the change log; canonical contract:
+   `docs/matrix_media_pipeline_api.md` (12 job flows + 6 sync endpoints).
+5. Part 2 (thor) not started — self-contained THOR HANDOFF section in `media_pipeline_gaps.md`.

@@ -384,12 +384,14 @@ class MediaPipelineClient:
         return self._wait(self._post_json("/freeze", payload), timeout)["video"]
 
     def caption(self, source: str, text: str, start: float | None = None,
-                end: float | None = None, position: str = "bottom", size: int | None = None,
-                color: str = "white", timeout: float = 1800) -> str:
+                end: float | None = None, position: str = "bottom",
+                font_size: int | None = None, color: str = "white",
+                outline: int = 3, timeout: float = 1800) -> str:
         """Burn text into a clip (ffmpeg drawtext; multiline supported).
         `source` is a GPU-host path. Returns the captioned clip's host path."""
-        payload = {"source": source, "text": text, "position": position, "color": color}
-        for k, v in (("start", start), ("end", end), ("size", size)):
+        payload = {"source": source, "text": text, "position": position,
+                   "color": color, "outline": outline}
+        for k, v in (("start", start), ("end", end), ("font_size", font_size)):
             if v is not None:
                 payload[k] = v
         return self._wait(self._post_json("/caption", payload), timeout)["video"]
@@ -612,11 +614,12 @@ def media_freeze(source: str, duration: float = 2.0, frame: int | None = None,
 @mcp.tool()
 def media_caption(source: str, text: str, start: float | None = None,
                   end: float | None = None, position: str = "bottom",
-                  size: int | None = None, color: str = "white") -> str:
+                  font_size: int | None = None, color: str = "white",
+                  outline: int = 3) -> str:
     """Burn text into a clip (drawtext; multiline supported). `source` is a
     pipeline path. Returns the captioned clip path."""
-    return _localize(pipe.caption(source, text, start, end, position, size, color),
-                     "caption")
+    return _localize(pipe.caption(source, text, start, end, position, font_size,
+                                  color, outline), "caption")
 
 
 @mcp.tool()
@@ -688,7 +691,7 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | POST | `/assemble` | JSON `{shots:[path \| {path,in?,out?,duration?}], vo?, music?, sfx?: path \| [{path,at?}], vo_start?, loudnorm?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9}` | `{"video":"<path>/final.mp4"}` |
 | POST | `/trim` | JSON `{source, start=0.0, end? \| duration?, fps?, width?, height?}` | `{"video":"<path>.mp4"}` |
 | POST | `/freeze` | JSON `{source, duration=2.0, frame?=0, fps=24, width=1280, height=720}` | `{"video":"<path>.mp4"}` |
-| POST | `/caption` | JSON `{source, text, start?, end?, position="bottom", size?, color="white"}` | `{"video":"<path>.mp4"}` |
+| POST | `/caption` | JSON `{source, text, start?, end?, position="bottom", font_size?, color="white", outline?=3}` | `{"video":"<path>.mp4"}` |
 | GET | `/info` | query `path` (sync) | `{duration_s, width, height, fps, video_codec, audio_codec, size_bytes}` |
 | POST | `/upload_local` | JSON `{source}` (sync; source MUST be under the ComfyUI basedir) | `{"path":"<media_jobs path>"}` |
 | POST | `/download` | JSON `{url, subdirectory?}` (sync; http/https ingest) | `{"path":"<media_jobs path>"}` |
@@ -726,7 +729,7 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | `media_assemble` | `/assemble` | `shots:[path\|{path,in?,out?,duration?}], vo?, music?, sfx?: path\|[{path,at?}], vo_start?, loudnorm?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9` | final mp4 path |
 | `media_trim` | `/trim` | `source:path, start=0.0, end?\|duration?, fps?, width?, height?` | clip path |
 | `media_freeze` | `/freeze` | `source:path, duration=2.0, frame?=0, fps=24, width=1280, height=720` | clip path |
-| `media_caption` | `/caption` | `source:path, text:str, start?, end?, position="bottom", size?, color="white"` | clip path |
+| `media_caption` | `/caption` | `source:path, text:str, start?, end?, position="bottom", font_size?, color="white", outline=3` | clip path |
 | `media_info` | `/info` | `path:str` (sync) | `{duration_s, width, height, fps, ...}` |
 | `media_upload_local` | `/upload_local` | `source:path` (sync; GPU-host basedir only) | media_jobs path |
 | `media_download_url` | `/download` | `url:str, subdirectory?` (sync) | media_jobs path |

@@ -300,12 +300,14 @@ class MediaPipelineClient:
         return self._wait(self._post_json("/freeze", payload), timeout)["video"]
 
     def caption(self, source: str, text: str, start: float | None = None,
-                end: float | None = None, position: str = "bottom", size: int | None = None,
-                color: str = "white", timeout: float = 1800) -> str:
+                end: float | None = None, position: str = "bottom",
+                font_size: int | None = None, color: str = "white",
+                outline: int = 3, timeout: float = 1800) -> str:
         """Burn text into a clip (ffmpeg drawtext; multiline supported).
         `source` is a GPU-host path. Returns the captioned clip's host path."""
-        payload = {"source": source, "text": text, "position": position, "color": color}
-        for k, v in (("start", start), ("end", end), ("size", size)):
+        payload = {"source": source, "text": text, "position": position,
+                   "color": color, "outline": outline}
+        for k, v in (("start", start), ("end", end), ("font_size", font_size)):
             if v is not None:
                 payload[k] = v
         return self._wait(self._post_json("/caption", payload), timeout)["video"]

@@ -141,11 +141,12 @@ def media_freeze(source: str, duration: float = 2.0, frame: int | None = None,
 @mcp.tool()
 def media_caption(source: str, text: str, start: float | None = None,
                   end: float | None = None, position: str = "bottom",
-                  size: int | None = None, color: str = "white") -> str:
+                  font_size: int | None = None, color: str = "white",
+                  outline: int = 3) -> str:
     """Burn text into a clip (drawtext; multiline supported). `source` is a
     pipeline path. Returns the captioned clip path."""
-    return _localize(pipe.caption(source, text, start, end, position, size, color),
-                     "caption")
+    return _localize(pipe.caption(source, text, start, end, position, font_size,
+                                  color, outline), "caption")
 
 
 @mcp.tool()

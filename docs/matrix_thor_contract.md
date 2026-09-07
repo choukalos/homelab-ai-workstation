@@ -270,7 +270,7 @@ directly — use the LiteLLM aliases.
 | node-exporter :9100 | No (internal LAN only) | No auth on node-exporter |
 | dcgm-exporter :9400 | No (internal LAN only) | No auth on dcgm-exporter |
 | ComfyUI :8188 | No (internal LAN only) | `SECURITY_LEVEL=weak` — never expose publicly |
-| media-pipeline :8189 | No (internal LAN only) | Job API + `/metrics`; never expose publicly |
+| media-pipeline :8189 | No (internal LAN only) | Job API + `/metrics` + sync endpoints (`/info`, `/upload*`, `/dl_token`, `/dl/{token}`); never expose publicly — off-LAN pulls use signed `dl_token` URLs (see `docs/matrix_media_pipeline_api.md`) |
 
 **Network-level security:** All Matrix ports are bound to `0.0.0.0` but are only
 reachable on the homelab LAN. No ports are exposed to the internet.
@@ -298,3 +298,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | 1.0 | 2026-07-03 | Initial contract document |
 | 1.1 | 2026-08-28 | Retired `images` mode (image generation now concurrent with all modes); added media-pipeline :8189 to optional endpoints; updated `matrix-coder` to Qwen3.8-27B NVFP4 (qwen-long stays Qwen3.6-27B INT4) |
 | 1.2 | 2026-09-06 | Media-pipeline metering live: added `http://matrix:8189/metrics` as a Thor Prometheus scrape target (`media_*` metrics; 404 when the `image` profile is down or metering disabled); :8189 added to the auth table; new cross-ref `docs/matrix_media_pipeline_api.md` |
+| 1.3 | 2026-09-07 | Media-pipeline Part 1 build (matrix side of the gap-fill plan): 3 new job flows (`/trim`, `/freeze`, `/caption` — CPU ffmpeg), `/assemble` extensions (object shots, timestamped SFX, `vo_start`, `loudnorm`), 6 new sync endpoints (`/info`, `/upload_local`, `/download`, `/upload`, `/dl_token`, `/dl/{token}` — signed pull URLs for off-LAN clients). **No auth change** — :8189 stays unauthenticated (LAN trust); public auth remains the Caddy layer on thor. Contract updated in `docs/matrix_media_pipeline_api.md`; QA 38/38 (`media-pipeline/qa_part1.py`) |
