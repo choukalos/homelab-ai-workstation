@@ -52,7 +52,16 @@ thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
 | `media_generate_music` | ACE-Step | wav path |
 | `media_sfx` | MMAudio | audio path |
 | `media_upscale_video` | SeedVR2 / 4xUltrasharp | video path |
-| `media_assemble` | ffmpeg concat+mix | final mp4 path |
+| `media_assemble` | ffmpeg concat+mix (object shots, timestamped SFX list, `vo_start`, `loudnorm`) | final mp4 path |
+| `media_trim` | ffmpeg cut to time range | clip path |
+| `media_freeze` | ffmpeg still/frame → static N-s clip | clip path |
+| `media_caption` | ffmpeg drawtext burn-in | clip path |
+| `media_info` | ffprobe metadata (sync) | `{duration_s, width, height, fps, ...}` |
+| `media_upload_local` | bridge basedir file → media_jobs (sync; GPU-host only) | media_jobs path |
+| `media_download_url` | ingest http(s) URL → media_jobs (sync) | media_jobs path |
+| `media_upload_file` | multipart upload → media_jobs (sync, 500 MB cap) | media_jobs path |
+| `media_dl_token` | mint signed pull URL (HMAC, path-bound, time-limited) | `{token, url_path, expires_at}` |
+| `media_fetch_dl` | download via signed token | local path |
 
 - Inputs that are **local paths** (keyframe for `media_generate_shot`, image for
   `media_edit_image`, video for `media_sfx`/`media_upscale_video`) are **uploaded**
@@ -66,6 +75,12 @@ thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
   `jobs.jsonl`. Set `MEDIA_USER` and/or `MEDIA_CLIENT` on the media-mcp server
   (defaults: OS username / `mcp`). See `docs/matrix_media_pipeline_api.md` §5 on
   the GPU host.
+- **File transfer (since 2026-09-07):** matrix :8189 has no auth (LAN-trust);
+  public auth is the Caddy layer on thor only. Off-LAN clients pull results via
+  signed tokens: `media_dl_token(path)` → share `MEDIA_PIPELINE_URL + url_path`
+  (HMAC-SHA256, path-bound, time-limited — default 24 h, max 168 h). Uploads:
+  `media_upload_file` (multipart) or `media_download_url` (URL ingest). The
+  pipeline is unauthenticated by design — see `auth_todo.md` on the GPU host.
 - All media jobs run through a **bounded FIFO queue** on the GPU host: at most `MAX_CONCURRENT_JOBS`
   (default 1, set in the GPU host's `.env`) run at once; the rest wait with `status=queued` (visible
   via `/health` + `queue_position`). GPU flows additionally serialize on a GPU lock.

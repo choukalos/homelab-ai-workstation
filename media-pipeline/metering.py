@@ -66,6 +66,9 @@ MODEL_BY_FLOW = {
     "music": "ace-step-1.5",
     "sfx": "mmaudio-large-44k-v2",
     "assemble": "ffmpeg",
+    "trim": "ffmpeg",
+    "freeze": "ffmpeg",
+    "caption": "ffmpeg",
 }
 KIND_RATE = {
     "mpix_steps": PRICE_MPPIX_STEP,

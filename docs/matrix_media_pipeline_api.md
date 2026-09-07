@@ -2,7 +2,8 @@
 
 > **Audience:** media-mcp developers, integrators, and anyone calling the
 > media-pipeline service.
-> **Status:** verified live 2026-09-06 (all 9 job flows + metering).
+> **Status:** verified live 2026-09-07 (all 12 job flows + 6 sync endpoints +
+> metering; QA suite `media-pipeline/qa_part1.py`, 38/38).
 > **Supersedes:** the API contract section of the old `workspace/media-todo.md`
 > (deleted 2026-09-06 — project complete).
 > **Related:** `docs/matrix_images_mode.md` §Media pipeline orchestrator (ops),
@@ -15,7 +16,8 @@ The **media-pipeline** service (container `media_pipeline`, image
 GPU of its own. It owns the GPU job queue, drives ComfyUI (:8188) + vLLM
 (:8000), spawns TTS/ACE-Step workers, and does ffmpeg assembly.
 
-Base URL: `http://<gpu-host>:8189` (LAN-only, no auth — never expose publicly).
+Base URL: `http://<gpu-host>:8189` (LAN-only, no auth — never expose publicly.
+Public auth is the Caddy layer on thor only; see `auth_todo.md`).
 
 ---
 
@@ -62,7 +64,16 @@ GET /jobs/{job_id}
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
 | POST | `/sfx` | multipart `file(video), duration=8, steps=25, cfg=4.5, seed=42, prompt="", negative_prompt="", fps=24` | `{"audio":"<path>.flac"}` |
 | POST | `/upscale` | multipart `file(video), pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, fps=24, seed=42` | `{"video":"<path>.mp4"}` |
-| POST | `/assemble` | JSON `{shots:[paths], vo?, music?, sfx?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9, upscale_each=false, upscale_resolution=1080, upscale_noise_scale=0.0, upscale_fps=24, upscale_seed=42, text_overlays=[{text,start,end,position,size,color}]}` | `{"video":"<path>/final.mp4"}` (+ `final_titled.mp4` when `text_overlays` given) |
+| POST | `/assemble` | JSON `{shots, vo?, music?, sfx?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9, vo_start=0.0, loudnorm=false, upscale_each=false, upscale_resolution=1080, upscale_noise_scale=0.0, upscale_fps=24, upscale_seed=42, text_overlays=[{text,start,end,position,size,color}]}` — `shots` items may be paths OR objects `{path, in?, out?, duration?}` (still images need `duration`); `sfx` may be a single path OR a list `[{path, at}]` (timestamped SFX); `vo_start` delays the VO (silence before it) | `{"video":"<path>/final.mp4"}` (+ `final_titled.mp4` when `text_overlays` given) |
+| POST | `/trim` | JSON `{video, start, end, fps?, width?, height?}` | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
+| POST | `/freeze` | JSON `{source, duration, frame?, fps=24, width?, height?}` — still image, or a video + `frame` (second offset) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
+| POST | `/caption` | JSON `{video, text, start?, end?, position="bottom", size?, color="white"}` (drawtext; multiline via `textfile`) | `{"video":"<path>/mp_<jid>_00001.mp4","caption":"<path>/caption.txt"}` |
+| GET | `/info?path=` | sync (not a job) — ffprobe metadata for any media file | `{duration_s, width, height, fps, video_codec, audio_codecs, size_bytes, bitrate_bps}` (404 missing, 400 unprobeable) |
+| POST | `/upload_local` | JSON `{source, subdirectory?}` — sync bridge of a **basedir/** host file into `media_jobs/uploads/` (source confined to the ComfyUI basedir; 400 otherwise) | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
+| POST | `/download` | JSON `{url, subdirectory?}` — sync ingest of an http(s) URL into `media_jobs/uploads/` | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
+| POST | `/upload` | multipart `file` (+ optional `subdirectory`) — sync client file upload into `media_jobs/uploads/` (cap `MEDIA_UPLOAD_MAX_MB`, default 500 → 413) | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
+| POST | `/dl_token` | JSON `{path, ttl_hours=24}` — sync mint of an HMAC-SHA256 signed pull token (max ttl 168h → 400; path confined to media_jobs → 404; secret unset → 503) | `{"token","url_path","expires_at"}` |
+| GET | `/dl/{token}` | sync signed download (Range-capable; token is path-bound + time-limited; bad/expired → 404, nothing logged) | file bytes |
 
 Notes:
 - `shots`, `upscale`, `sfx`, `images/edit` accept **multipart file uploads**
@@ -82,7 +93,16 @@ Notes:
   768×512 shots).
 - Output paths are **host paths** on the GPU host. The remote MCP server
   fetches them via `GET /files/{name}` (name = path relative to the run dir) or
-  directly if it has filesystem access.
+  directly if it has filesystem access. **Off-LAN alternative (2026-09-07):**
+  `POST /dl_token` mints a signed `GET /dl/{token}` URL (HMAC-SHA256,
+  path-bound, time-limited, default 24h) that needs no auth on matrix and no
+  filesystem access — the token IS the credential.
+- **Sync endpoints** (`/info`, `/upload_local`, `/download`, `/upload`,
+  `/dl_token`, `/dl/{token}`) return directly — no `job_id`, no queue. Job
+  flows (`/trim`, `/freeze`, `/caption` and the original nine) are async.
+- `/trim`/`/freeze`/`/caption` are CPU-only (ffmpeg via `docker exec -u comfy
+  comfyui_backend`); they share the same bounded FIFO queue as GPU jobs
+  (no fast lane — VRAM-constrained design, see `media_pipeline_gaps.md`).
 
 ## 3. Queue & back-pressure
 
@@ -108,6 +128,7 @@ Notes:
 | `sfx` | MMAudio large-44k-v2 (in ComfyUI) |
 | `upscale` | SeedVR2 3B FP8 (`b`) / 4xUltrasharp (`a2`) |
 | `assemble` | ffmpeg (in-container, CPU) |
+| `trim` / `freeze` / `caption` | ffmpeg (in-container, CPU; 0 work units, model label `ffmpeg`) |
 
 ## 5. Metering (implemented + calibrated 2026-09-06)
 
@@ -131,7 +152,8 @@ The pipeline attributes each job to its `user`/`client` and measures the work:
   `shots`/`upscale`/`assemble`-with-`upscale_each` = frames × output MP
   (`mpix_frames`); `tts`/`music`/`sfx` = output audio seconds via ffprobe
   (`audio_seconds`); `storyboard` = real vLLM prompt/completion tokens;
-  `assemble` (no upscale) = 0.
+  `assemble` (no upscale) = 0; `trim`/`freeze`/`caption` = 0 (CPU-only
+  ffmpeg, model label `ffmpeg`).
 - **Rates** (full-cost: electricity + GPU amortization; calibrated 2026-09-06
   against 1 Hz `nvidia-smi power.draw`, baseline-subtracted):
   `$0.000053`/mpix_step, `$0.0000058`/mpix_frame, `$0.000031`/audio_s;
@@ -182,6 +204,13 @@ CPU → lower res/frames → (last resort, ask first) lower vLLM
 8. `text_overlays=[{text, start, end, position, size, color}]` — titles
    composited in post (readable; video diffusion can't render text)
 
+Post tools (2026-09-07): `media_trim` (cut a clip to a time range),
+`media_freeze` (still image or video frame → static N-second clip — the
+"hero product still" shot), `media_caption` (burn text into a clip),
+`media_info` (probe metadata). Assemble now also takes object shots
+(`{path, in, out, duration}`), a timestamped SFX list (`[{path, at}]`),
+`vo_start`, and `loudnorm`.
+
 Result: sharp 1080p, multi-shot, 24–40 s, readable text, minimal warble.
 
 ## 8. Deployment (GPU host)
@@ -209,6 +238,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-09-07 | **Part-1 gap fill** (plan `media_pipeline_gaps.md`): `/trim`, `/freeze`, `/caption` job flows (ffmpeg, CPU); `/assemble` extensions — object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`, `vo_start`, `loudnorm` (backward compatible); sync endpoints `/info`, `/upload_local` (basedir-confined), `/download`, `/upload` (multipart, 500 MB cap), `/dl_token` + `GET /dl/{token}` (HMAC-signed, path-bound, time-limited pull URLs); ffmpeg flows metered at 0 work units (model `ffmpeg`). QA: `media-pipeline/qa_part1.py` 38/38. |
 | 2026-09-06 | **Work-unit metering** (spec `matrix_media_work.md` v2.1): `/metrics` endpoint, `user`/`client` on all 9 job routes, `timeout` status, `jobs.jsonl`, calibrated rates. |
 | 2026-08-28 | Bounded queue depth (`MAX_QUEUE_DEPTH=5`) + HTTP 503 back-pressure; `strength` default 1.0 → 0.7 (warble knee). |
 | 2026-08-27 | Containerized (model-manager managed); `upscale_each` + `text_overlays` on `/assemble`; all 10 flows verified end-to-end. |

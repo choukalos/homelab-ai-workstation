@@ -1,5 +1,13 @@
 # media-mcp → media-pipeline handoff
 
+> **2026-09-07 update (matrix Part 1):** 8 new pipeline endpoints + 9 new MCP tools.
+> Job flows: `trim`, `freeze`, `caption` (CPU ffmpeg). Sync: `info`, `upload_local`,
+> `download`, `upload`, `dl_token`, `dl/{token}`. `/assemble` now accepts object shots
+> (`{path,in,out,duration}`), a timestamped SFX list (`[{path,at}]`), `vo_start`, and
+> `loudnorm`. The pipeline on matrix :8189 is **unauthenticated by design** (LAN trust;
+> public auth is the Caddy layer on thor) — off-LAN pulls use signed `dl_token` URLs.
+> Canonical contract: `docs/matrix_media_pipeline_api.md` on the GPU host.
+
 **What this is.** A single-file handoff for wiring a **remote media-mcp server** to the
 **GPU-host media-pipeline service** (port 8189). The GPU host already runs the pipeline
 (ComfyUI + VLLM + TTS/music/SFX workers, containerized). The remote box is a **thin HTTP
@@ -14,7 +22,7 @@ client** — it does no GPU work; it just POSTs jobs, polls, and returns results
 **You (the integrating AI) need to do 3 things:**
 1. Copy `media_pipeline_client.py` (below, §2) into the media-mcp server's directory.
 2. Set `MEDIA_PIPELINE_URL` to the GPU host (e.g. `http://<gpu-host>:8189`).
-3. Register the 9 MCP tools from `mcp_tools.py` (below, §3) with your MCP server.
+3. Register the 17 MCP tools from `mcp_tools.py` (below, §3) with your MCP server.
 
 Everything else (job queue, GPU locking, VRAM budgeting, model loading) is handled on the
 GPU host. The client is **stdlib-only (zero deps)** — it drops into any Python 3.10+ box.
@@ -24,9 +32,9 @@ GPU host. The client is **stdlib-only (zero deps)** — it drops into any Python
 ## Table of contents
 - [§1. Setup on the remote machine](#1-setup-on-the-remote-machine)
 - [§2. `media_pipeline_client.py` (copy this file)](#2-media_pipeline_clientpy-copy-this-file)
-- [§3. `mcp_tools.py` (the 9 MCP tools)](#3-mcp_toolspy-the-9-mcp-tools)
+- [§3. `mcp_tools.py` (the 17 MCP tools)](#3-mcp_toolspy-the-17-mcp-tools)
 - [§4. Pipeline HTTP API contract](#4-pipeline-http-api-contract)
-- [§5. The 9 MCP tools (quick reference)](#5-the-9-mcp-tools-quick-reference)
+- [§5. The 17 MCP tools (quick reference)](#5-the-17-mcp-tools-quick-reference)
 - [§6. Config / env vars](#6-config--env-vars)
 - [§7. Integration notes](#7-integration-notes)
 - [§8. Quality tips (for good-looking output)](#8-quality-tips)
@@ -92,6 +100,7 @@ Example:
     final = pipe.assemble(shots=[shot], vo="vo.wav", music="music.wav")
 """
 from __future__ import annotations
+import getpass
 import json
 import mimetypes
 import os
@@ -126,17 +135,41 @@ DEFAULT_URL = os.environ.get("MEDIA_PIPELINE_URL", "http://127.0.0.1:8189")
 _JOB_PREFIX = "/home/chuck/data/comfyui/run/media_jobs/"
 
 
+def _default_user() -> str:
+    for var in ("USER", "LOGNAME"):
+        v = os.environ.get(var)
+        if v:
+            return v
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "unknown"
+
+
 class PipelineError(RuntimeError):
     pass
 
 
 class MediaPipelineClient:
-    def __init__(self, base_url: str | None = None, poll: float = 5.0):
+    def __init__(self, base_url: str | None = None, poll: float = 5.0,
+                 user: str | None = None, client: str | None = None):
         self.base = (base_url or DEFAULT_URL).rstrip("/")
         self.poll = poll
+        # Identity for metering attribution on the GPU host (spec:
+        # docs/matrix_media_pipeline_api.md §5). Precedence: explicit arg > MEDIA_USER /
+        # MEDIA_CLIENT env > OS username. Forwarded as `user`/`client` fields
+        # on every job POST; the pipeline records them in /metrics + jobs.jsonl.
+        self.user = user or os.environ.get("MEDIA_USER") or _default_user()
+        self.client = client or os.environ.get("MEDIA_CLIENT") or "mcp"
+
+    def _identity(self) -> dict:
+        return {"user": self.user, "client": self.client}
 
     # ------------------------------------------------------------ low level
     def _post_json(self, endpoint: str, payload: dict) -> str:
+        payload = dict(payload)
+        for k, v in self._identity().items():
+            payload.setdefault(k, v)
         req = urllib.request.Request(
             f"{self.base}{endpoint}", data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
@@ -148,7 +181,7 @@ class MediaPipelineClient:
         fname = os.path.basename(filepath)
         ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         body = b""
-        for k, v in fields.items():
+        for k, v in {**fields, **self._identity()}.items():
             body += (f"--{boundary}\r\nContent-Disposition: form-data; "
                      f"name=\"{k}\"\r\n\r\n{v}\r\n").encode()
         with open(filepath, "rb") as f:
@@ -171,10 +204,30 @@ class MediaPipelineClient:
                 j = json.loads(r.read())
             if j.get("status") == "done":
                 return j.get("output", {})
-            if j.get("status") == "error":
-                raise PipelineError(f"job {jid} failed: {j.get('error')}")
+            if j.get("status") in ("error", "timeout"):
+                raise PipelineError(f"job {jid} {j.get('status')}: {j.get('error')}")
             time.sleep(self.poll)
         raise PipelineError(f"job {jid} timed out after {timeout:.0f}s")
+
+    def _post_json_sync(self, endpoint: str, payload: dict) -> dict:
+        """POST JSON and return the FULL response (sync endpoints: /info,
+        /upload_local, /download, /upload, /dl_token — no job_id)."""
+        req = urllib.request.Request(
+            f"{self.base}{endpoint}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            raise PipelineError(f"{endpoint} -> HTTP {e.code}: {e.read()[:300]!r}")
+
+    def _get(self, path: str, timeout: float = 600) -> tuple[int, bytes, dict]:
+        req = urllib.request.Request(f"{self.base}{path}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, r.read(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), dict(e.headers)
 
     # ------------------------------------------------------------- utilities
     def health(self) -> dict:
@@ -273,31 +326,156 @@ class MediaPipelineClient:
     def assemble(self, shots: list, vo: str | None = None, music: str | None = None,
                  sfx: str | None = None, width: int = 1920, height: int = 1080,
                  fps: int = 24, vo_volume: float = 1.0, music_volume: float = 0.35,
-                 sfx_volume: float = 0.9, timeout: float = 1800) -> str:
-        """Concat shots + mix audio -> final mp4. `shots` are GPU-host paths."""
+                 sfx_volume: float = 0.9, upscale_each: bool = False,
+                 upscale_resolution: int = 1080, upscale_noise_scale: float = 0.0,
+                 upscale_fps: int = 24, upscale_seed: int = 42,
+                 text_overlays: list | None = None, vo_start: float = 0.0,
+                 loudnorm: bool = False, timeout: float = 1800) -> str:
+        """Concat shots + mix audio -> final mp4. `shots` are GPU-host paths
+        (or objects {path, in, out, duration} for trims/stills). `sfx` may be a
+        single path or a list of {path, at} for timestamped SFX. `vo_start`
+        delays the VO (silence before it). `loudnorm` applies EBU R128 to the
+        mix. All new params are backward-compatible (defaults = old behavior).
+        """
         payload = {"shots": shots, "width": width, "height": height, "fps": fps,
                    "vo_volume": vo_volume, "music_volume": music_volume,
-                   "sfx_volume": sfx_volume}
+                   "sfx_volume": sfx_volume, "vo_start": vo_start,
+                   "loudnorm": loudnorm}
+        if upscale_each:
+            payload.update({"upscale_each": True, "upscale_resolution": upscale_resolution,
+                            "upscale_noise_scale": upscale_noise_scale,
+                            "upscale_fps": upscale_fps, "upscale_seed": upscale_seed})
+        if text_overlays:
+            payload["text_overlays"] = text_overlays
         for k, v in (("vo", vo), ("music", music), ("sfx", sfx)):
             if v:
                 payload[k] = v
         return self._wait(self._post_json("/assemble", payload), timeout)["video"]
+
+    # ------------------------------------------------- ffmpeg post tools (2026-09-07)
+    def trim(self, source: str, start: float = 0.0, end: float | None = None,
+             duration: float | None = None, fps: int | None = None,
+             width: int | None = None, height: int | None = None,
+             timeout: float = 1800) -> str:
+        """Cut a clip to a time range. `end` (absolute seconds) or `duration`
+        (length) — not both. `source` is a GPU-host path. Returns the trimmed
+        clip's host path."""
+        payload = {"source": source, "start": start}
+        if end is not None:
+            payload["end"] = end
+        elif duration is not None:
+            payload["duration"] = duration
+        for k, v in (("fps", fps), ("width", width), ("height", height)):
+            if v is not None:
+                payload[k] = v
+        return self._wait(self._post_json("/trim", payload), timeout)["video"]
+
+    def freeze(self, source: str, duration: float = 2.0, frame: float | None = None,
+               fps: int = 24, width: int | None = None, height: int | None = None,
+               timeout: float = 1800) -> str:
+        """Still image (or a video + `frame` = frame index) -> static N-second
+        clip. `source` is a GPU-host path. Returns the frozen clip's host path."""
+        payload = {"source": source, "duration": duration, "fps": fps}
+        if frame is not None:
+            payload["frame"] = frame
+        for k, v in (("width", width), ("height", height)):
+            if v is not None:
+                payload[k] = v
+        return self._wait(self._post_json("/freeze", payload), timeout)["video"]
+
+    def caption(self, source: str, text: str, start: float | None = None,
+                end: float | None = None, position: str = "bottom", size: int | None = None,
+                color: str = "white", timeout: float = 1800) -> str:
+        """Burn text into a clip (ffmpeg drawtext; multiline supported).
+        `source` is a GPU-host path. Returns the captioned clip's host path."""
+        payload = {"source": source, "text": text, "position": position, "color": color}
+        for k, v in (("start", start), ("end", end), ("size", size)):
+            if v is not None:
+                payload[k] = v
+        return self._wait(self._post_json("/caption", payload), timeout)["video"]
+
+    # ------------------------------------------------- sync endpoints (2026-09-07)
+    def info(self, path: str) -> dict:
+        """ffprobe metadata (duration_s, width, height, fps, codecs, size,
+        bitrate) for any media file. Raises PipelineError on 404/400."""
+        code, body, _ = self._get(f"/info?path={urllib.parse.quote(path)}", timeout=120)
+        if code != 200:
+            raise PipelineError(f"info -> HTTP {code}: {body[:200]!r}")
+        return json.loads(body)
+
+    def upload_local(self, source: str, subdirectory: str = "") -> str:
+        """Bridge a ComfyUI basedir/ host file into media_jobs/uploads/ (sync).
+        Only meaningful when this client runs ON the GPU host. Returns the
+        media_jobs path."""
+        return self._post_json_sync("/upload_local",
+                                    {"source": source, "subdirectory": subdirectory})["path"]
+
+    def download_url(self, url: str, subdirectory: str = "") -> str:
+        """Ingest an http(s) URL into media_jobs/uploads/ (sync). Returns the
+        media_jobs path."""
+        return self._post_json_sync("/download",
+                                    {"url": url, "subdirectory": subdirectory})["path"]
+
+    def upload_file(self, local_path: str, subdirectory: str = "") -> str:
+        """Upload a LOCAL file into media_jobs/uploads/ (sync multipart).
+        Returns the media_jobs path. Cap: MEDIA_UPLOAD_MAX_MB (default 500)."""
+        boundary = "----mpc" + uuid.uuid4().hex
+        fname = os.path.basename(local_path)
+        ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+        with open(local_path, "rb") as f:
+            fdata = f.read()
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; "
+                f"name=\"subdirectory\"\r\n\r\n{subdirectory}\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; "
+                f"name=\"file\"; filename=\"{fname}\"\r\n"
+                f"Content-Type: {ctype}\r\n\r\n").encode() + fdata + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            f"{self.base}/upload", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                return json.loads(r.read())["path"]
+        except urllib.error.HTTPError as e:
+            raise PipelineError(f"/upload -> HTTP {e.code}: {e.read()[:300]!r}")
+
+    def dl_token(self, path: str, ttl_hours: float = 24.0) -> dict:
+        """Mint a signed pull URL for a media_jobs file: {token, url_path,
+        expires_at}. The token is path-bound + time-limited (HMAC-SHA256).
+        Share `self.base + url_path` as a no-auth download link (off-LAN
+        clients)."""
+        return self._post_json_sync("/dl_token", {"path": path, "ttl_hours": ttl_hours})
+
+    def fetch_dl(self, token: str, local_dir: str = ".") -> str:
+        """Download via a signed token (GET /dl/{token}). Saves to local_dir,
+        returns the local path. 404 on bad/expired token."""
+        code, body, hdrs = self._get(f"/dl/{token}", timeout=900)
+        if code != 200:
+            raise PipelineError(f"/dl -> HTTP {code}: {body[:200]!r}")
+        cd = hdrs.get("Content-Disposition", "")
+        name = cd.split("filename=")[-1].strip('"') if "filename=" in cd else "download"
+        os.makedirs(local_dir, exist_ok=True)
+        out = Path(local_dir) / name
+        out.write_bytes(body)
+        return str(out)
 
 
 # Convenience singleton (reads MEDIA_PIPELINE_URL from env)
 pipe = MediaPipelineClient()
 ```
 
----
-
-## 3. `mcp_tools.py` (the 9 MCP tools)
+## 3. `mcp_tools.py` (the 17 MCP tools)
 
 One MCP tool per pipeline flow. Each **BLOCKS** until the GPU-host job finishes.
 
 ```python
 """mcp_tools — MCP tool definitions that wrap the media-pipeline service.
 
-Drop this into the REMOTE machine's media-mcp server. It exposes one MCP tool
+Drop this into the REMOTE machine's media-mcp server. The pipeline client
+forwards caller identity (`user`/`client`) on every job POST for metering
+attribution on the GPU host (docs/matrix_media_pipeline_api.md §5): set
+`MEDIA_USER` / `MEDIA_CLIENT` env vars (or rely on the OS username) on the
+media-mcp server; per-request overrides go through `MediaPipelineClient(user=, client=)`. It exposes one MCP tool
 per pipeline flow. Each tool BLOCKS until the GPU-host job finishes and returns
 the result (a host path, or inlined content for small assets).
 
@@ -399,20 +577,96 @@ def media_upscale_video(video: str, pipeline: str = "b", resolution: int = 1080,
 def media_assemble(shots: list, vo: str = "", music: str = "", sfx: str = "",
                    width: int = 1920, height: int = 1080, fps: int = 24,
                    vo_volume: float = 1.0, music_volume: float = 0.35,
-                   sfx_volume: float = 0.9) -> str:
+                   sfx_volume: float = 0.9, vo_start: float = 0.0,
+                   loudnorm: bool = False) -> str:
     """Concat video shots and mix VO + music + SFX into a final mp4. `shots` is a
-    list of video paths (use B-upscaled shots for 1080p quality). Returns the
-    final mp4 path."""
+    list of video paths (use B-upscaled shots for 1080p quality); items may also
+    be objects {"path", "in", "out", "duration"} (still images need duration).
+    `sfx` may be a single path or a list of {"path", "at"} for timestamped SFX.
+    `vo_start` delays the VO (silence before it). `loudnorm` = EBU R128.
+    Returns the final mp4 path."""
     return _localize(pipe.assemble(shots, vo or None, music or None, sfx or None,
                                    width, height, fps, vo_volume, music_volume,
-                                   sfx_volume), "final")
+                                   sfx_volume, vo_start=vo_start, loudnorm=loudnorm),
+                     "final")
+
+
+@mcp.tool()
+def media_trim(source: str, start: float = 0.0, end: float | None = None,
+               duration: float | None = None, fps: int | None = None,
+               width: int | None = None, height: int | None = None) -> str:
+    """Cut a clip to a time range: `end` (absolute seconds) or `duration`
+    (length) — not both. Optional fps/width/height normalization. `source` is a
+    pipeline path. Returns the trimmed clip path."""
+    return _localize(pipe.trim(source, start, end, duration, fps, width, height), "trim")
+
+
+@mcp.tool()
+def media_freeze(source: str, duration: float = 2.0, frame: int | None = None,
+                 fps: int = 24, width: int | None = None, height: int | None = None) -> str:
+    """Freeze a still image (or a video frame: `frame` = frame index) into a
+    static N-second clip. `source` is a pipeline path. Returns the clip path."""
+    return _localize(pipe.freeze(source, duration, frame, fps, width, height), "freeze")
+
+
+@mcp.tool()
+def media_caption(source: str, text: str, start: float | None = None,
+                  end: float | None = None, position: str = "bottom",
+                  size: int | None = None, color: str = "white") -> str:
+    """Burn text into a clip (drawtext; multiline supported). `source` is a
+    pipeline path. Returns the captioned clip path."""
+    return _localize(pipe.caption(source, text, start, end, position, size, color),
+                     "caption")
+
+
+@mcp.tool()
+def media_info(path: str) -> dict:
+    """Probe metadata for any media file (duration_s, width, height, fps,
+    codecs, size, bitrate). `path` is a pipeline (GPU-host) path."""
+    return pipe.info(path)
+
+
+@mcp.tool()
+def media_upload_local(source: str, subdirectory: str = "") -> str:
+    """Bridge a ComfyUI basedir/ file on the GPU host into media_jobs/uploads/
+    (only useful when the MCP server runs ON the GPU host). Returns the
+    media_jobs path."""
+    return pipe.upload_local(source, subdirectory)
+
+
+@mcp.tool()
+def media_download_url(url: str, subdirectory: str = "") -> str:
+    """Ingest an http(s) URL into media_jobs/uploads/ on the GPU host. Returns
+    the media_jobs path."""
+    return pipe.download_url(url, subdirectory)
+
+
+@mcp.tool()
+def media_upload_file(local_path: str, subdirectory: str = "") -> str:
+    """Upload a LOCAL file into media_jobs/uploads/ on the GPU host (multipart;
+    500 MB cap). Returns the media_jobs path."""
+    return pipe.upload_file(local_path, subdirectory)
+
+
+@mcp.tool()
+def media_dl_token(path: str, ttl_hours: float = 24.0) -> dict:
+    """Mint a signed pull URL for a media_jobs file: {token, url_path,
+    expires_at}. The URL (MEDIA_PIPELINE_URL + url_path) is a no-auth download
+    link — path-bound, time-limited (default 24h, max 168h). For off-LAN
+    clients."""
+    return pipe.dl_token(path, ttl_hours)
+
+
+@mcp.tool()
+def media_fetch_dl(token: str, local_dir: str = "") -> str:
+    """Download a file via a signed token (GET /dl/{token}). Saves to
+    local_dir (default: current dir) and returns the local path."""
+    return pipe.fetch_dl(token, local_dir or ".")
 
 
 if __name__ == "__main__":
     mcp.run()
 ```
-
----
 
 ## 4. Pipeline HTTP API contract
 
@@ -431,7 +685,16 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
 | POST | `/sfx` | multipart `file(video), duration=8, steps=25, cfg=4.5, seed=42, prompt="", negative_prompt="", fps=24` | `{"audio":"<path>.flac"}` |
 | POST | `/upscale` | multipart `file(video), pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, fps=24, seed=42` | `{"video":"<path>.mp4"}` |
-| POST | `/assemble` | JSON `{shots:[paths], vo?, music?, sfx?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9}` | `{"video":"<path>/final.mp4"}` |
+| POST | `/assemble` | JSON `{shots:[path \| {path,in?,out?,duration?}], vo?, music?, sfx?: path \| [{path,at?}], vo_start?, loudnorm?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9}` | `{"video":"<path>/final.mp4"}` |
+| POST | `/trim` | JSON `{source, start=0.0, end? \| duration?, fps?, width?, height?}` | `{"video":"<path>.mp4"}` |
+| POST | `/freeze` | JSON `{source, duration=2.0, frame?=0, fps=24, width=1280, height=720}` | `{"video":"<path>.mp4"}` |
+| POST | `/caption` | JSON `{source, text, start?, end?, position="bottom", size?, color="white"}` | `{"video":"<path>.mp4"}` |
+| GET | `/info` | query `path` (sync) | `{duration_s, width, height, fps, video_codec, audio_codec, size_bytes}` |
+| POST | `/upload_local` | JSON `{source}` (sync; source MUST be under the ComfyUI basedir) | `{"path":"<media_jobs path>"}` |
+| POST | `/download` | JSON `{url, subdirectory?}` (sync; http/https ingest) | `{"path":"<media_jobs path>"}` |
+| POST | `/upload` | multipart `file, subdirectory?` (sync; 500 MB cap → 413) | `{"path":"<media_jobs path>"}` |
+| POST | `/dl_token` | JSON `{path, ttl_hours?=24}` (sync; max 168) | `{token, url_path, expires_at}` |
+| GET | `/dl/{token}` | — (sync; Range-capable; 404 on bad/expired) | file bytes |
 
 **Notes**
 - `shots`, `upscale`, `sfx`, `images/edit` accept **multipart file uploads** (the server
@@ -448,7 +711,7 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 
 ---
 
-## 5. The 9 MCP tools (quick reference)
+## 5. The 17 MCP tools (quick reference)
 
 | MCP tool | Pipeline endpoint | Params (MCP) | Returns |
 |---|---|---|---|
@@ -460,7 +723,16 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | `media_generate_music` | `/music` | `prompt:str, lyrics="", duration=30, seed=42` | wav path |
 | `media_sfx` | `/sfx` | `video:path, description="", duration=8.0` | audio path |
 | `media_upscale_video` | `/upscale` | `video:path, pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, seed=42` | video path |
-| `media_assemble` | `/assemble` | `shots:[paths], vo?, music?, sfx?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9` | final mp4 path |
+| `media_assemble` | `/assemble` | `shots:[path\|{path,in?,out?,duration?}], vo?, music?, sfx?: path\|[{path,at?}], vo_start?, loudnorm?, width=1920, height=1080, fps=24, vo_volume=1.0, music_volume=0.35, sfx_volume=0.9` | final mp4 path |
+| `media_trim` | `/trim` | `source:path, start=0.0, end?\|duration?, fps?, width?, height?` | clip path |
+| `media_freeze` | `/freeze` | `source:path, duration=2.0, frame?=0, fps=24, width=1280, height=720` | clip path |
+| `media_caption` | `/caption` | `source:path, text:str, start?, end?, position="bottom", size?, color="white"` | clip path |
+| `media_info` | `/info` | `path:str` (sync) | `{duration_s, width, height, fps, ...}` |
+| `media_upload_local` | `/upload_local` | `source:path` (sync; GPU-host basedir only) | media_jobs path |
+| `media_download_url` | `/download` | `url:str, subdirectory?` (sync) | media_jobs path |
+| `media_upload_file` | `/upload` | `local_path:str, subdirectory?` (sync multipart, 500 MB) | media_jobs path |
+| `media_dl_token` | `/dl_token` | `path:str, ttl_hours=24` (sync; max 168) | `{token, url_path, expires_at}` |
+| `media_fetch_dl` | `/dl/{token}` | `token:str, local_dir?` (sync) | local path |
 
 - Inputs that are **local paths** (keyframe for `media_generate_shot`, image for
   `media_edit_image`, video for `media_sfx`/`media_upscale_video`) are **uploaded** to the

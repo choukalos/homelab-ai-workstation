@@ -106,13 +106,91 @@ def media_upscale_video(video: str, pipeline: str = "b", resolution: int = 1080,
 def media_assemble(shots: list, vo: str = "", music: str = "", sfx: str = "",
                    width: int = 1920, height: int = 1080, fps: int = 24,
                    vo_volume: float = 1.0, music_volume: float = 0.35,
-                   sfx_volume: float = 0.9) -> str:
+                   sfx_volume: float = 0.9, vo_start: float = 0.0,
+                   loudnorm: bool = False) -> str:
     """Concat video shots and mix VO + music + SFX into a final mp4. `shots` is a
-    list of video paths (use B-upscaled shots for 1080p quality). Returns the
-    final mp4 path."""
+    list of video paths (use B-upscaled shots for 1080p quality); items may also
+    be objects {"path", "in", "out", "duration"} (still images need duration).
+    `sfx` may be a single path or a list of {"path", "at"} for timestamped SFX.
+    `vo_start` delays the VO (silence before it). `loudnorm` = EBU R128.
+    Returns the final mp4 path."""
     return _localize(pipe.assemble(shots, vo or None, music or None, sfx or None,
                                    width, height, fps, vo_volume, music_volume,
-                                   sfx_volume), "final")
+                                   sfx_volume, vo_start=vo_start, loudnorm=loudnorm),
+                     "final")
+
+
+@mcp.tool()
+def media_trim(source: str, start: float = 0.0, end: float | None = None,
+               duration: float | None = None, fps: int | None = None,
+               width: int | None = None, height: int | None = None) -> str:
+    """Cut a clip to a time range: `end` (absolute seconds) or `duration`
+    (length) — not both. Optional fps/width/height normalization. `source` is a
+    pipeline path. Returns the trimmed clip path."""
+    return _localize(pipe.trim(source, start, end, duration, fps, width, height), "trim")
+
+
+@mcp.tool()
+def media_freeze(source: str, duration: float = 2.0, frame: int | None = None,
+                 fps: int = 24, width: int | None = None, height: int | None = None) -> str:
+    """Freeze a still image (or a video frame: `frame` = frame index) into a
+    static N-second clip. `source` is a pipeline path. Returns the clip path."""
+    return _localize(pipe.freeze(source, duration, frame, fps, width, height), "freeze")
+
+
+@mcp.tool()
+def media_caption(source: str, text: str, start: float | None = None,
+                  end: float | None = None, position: str = "bottom",
+                  size: int | None = None, color: str = "white") -> str:
+    """Burn text into a clip (drawtext; multiline supported). `source` is a
+    pipeline path. Returns the captioned clip path."""
+    return _localize(pipe.caption(source, text, start, end, position, size, color),
+                     "caption")
+
+
+@mcp.tool()
+def media_info(path: str) -> dict:
+    """Probe metadata for any media file (duration_s, width, height, fps,
+    codecs, size, bitrate). `path` is a pipeline (GPU-host) path."""
+    return pipe.info(path)
+
+
+@mcp.tool()
+def media_upload_local(source: str, subdirectory: str = "") -> str:
+    """Bridge a ComfyUI basedir/ file on the GPU host into media_jobs/uploads/
+    (only useful when the MCP server runs ON the GPU host). Returns the
+    media_jobs path."""
+    return pipe.upload_local(source, subdirectory)
+
+
+@mcp.tool()
+def media_download_url(url: str, subdirectory: str = "") -> str:
+    """Ingest an http(s) URL into media_jobs/uploads/ on the GPU host. Returns
+    the media_jobs path."""
+    return pipe.download_url(url, subdirectory)
+
+
+@mcp.tool()
+def media_upload_file(local_path: str, subdirectory: str = "") -> str:
+    """Upload a LOCAL file into media_jobs/uploads/ on the GPU host (multipart;
+    500 MB cap). Returns the media_jobs path."""
+    return pipe.upload_file(local_path, subdirectory)
+
+
+@mcp.tool()
+def media_dl_token(path: str, ttl_hours: float = 24.0) -> dict:
+    """Mint a signed pull URL for a media_jobs file: {token, url_path,
+    expires_at}. The URL (MEDIA_PIPELINE_URL + url_path) is a no-auth download
+    link — path-bound, time-limited (default 24h, max 168h). For off-LAN
+    clients."""
+    return pipe.dl_token(path, ttl_hours)
+
+
+@mcp.tool()
+def media_fetch_dl(token: str, local_dir: str = "") -> str:
+    """Download a file via a signed token (GET /dl/{token}). Saves to
+    local_dir (default: current dir) and returns the local path."""
+    return pipe.fetch_dl(token, local_dir or ".")
 
 
 if __name__ == "__main__":
