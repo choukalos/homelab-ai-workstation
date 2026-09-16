@@ -16,7 +16,7 @@ services:
     command:
       - "--path.procfs=/host/proc"
       - "--path.sysfs=/host/sys"
-      - "--path.rootfs=/host/rootfs"
+      - "--path.rootfs=/rootfs"
 
   dcgm-exporter:
     image: nvidia/dcgm-exporter:latest
