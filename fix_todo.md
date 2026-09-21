@@ -4,7 +4,7 @@ Audit date: 2026-09-20. Machine: **matrix** (GPU host, 192.168.4.55).
 Policy: `homelab/` = code/config/compose/scripts (git-versioned, GitHub),
 `data/` = data to back up, `workspace/` = temporary, no backup.
 
-Decisions received 2026-09-21. Remaining work: **F2 only** (code change, pending).
+Decisions received 2026-09-21. **All items DONE** (2026-09-21).
 
 ---
 
@@ -48,7 +48,7 @@ conversation — see `backup_todo.md` for the captured decisions + inventory.
 
 ---
 
-## F2. media_jobs retention — APPROVED, pending implementation  [REMAINING]
+## F2. media_jobs retention — DONE (2026-09-21)
 
 **Approved params (2026-09-21):**
 - Retention: **14 days** default, configurable via `.env` (`MEDIA_JOB_RETENTION_DAYS`).
@@ -59,18 +59,26 @@ conversation — see `backup_todo.md` for the captured decisions + inventory.
   feeds `/metrics` for Thor's Prometheus scrape): **EXCLUDE from cleanup** — it's the
   audit/billing trail, not job output.
 
-**Implementation plan (code change in `homelab/media-pipeline/`, versioned):**
-1. Add a retention background task to `server.py`: every N hours, delete job dirs
-   under `media_jobs/` whose mtime is older than `MEDIA_JOB_RETENTION_DAYS` (default
-   14). Skip `metrics/`; sweep stale files in `uploads/` by the same age rule.
-   Never delete the dir of a job that is `queued`/`running`.
-2. One-off manual cleanup: remove `acestep_test/`, `ltxv_test/`, `tts_test/` and job
-   dirs older than 30 days (547 dirs / 2.2 GB today).
-3. Document in `docs/matrix_media_pipeline_api.md` (retention + env var).
-4. Rebuild: `model-manager rebuild media-pipeline`.
-5. Note: the Aug 27-28 finals in `media_jobs/` are now >14 days old and will be
-   reclaimed by retention — that's fine, they're preserved in
-   `data/media/projects/` (F3).
+**Implemented** (`media-pipeline/server.py`, commit following this note):
+- `MEDIA_JOB_RETENTION_DAYS` (default 14) + `MEDIA_RETENTION_SWEEP_INTERVAL_S`
+  (default 3600) env config, read from `.env`.
+- Hourly background sweeper thread: deletes job dirs + stale top-level `uploads/`
+  files older than the window (mtime-based); `metrics/` never touched; live
+  queued/running jobs never touched. Sweep state on `/health`
+  (`retention_days`, `retention_last_run`, `retention_last_deleted`,
+  `retention_last_bytes_freed`).
+- Fixed app-level logging (no handler → app INFO was silently dropped; only
+  uvicorn's own logs were visible).
+- QA: unit test against real `server.py` with fake JOB_DIR (old/new job dirs,
+  metrics survival, uploads old/new, live-job protection — all passed);
+  end-to-end: first sweep reclaimed 453 dirs (2.2 GB → 253 MB), verified fake
+  20-day-old dir deletion + log lines + /health state.
+- One-off cleanup: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs
+  (comfy-owned, via container). No job dirs were >30 days old (oldest ~28 d), so
+  the 30-day one-off rule was a no-op; the 14-day sweep reclaims the rest as it
+  ages (now 85 dirs / 159 MB).
+- Documented in `docs/matrix_media_pipeline_api.md` §3.1 + changelog.
+- Rebuilt via `model-manager rebuild media-pipeline`; container healthy.
 
 ---
 

@@ -67,6 +67,12 @@ WORKER_PY = {
 }
 FFMPEG = "ffmpeg"
 logger = logging.getLogger("media-pipeline")
+if not logger.handlers:  # make app INFO logs visible in container logs (uvicorn
+    # only configures its own loggers; without a handler, app INFO is dropped)
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 app = FastAPI(title="media-pipeline")
 GPU_LOCK = threading.Lock()  # flows run in worker threads; thread-safe lock
@@ -111,6 +117,15 @@ MAX_QUEUE_DEPTH = int(os.environ.get("MAX_QUEUE_DEPTH", "5"))
 MEDIA_DL_SECRET = os.environ.get("MEDIA_DL_SECRET", "")
 UPLOAD_MAX_MB = int(os.environ.get("MEDIA_UPLOAD_MAX_MB", "500"))
 UPLOADS_DIR = JOB_DIR / "uploads"
+
+# Job-dir retention: media_jobs/ accumulates one dir per job (inputs, outputs,
+# intermediates) plus uploads/, so it grows without bound. A background sweeper
+# deletes job dirs (and stale top-level files in uploads/) whose mtime is older
+# than MEDIA_JOB_RETENTION_DAYS (default 14). `metrics/` (jobs.jsonl billing/
+# audit trail) is NEVER touched, and live jobs (queued/running) are never
+# touched. Sweep state is exposed on /health.
+MEDIA_JOB_RETENTION_DAYS = float(os.environ.get("MEDIA_JOB_RETENTION_DAYS", "14"))
+RETENTION_SWEEP_INTERVAL_S = int(os.environ.get("MEDIA_RETENTION_SWEEP_INTERVAL_S", "3600"))
 BASEDIR = Path("/home/chuck/data/comfyui/basedir")  # ComfyUI input/output root
 MAX_PENDING = MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH  # total in-flight capacity
 _qlock = threading.Lock()
@@ -230,6 +245,89 @@ _WORKER_THREADS = [
 ]
 for _t in _WORKER_THREADS:
     _t.start()
+
+
+# ------------------------------------------------------------------ retention
+# Background sweeper for media_jobs/ (see MEDIA_JOB_RETENTION_DAYS above).
+# Age is judged by dir/file mtime (a finished job's dir mtime ~= its last
+# output write). The JOBS table only covers this process's lifetime, so the
+# mtime rule is the primary guard; the live-status check is a second guard
+# against sweeping a job that is queued/running right now.
+RETENTION_STATE = {"last_run": None, "last_deleted": 0, "last_bytes_freed": 0}
+
+
+def _dir_size(p: Path) -> int:
+    total = 0
+    try:
+        for f in p.rglob("*"):
+            if f.is_file():
+                total += f.stat().st_size
+    except OSError:
+        pass
+    return total
+
+
+def _retention_sweep() -> None:
+    """Delete job dirs + uploaded files older than the retention window."""
+    global RETENTION_STATE
+    cutoff = time.time() - MEDIA_JOB_RETENTION_DAYS * 86400
+    live = {j for j, st in JOBS.items() if st.get("status") in ("queued", "running")}
+    deleted, freed = 0, 0
+    for entry in sorted(JOB_DIR.iterdir()):
+        if entry.name in ("metrics", "uploads"):
+            continue  # billing/audit trail + uploads are handled separately
+        if not entry.is_dir() or entry.name in live:
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+            if mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        size = _dir_size(entry)
+        try:
+            shutil.rmtree(entry)
+        except OSError as e:
+            logger.warning("retention: could not remove job dir %s: %s", entry.name, e)
+            continue
+        deleted += 1
+        freed += size
+        logger.info("retention: removed job dir %s (%.1f MB, mtime %s)",
+                    entry.name, size / 1e6,
+                    time.strftime("%Y-%m-%d", time.gmtime(mtime)))
+    if UPLOADS_DIR.is_dir():
+        for f in sorted(UPLOADS_DIR.iterdir()):
+            if not f.is_file():
+                continue
+            try:
+                if f.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            size = f.stat().st_size
+            try:
+                f.unlink()
+            except OSError as e:
+                logger.warning("retention: could not remove upload %s: %s", f.name, e)
+                continue
+            deleted += 1
+            freed += size
+            logger.info("retention: removed stale upload %s (%.1f MB)", f.name, size / 1e6)
+    RETENTION_STATE = {"last_run": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                       "last_deleted": deleted, "last_bytes_freed": freed}
+    if deleted:
+        logger.info("retention sweep: removed %d entries, freed %.1f MB "
+                    "(retention=%sd)", deleted, freed / 1e6, MEDIA_JOB_RETENTION_DAYS)
+
+
+def _retention_loop() -> None:
+    """Hourly sweeper; a failure must never kill the service."""
+    while True:
+        try:
+            _retention_sweep()
+        except Exception as e:  # noqa: BLE001 - keep the sweeper alive
+            logger.warning("retention sweep failed: %s", e)
+        time.sleep(RETENTION_SWEEP_INTERVAL_S)
 
 
 # ------------------------------------------------------------------ utils
@@ -938,6 +1036,10 @@ def health():
         "running": running,
         "queued": queued,
         "queue_depth": len(queued),
+        "retention_days": MEDIA_JOB_RETENTION_DAYS,
+        "retention_last_run": RETENTION_STATE["last_run"],
+        "retention_last_deleted": RETENTION_STATE["last_deleted"],
+        "retention_last_bytes_freed": RETENTION_STATE["last_bytes_freed"],
     }
 
 
@@ -1202,6 +1304,8 @@ def api_dl(token: str):
 
 
 if __name__ == "__main__":
+    # Start the media_jobs retention sweeper (hourly; see MEDIA_JOB_RETENTION_DAYS).
+    threading.Thread(target=_retention_loop, name="retention", daemon=True).start()
     # Bind host is configurable so it can run on the host loopback (127.0.0.1)
     # or on all interfaces (0.0.0.0) for LAN/remote MCP access. Default 0.0.0.0
     # so the remote media-mcp client can reach <gpu-host>:8189 (LAN-only, like

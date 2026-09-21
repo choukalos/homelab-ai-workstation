@@ -115,6 +115,33 @@ Notes:
   estimate `~90 s/job`, floored 120 s, capped 900 s). No job record is created.
 - FIFO, no priority (deferred).
 
+### 3.1 Job-dir retention
+
+`media_jobs/` grows without bound (one dir per job: inputs, outputs,
+intermediates, plus `uploads/`). A background sweeper thread runs every hour
+and reclaims stale entries:
+
+- **Job dirs** whose mtime is older than `MEDIA_JOB_RETENTION_DAYS` days
+  (default **14**) are deleted (`shutil.rmtree`). Age = dir mtime ≈ last
+  output write. Live jobs (`status` queued/running in the in-memory table) are
+  never swept.
+- **`uploads/`** top-level files older than the same window are deleted.
+- **`metrics/`** (the `jobs.jsonl` billing/audit trail) is **never touched**.
+
+Config (env, read from `/home/chuck/homelab/.env`):
+
+| Var | Default | Meaning |
+|---|---|---|
+| `MEDIA_JOB_RETENTION_DAYS` | `14` | age window (days) before job dirs/uploads are reclaimed |
+| `MEDIA_RETENTION_SWEEP_INTERVAL_S` | `3600` | sweep period (seconds) |
+
+`/health` exposes `retention_days`, `retention_last_run`,
+`retention_last_deleted`, `retention_last_bytes_freed`.
+
+**Implication:** finished deliverables older than the window are NOT durable —
+pull them out (e.g. via `media_pull` / `/dl/{token}`) or move them to
+`data/media/projects/` while the job is fresh.
+
 ## 4. Models (per flow)
 
 | Flow | Model |
@@ -238,6 +265,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-09-21 | **Job-dir retention** (`MEDIA_JOB_RETENTION_DAYS`, default 14 d): hourly background sweeper reclaims job dirs + stale `uploads/` files; `metrics/` (jobs.jsonl) and live jobs never touched; `/health` exposes sweep state. One-off: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs. |
 | 2026-09-07 | **Part-1 gap fill** (plan `media_pipeline_gaps.md`): `/trim`, `/freeze`, `/caption` job flows (ffmpeg, CPU); `/assemble` extensions — object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`, `vo_start`, `loudnorm` (backward compatible); sync endpoints `/info`, `/upload_local` (basedir-confined), `/download`, `/upload` (multipart, 500 MB cap), `/dl_token` + `GET /dl/{token}` (HMAC-signed, path-bound, time-limited pull URLs); ffmpeg flows metered at 0 work units (model `ffmpeg`). QA: `media-pipeline/qa_part1.py` 38/38. |
 | 2026-09-06 | **Work-unit metering** (spec `matrix_media_work.md` v2.1): `/metrics` endpoint, `user`/`client` on all 9 job routes, `timeout` status, `jobs.jsonl`, calibrated rates. |
 | 2026-08-28 | Bounded queue depth (`MAX_QUEUE_DEPTH=5`) + HTTP 503 back-pressure; `strength` default 1.0 → 0.7 (warble knee). |
