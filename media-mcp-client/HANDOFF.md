@@ -1,5 +1,12 @@
 # media-mcp → media-pipeline handoff
 
+> **2026-09-23 update (Qwen-Image-2.1):** `/images` + `/images/edit` now default to
+> **Qwen-Image-2.1** (unified create+edit, 25 steps, ~30–120 s at 1280×720). Client step
+> defaults updated 4/8 → 25; both image tools gain `model` (`qwen21` default | `legacy` =
+> old Qwen-Image-2512/2511 GGUF+Lightning) and `edit_image` gains `references` (up to 9
+> identity/consistency images — pass a previous shot's keyframe for cross-shot
+> character/product consistency). Server-side: qwen21 steps clamped to [10, 50].
+>
 > **2026-09-07 update (matrix Part 1):** 8 new pipeline endpoints + 9 new MCP tools.
 > Job flows: `trim`, `freeze`, `caption` (CPU ffmpeg). Sync: `info`, `upload_local`,
 > `download`, `upload`, `dl_token`, `dl/{token}`. `/assemble` now accepts object shots
@@ -257,19 +264,42 @@ class MediaPipelineClient:
         return json.loads(Path(local).read_text())
 
     def generate_image(self, prompt: str, width: int = 1344, height: int = 768,
-                       seed: int = 42, steps: int = 4, timeout: float = 600) -> str:
-        """Text -> image (keyframe). Returns GPU-host path of the PNG."""
-        return self._wait(self._post_json("/images",
-                                          {"prompt": prompt, "width": width,
-                                           "height": height, "seed": seed,
-                                           "steps": steps}), timeout)["image"]
+                       seed: int = 42, steps: int = 25, model: str | None = None,
+                       timeout: float = 600) -> str:
+        """Text -> image (keyframe). Returns GPU-host path of the PNG.
 
-    def edit_image(self, image: str, prompt: str, seed: int = 42, steps: int = 8,
+        model: 'qwen21' (default; Qwen-Image-2.1 — 25 steps, ~30-120 s at
+        1280x720) | 'legacy' (Qwen-Image-2512 GGUF + Lightning; pass steps=4).
+        steps: the server clamps qwen21 steps to [10, 50] (no distilled LoRA
+        at launch); the legacy path honors 4/8.
+        """
+        payload = {"prompt": prompt, "width": width, "height": height,
+                   "seed": seed, "steps": steps}
+        if model is not None:
+            payload["model"] = model
+        return self._wait(self._post_json("/images", payload), timeout)["image"]
+
+    def edit_image(self, image: str, prompt: str, seed: int = 42, steps: int = 25,
+                   model: str | None = None, references: list[str] | None = None,
                    timeout: float = 600) -> str:
-        """Image+text -> edited image. `image` is a LOCAL path (uploaded)."""
-        return self._wait(self._post_multipart("/images/edit", image,
-                                               {"prompt": prompt, "seed": str(seed),
-                                                "steps": str(steps)}), timeout)["image"]
+        """Image+text -> edited image. `image` is a LOCAL path (uploaded).
+
+        model: 'qwen21' (default; unified Qwen-Image-2.1 editing) | 'legacy'
+        (Qwen-Image-Edit-2511 GGUF + Lightning; pass steps=8).
+        references: up to 9 extra identity/consistency images (qwen21 only);
+        each entry = a ComfyUI input/ filename OR a media_jobs-relative path
+        like 'media_jobs/<job_id>/<file>.png' (staged into ComfyUI input/
+        server-side). The canvas follows `image`; references influence
+        identity only (e.g. a previous shot's keyframe for character/product
+        consistency across shots).
+        """
+        fields = {"prompt": prompt, "seed": str(seed), "steps": str(steps)}
+        if model is not None:
+            fields["model"] = model
+        if references:
+            fields["references"] = ",".join(str(r) for r in references)
+        return self._wait(self._post_multipart("/images/edit", image, fields),
+                          timeout)["image"]
 
     def generate_shot(self, keyframe: str, prompt: str, width: int = 768,
                       height: int = 512, frames: int = 97, fps: float = 24.0,
@@ -464,6 +494,7 @@ class MediaPipelineClient:
 
 # Convenience singleton (reads MEDIA_PIPELINE_URL from env)
 pipe = MediaPipelineClient()
+
 ```
 
 ## 3. `mcp_tools.py` (the 17 MCP tools)
@@ -523,16 +554,28 @@ def media_storyboard(brief: str, n_shots: int = 5, aspect: str = "16:9") -> dict
 
 @mcp.tool()
 def media_generate_image(prompt: str, width: int = 1280, height: int = 720,
-                         seed: int = 42, steps: int = 4) -> str:
-    """Generate an image (keyframe) from a text prompt. Returns a path."""
-    return _localize(pipe.generate_image(prompt, width, height, seed, steps), "img")
+                         seed: int = 42, steps: int = 25, model: str | None = None) -> str:
+    """Generate an image (keyframe) from a text prompt via Qwen-Image-2.1
+    (25 steps default; ~30-120 s at 1280x720). `model`: 'qwen21' (default) |
+    'legacy' (old Qwen-Image-2512; pass steps=4 for the fast Lightning path).
+    Returns a path."""
+    return _localize(pipe.generate_image(prompt, width, height, seed, steps,
+                                         model), "img")
 
 
 @mcp.tool()
-def media_edit_image(image: str, prompt: str, seed: int = 42, steps: int = 8) -> str:
-    """Edit an image (e.g. compose a consistent keyframe). `image` is a local
-    path; it is uploaded to the pipeline. Returns a path."""
-    return _localize(pipe.edit_image(image, prompt, seed, steps), "img")
+def media_edit_image(image: str, prompt: str, seed: int = 42, steps: int = 25,
+                     model: str | None = None, references: list[str] | None = None) -> str:
+    """Edit an image (e.g. compose a consistent keyframe) with the unified
+    Qwen-Image-2.1 editing model (25 steps default). `image` is a local path
+    (uploaded); the canvas follows it. `references` = up to 9 extra
+    identity/consistency images (a ComfyUI input/ filename or a media_jobs
+    path like media_jobs/<job_id>/<file>.png) - e.g. pass a previous shot's
+    keyframe to keep the character/product consistent across shots. `model`:
+    'qwen21' (default) | 'legacy' (old Qwen-Image-Edit-2511; steps=8).
+    Returns a path."""
+    return _localize(pipe.edit_image(image, prompt, seed, steps, model,
+                                     references), "img")
 
 
 @mcp.tool()
@@ -669,6 +712,7 @@ def media_fetch_dl(token: str, local_dir: str = "") -> str:
 
 if __name__ == "__main__":
     mcp.run()
+
 ```
 
 ## 4. Pipeline HTTP API contract
@@ -681,8 +725,8 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | GET | `/jobs/{id}` | — | job status: `{"id","flow","status","created","started","finished","output","error","payload","queue_position"?}` |
 | GET | `/files/{name:path}` | — | file bytes (download) |
 | POST | `/storyboard` | JSON `{brief, n_shots=5, aspect="16:9"}` | `{"storyboard":"<path>/storyboard.json","n_shots":N}` |
-| POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, lora?, steps=4}` | `{"image":"<path>.png"}` |
-| POST | `/images/edit` | multipart `file, prompt, seed=42, steps=8` | `{"image":"<path>.png"}` |
+| POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy", lora? (legacy only)}` | `{"image":"<path>.png","model":"<model>"}` |
+| POST | `/images/edit` | multipart `file, prompt, seed=42, steps=25, model?="qwen21"\|"legacy", references? (qwen21 only, comma-separated)` | `{"image":"<path>.png","model":"<model>","references":N}` |
 | POST | `/shots` | multipart `file(keyframe), prompt, width=768, height=512, frames=97, fps=24, strength=0.7, seed=42` | `{"video":"<path>.mp4"}` |
 | POST | `/tts` | JSON `{text, voice="trailer"}` | `{"audio":"<path>/vo.wav"}` |
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
@@ -719,8 +763,8 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | MCP tool | Pipeline endpoint | Params (MCP) | Returns |
 |---|---|---|---|
 | `media_storyboard` | `/storyboard` | `brief:str, n_shots:int=5, aspect:str="16:9"` | `{"shots":[{id,visual,vo}]}` |
-| `media_generate_image` | `/images` | `prompt:str, width=1280, height=720, seed=42, steps=4` | image path |
-| `media_edit_image` | `/images/edit` | `image:path, prompt:str, seed=42, steps=8` | image path |
+| `media_generate_image` | `/images` | `prompt:str, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy"` | image path |
+| `media_edit_image` | `/images/edit` | `image:path, prompt:str, seed=42, steps=25, model?="qwen21"\|"legacy", references?:list[str] (max 9, qwen21 only)` | image path |
 | `media_generate_shot` | `/shots` | `keyframe:path, prompt:str, width=768, height=512, frames=97, fps=24, strength=0.7, seed=42` | video path |
 | `media_text_to_speech` | `/tts` | `text:str, voice="trailer"` | wav path |
 | `media_generate_music` | `/music` | `prompt:str, lyrics="", duration=30, seed=42` | wav path |
@@ -803,8 +847,10 @@ These make the output look good (tuned on the GPU host):
   post via the pipeline's `/assemble` `text_overlays` (list of `{text,start,end,position,size,color}`)
   → ffmpeg `drawtext`.
 - **Character consistency:** build a character sheet first (Qwen-Image T2I), then compose each
-  keyframe with `media_edit_image` using the sheet as reference; I2V from those keyframes keeps
-  identity stable (expect 1–3 retries/shot).
+  keyframe with `media_edit_image` using the sheet as a **`references`** entry (up to 9; the
+  canvas follows the edited image, references only steer identity) — or pass the previous
+  shot's keyframe as a reference; I2V from those keyframes keeps identity stable (expect 1–3
+  retries/shot).
 
 ---
 

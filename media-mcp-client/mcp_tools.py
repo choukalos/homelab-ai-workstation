@@ -50,16 +50,28 @@ def media_storyboard(brief: str, n_shots: int = 5, aspect: str = "16:9") -> dict
 
 @mcp.tool()
 def media_generate_image(prompt: str, width: int = 1280, height: int = 720,
-                         seed: int = 42, steps: int = 4) -> str:
-    """Generate an image (keyframe) from a text prompt. Returns a path."""
-    return _localize(pipe.generate_image(prompt, width, height, seed, steps), "img")
+                         seed: int = 42, steps: int = 25, model: str | None = None) -> str:
+    """Generate an image (keyframe) from a text prompt via Qwen-Image-2.1
+    (25 steps default; ~30-120 s at 1280x720). `model`: 'qwen21' (default) |
+    'legacy' (old Qwen-Image-2512; pass steps=4 for the fast Lightning path).
+    Returns a path."""
+    return _localize(pipe.generate_image(prompt, width, height, seed, steps,
+                                         model), "img")
 
 
 @mcp.tool()
-def media_edit_image(image: str, prompt: str, seed: int = 42, steps: int = 8) -> str:
-    """Edit an image (e.g. compose a consistent keyframe). `image` is a local
-    path; it is uploaded to the pipeline. Returns a path."""
-    return _localize(pipe.edit_image(image, prompt, seed, steps), "img")
+def media_edit_image(image: str, prompt: str, seed: int = 42, steps: int = 25,
+                     model: str | None = None, references: list[str] | None = None) -> str:
+    """Edit an image (e.g. compose a consistent keyframe) with the unified
+    Qwen-Image-2.1 editing model (25 steps default). `image` is a local path
+    (uploaded); the canvas follows it. `references` = up to 9 extra
+    identity/consistency images (a ComfyUI input/ filename or a media_jobs
+    path like media_jobs/<job_id>/<file>.png) - e.g. pass a previous shot's
+    keyframe to keep the character/product consistent across shots. `model`:
+    'qwen21' (default) | 'legacy' (old Qwen-Image-Edit-2511; steps=8).
+    Returns a path."""
+    return _localize(pipe.edit_image(image, prompt, seed, steps, model,
+                                     references), "img")
 
 
 @mcp.tool()

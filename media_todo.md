@@ -61,8 +61,10 @@
 - [x] `scripts/qwen21_upgrade_matrix.sh` — matrix-side prep (Phase 1)
 - [x] `update_media_mcp_todo.md` — MCP client follow-up (Thor)
 - [x] local unit check of the workflow builders (JSON structure)
-- [ ] docs: `models/profiles/comfyui.yaml`, `docs/matrix_images_mode.md`,
+- [x] docs: `models/profiles/comfyui.yaml`, `docs/matrix_images_mode.md`,
       `docs/matrix_media_pipeline_api.md` §4 (model table + new params)
+      (all updated 2026-09-23; re-verified 2026-09-23: builders + clamp + model
+      resolution unit checks pass on thor)
 
 ## Phase 1 — matrix prep (run ON matrix, 192.168.4.55)
 
@@ -124,11 +126,21 @@ recreate). Per-request override: `"model": "qwen21" | "legacy"` on
 
 ## Phase 4 — follow-ups
 
-- [ ] MCP client update (Thor): hand `update_media_mcp_todo.md` to the Thor
-      agent (defaults steps 4/8 → 25, expose `model` + `references`)
-- [ ] docs sweep: comfyui.yaml profile, matrix_images_mode.md,
-      matrix_media_pipeline_api.md §4 + §6 (metering model labels),
-      matrix_comfyui_media_api.md
+- [x] MCP client update (Thor): `media-mcp-client/` updated 2026-09-23 — step
+      defaults 4/8 → 25, `model` + `references` exposed on the image tools,
+      HANDOFF.md embedded code + API tables synced, client payload construction
+      unit-tested. **Deploy:** the live media-mcp server (thor) needs the two
+      updated files copied in + restart; pipeline is backwards compatible so
+      this can land before or after Phases 1–3.
+- [x] docs sweep: `comfyui.yaml` profile, `matrix_images_mode.md`,
+      `matrix_media_pipeline_api.md` §4 + §6 (metering model labels),
+      `matrix_comfyui_media_api.md` (rewritten 2026-09-23: qwen21 default
+      flows §4–5 with verified graphs, legacy demoted to §6, model inventory +
+      VRAM + error handling updated)
+- [ ] **Phases 1–3 matrix run (PENDING — no SSH from thor; run on matrix or
+      via matrix agent):** `git pull` + `bash scripts/qwen21_upgrade_matrix.sh`
+      (Phase 1) → `model-manager rebuild media-pipeline` + health (Phase 2) →
+      Phase 3 QA checklist below. ComfyUI still at v0.22.0 as of 2026-09-23.
 - [ ] watch for a Qwen-Image-2.1 Lightning/distilled LoRA (LightX2V et al.) —
       if one lands, re-test 4–8 steps and consider dropping the clamp floor
 - [ ] **only after** 1–2 weeks of green QA: delete legacy models

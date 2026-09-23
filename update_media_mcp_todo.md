@@ -1,11 +1,19 @@
 # update_media_mcp_todo — mcp_media client update for Qwen-Image-2.1 (2026-09-23)
 
+> **STATUS (2026-09-23): client update DONE** in `media-mcp-client/` (this repo,
+> thor): `media_pipeline_client.py` + `mcp_tools.py` updated per §Required changes
+> 1–4, `HANDOFF.md` embedded code + API/tool tables synced, payload construction
+> unit-tested (defaults 25, `model`/`references` passthrough, None fields omitted).
+> **Remaining:** (a) deploy the two files into the live media-mcp server + restart;
+> (b) the verification checklist below, which needs matrix Phases 1–3 green first
+> (pipeline is backwards compatible — the old client keeps working meanwhile).
+
 > Hand this to the **Thor agent** (the one running the `mcp_media` MCP server
 > that calls the matrix media-pipeline) AFTER the matrix pipeline upgrade
 > (`media_todo.md` Phases 1–3) is green. The pipeline is **backwards
 > compatible**, so the MCP client keeps working unchanged in the meantime —
-> but its step defaults are wrong for the new model and it can't use the new
-> features.
+> but its step defaults were wrong for the new model and it couldn't use the
+> new features (now fixed, pending deployment).
 
 ## Background
 
@@ -29,10 +37,10 @@ Lightning) path is still available via `model=legacy`.
    - `edit_image(..., model: str | None = None)` → form field `model`
    - Values: `"qwen21"` (default) | `"legacy"`. Lets the agent fall back to
      the old models if the new ones misbehave on a given prompt.
-3. **Expose `references`** on `edit_image` (the killer feature):
+3. **Expose `references`** on `edit_image` (the killer feature) — **DONE**:
    - `edit_image(..., references: list[str] | None = None)` → form field
-     `references` (comma-joined). Up to 9 entries, each a **ComfyUI input/
-     filename** or a **media_jobs-relative path** like
+     `references` (comma-joined, omitted when None). Up to 9 entries, each a
+     **ComfyUI input/ filename** or a **media_jobs-relative path** like
      `media_jobs/<job_id>/<file>.png` (the pipeline stages them into ComfyUI
      input/ server-side). `image_1` is always the image being edited;
      references are extra identity/consistency inputs (e.g. a character sheet
@@ -40,13 +48,14 @@ Lightning) path is still available via `model=legacy`.
    - Typical use in the commercial pipeline: pass the first shot's keyframe as
      a reference when editing later shots so the character/product stays
      consistent.
-4. **Update the tool descriptions** (so the calling LLM knows):
-   - create: "Qwen-Image-2.1, 25 steps default, ~30–120 s at 1280×720"
+4. **Update the tool descriptions** (so the calling LLM knows) — **DONE**:
+   - create: "Qwen-Image-2.1, 25 steps default, ~30–120 s at 1280×720" ✓
    - edit: "unified editing model; supports up to 9 reference images for
-     consistency; canvas follows the edited image"
+     consistency; canvas follows the edited image" ✓
 5. **Optional:** raise the client-side timeout for image jobs (default
    `max_wait`) to ≥ 300 s if it isn't already — qwen21 at 25 steps is slower
-   than the old 4-step path.
+   than the old 4-step path. **N/A:** client `timeout` default is already 600 s
+   on both image methods.
 
 ## Verification (after the update, from Thor)
 
@@ -58,6 +67,8 @@ curl -s -X POST http://192.168.4.55:8189/images \
 # expect: job done in ~30–120 s, output image, metering model label qwen-image-2.1
 ```
 
+- [ ] deploy: copy updated `media_pipeline_client.py` + `mcp_tools.py` into the
+      live media-mcp server dir + restart (done in-repo 2026-09-23; live deploy pending)
 - [ ] `generate_image` works with new defaults (25 steps)
 - [ ] `edit_image` works with a single uploaded image
 - [ ] `edit_image` with `references=[<media_jobs path>]` works (needs a

@@ -1,35 +1,44 @@
 # ComfyUI Media API — Image Creation & Editing (Qwen-Image)
 
 > **Audience:** harness server / media tooling developers integrating image generation + editing.
-> **Status:** verified end-to-end 2026-08-26 (all flows tested on this box, VRAM + OCR checked).
+> **Status:** verified end-to-end 2026-09-23 (Qwen-Image-2.1 default; legacy 2512/2511 path re-verified as fallback).
 > **Replaces:** any prior ComfyUI integration (old SDXL/FLUX-era workflows).
 > **Ops doc:** see `docs/matrix_images_mode.md` for operator-facing details (mode, VRAM, maintenance).
+> **Upgrade runbook:** `media_todo.md` (Qwen-Image-2.1, 2026-09-23) + `scripts/qwen21_upgrade_matrix.sh`.
 > **Higher-level orchestrator:** this doc covers the low-level ComfyUI image create/edit API. For full
 > media production (storyboard → shots → TTS/music/SFX → upscale → assembly) use the **media-pipeline**
 > service on port 8189 (see `docs/matrix_media_pipeline_api.md` for the full API contract,
 > `docs/matrix_images_mode.md` §Media pipeline orchestrator, `media-pipeline/`,
-> and the remote client in `media-mcp-client/`).
+> and the remote client in `media-mcp-client/`). The pipeline defaults to Qwen-Image-2.1 and exposes
+> `model` (`qwen21` | `legacy`) + `references` per request.
 
 ---
 
 ## 1. What you get
 
-| Flow | Model | Input | Output | Verified time |
+| Flow | Model (default since 2026-09-23) | Input | Output | Expected time |
 |---|---|---|---|---|
-| **Create image** (text → image) | Qwen-Image-2512 (20B, GGUF Q4_0) + 4-step Lightning LoRA | text prompt | 1920×1080 PNG (720p render → 4x upscale → lanczos) | ~15–40 s |
-| **Edit image** (image + instruction) | Qwen-Image-Edit-2511 (20B, GGUF Q4_0) + 8-step Lightning LoRA | image + text instruction | edited image at Kontext resolution (16:9 → 1392×752) | ~45–60 s |
+| **Create image** (text → image) | **Qwen-Image-2.1** (7B single-stream DiT, int8_convrot) + Qwen3-VL 8B int8 encoder + 64-ch RGBA VAE | text prompt | ~1 MP PNG (1280×720 class; upscale separately for 1080p) | ~30–120 s (25 steps) |
+| **Edit image** (image + instruction) | **same Qwen-Image-2.1 model** (unified T2I + edit) | image + text instruction (+ up to 9 reference images) | edited image at the input image's resolution (canvas follows the edited image) | ~30–120 s (25 steps) |
+| Create / edit (legacy) | Qwen-Image-2512 (20B GGUF Q4_0) + 4-step Lightning LoRA / Qwen-Image-Edit-2511 (20B GGUF Q4_0) + 8-step Lightning LoRA | as above | 1920×1080 PNG (create, 720p render → 4x upscale → lanczos) / Kontext resolution (edit) | ~15–40 s / ~45–60 s |
 
-Both flows run **concurrently with vLLM** (the main LLM workload). ComfyUI is capped at a ~12 GB VRAM budget via `--reserve-vram 60`; measured peaks stay under 70.2 GB of 72 GB with vLLM holding ~56 GB untouched. **No mode switch, no stopping vLLM, no coordination needed.**
+All flows run **concurrently with vLLM** (the main LLM workload). ComfyUI is capped at a ~12 GB VRAM
+budget via `--reserve-vram 60`; measured peaks stay under 70.2 GB of 72 GB with vLLM holding ~56 GB
+untouched. **No mode switch, no stopping vLLM, no coordination needed.**
 
 Strengths (why this replaces the old tooling):
-- **Legible in-image text** — quote exact strings in the prompt; verified by OCR (all quoted strings detected, no garbling).
-- **True instruction-based editing** — "change the title to …", "make the background navy", "make all text white" — with a stable iteration loop.
-- Fast: 4 steps (create) / 8 steps (edit) with the Lightning LoRAs (no 30–50 step sampling).
+- **Unified model** — one 7B model for create *and* edit (Qwen-Image-2.1), native RGBA.
+- **Reference images** — the edit flow accepts **up to 10 images** (1 edit target + 9 references):
+  character/product consistency across storyboard shots (the killer feature for the commercial pipeline).
+- **Legible in-image text** — improved typography; quote exact strings in the prompt.
+- **Better portrait lighting** vs the 20B 2512/2511 generation.
+- **Slower than legacy** — no distilled 4-step LoRA at launch (official 25–40 steps; the media-pipeline
+  clamps qwen21 `steps` to [10, 50], default 25). Legacy 4/8-step path remains via `model=legacy`.
 
 ## 2. Access
 
 - **Base URL:** `http://localhost:8188` (same host; LAN-only, **no authentication** — do not expose publicly)
-- **Liveness:** `GET /system_stats` → JSON with `system.comfyui_version` (currently `0.22.0`)
+- **Liveness:** `GET /system_stats` → JSON with `system.comfyui_version` (currently `0.37.0`, pinned git tag — the day-0 Qwen-Image-2.1 release, 2026-09-21)
 - **No auth, no API keys.** If the port is down, ComfyUI is not running — operator must start it (`docker compose -f compose/comfyui.yml up -d`); do not attempt to manage the container from tooling.
 
 ### Endpoint summary
@@ -67,12 +76,169 @@ Strengths (why this replaces the old tooling):
 
 Output naming: `SaveImage.filename_prefix` → `<prefix>_00001_.png` (counter increments per run with the same prefix). Use a unique prefix per job (e.g. `media_<jobid>`) to avoid ambiguity.
 
-## 4. Flow A — Create image (text → 1080p image)
+## 4. Flow A — Create image (Qwen-Image-2.1, default)
 
-### 4.1 API prompt (verified graph, 13 nodes)
+### 4.1 API prompt (verified graph, 8 nodes)
 
-Placeholders in `⟨angle brackets⟩`. Everything else is fixed — do not change node types,
-sampler, or the upscale tail (the 4x-then-lanczos step is what makes text crisp at 1080p).
+Placeholders in `⟨angle brackets⟩`. This is the official Comfy-Org Qwen-Image-2.1 T2I template
+unwound to API format (as shipped by the media-pipeline, `workflows.py::qwen_image_21_t2i`).
+No upscale tail — render at ~1 MP and upscale separately if 1080p is needed (§4.4).
+
+```json
+{
+  "451": { "class_type": "UNETLoader",
+            "inputs": { "unet_name": "qwen_image_2.1_int8_convrot.safetensors", "weight_dtype": "default" } },
+  "453": { "class_type": "CLIPLoader",
+            "inputs": { "clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "weight_dtype": "default" } },
+  "454": { "class_type": "VAELoader",
+            "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
+  "456": { "class_type": "EmptyLatentImage",
+            "inputs": { "width": 1280, "height": 720, "batch_size": 1 } },
+  "474": { "class_type": "TextEncodeQwenImage21",
+            "inputs": { "clip": ["453", 0], "vae": ["454", 0],
+                        "prompt": "⟨POSITIVE PROMPT⟩", "negative_prompt": "⟨NEGATIVE PROMPT⟩" } },
+  "458": { "class_type": "KSampler",
+            "inputs": { "model": ["451", 0], "seed": ⟨INT⟩, "steps": 25, "cfg": 1.0,
+                        "sampler_name": "euler", "scheduler": "simple",
+                        "positive": ["474", 0], "negative": ["474", 1],
+                        "latent_image": ["456", 0], "denoise": 1.0 } },
+  "457": { "class_type": "VAEDecode",
+            "inputs": { "samples": ["458", 0], "vae": ["454", 0] } },
+  "999": { "class_type": "SaveImage",
+            "inputs": { "filename_prefix": "⟨PREFIX⟩", "images": ["457", 0] } }
+}
+```
+
+### 4.2 Variable parts
+
+| Placeholder | Rules |
+|---|---|
+| `⟨POSITIVE PROMPT⟩` | Natural language. For images with text: **quote the exact strings** and specify placement + typography. Keep each quoted element short (a few words). |
+| `⟨NEGATIVE PROMPT⟩` | `TextEncodeQwenImage21` takes the negative as an input; the pipeline passes `""`. Only set it if you have a specific failure mode. |
+| `⟨INT⟩` seed | Any int. Lock the seed when iterating on a layout. |
+| `⟨PREFIX⟩` | Unique per job, e.g. `media_<jobid>`. |
+| `width`/`height` (node 456) | **~1 MP sweet spot for the 12 GB VRAM budget:** 1280×720 (16:9), 720×1280 (9:16), 1024×1024 (1:1). Native 2K (2048²) does NOT fit the budget — render ~1 MP and upscale. |
+| `steps` (node 458) | 25 default (official range 25–40). The media-pipeline clamps to [10, 50] — <10 degrades badly (no distilled LoRA at launch). |
+
+### 4.3 Model/step variants
+
+| Config | unet_name | steps | Notes |
+|---|---|---|---|
+| **Primary (above)** | `qwen_image_2.1_int8_convrot.safetensors` | 25 | int8_convrot sized for the 12 GB budget; the only 2.1 weight currently on disk |
+| Watch item | (bf16/fp8 2.1 weights) | 25–40 | not on disk; int8_convrot is the 12 GB fit |
+
+### 4.4 Upscale for 1080p stills
+
+The 2.1 graph has no upscale tail. If 1080p output is needed: run the create flow at 1280×720,
+then chain the legacy upscale tail (nodes 10–12 of §6.1: `UpscaleModelLoader` +
+`ImageUpscaleWithModel` + `ImageScale` lanczos) on the result, or use the pipeline's video upscale
+(`media_upscale_video`, 4xUltrasharp 'a2' fast / SeedVR2 'b' quality) for shots.
+
+## 5. Flow B — Edit image (Qwen-Image-2.1, default, with references)
+
+### 5.1 Provide the input image(s)
+
+`LoadImage` reads from the ComfyUI input dir. Two options:
+
+**Option 1 — API upload (preferred for tooling):**
+
+```
+POST /upload/image    (multipart/form-data)
+  image:   <file bytes>
+  overwrite: true
+← {"name": "<basename>.png", "subfolder": "", "type": "input"}
+```
+
+Use the returned `name` as `LoadImage.inputs.image`. (Uploads land in `basedir/input/`.)
+
+**Option 2 — host filesystem:** place the file in `/home/chuck/data/comfyui/basedir/input/` and use its basename.
+
+**References (up to 9 extra images):** upload each the same way and add a `LoadImage` node per
+reference, wired into `TextEncodeQwenImage21` as `images.image_2 … images.image_10`.
+`images.image_1` is **always the image being edited** (the canvas follows it); references are
+identity/consistency inputs only (e.g. a character sheet, or a previous shot's keyframe). The
+media-pipeline does this staging for you (its `/images/edit` `references` form field accepts
+ComfyUI input/ filenames or media_jobs-relative paths).
+
+### 5.2 API prompt (verified graph, 9 nodes + 1 per reference)
+
+Placeholders in `⟨angle brackets⟩`. This is the official Comfy-Org Qwen-Image-2.1 edit template
+unwound to API format (as shipped by the media-pipeline, `workflows.py::qwen_image_21_edit`).
+The official template's switch=False default (canvas follows the edited image) means no
+ComfySwitchNode/EmptyLatentImage pair. The edit model goes through `QwenImage21Cache`
+(prefix-KV caching — benefit realized when consecutive jobs share prompt prefixes).
+
+```json
+{
+  "451": { "class_type": "UNETLoader",
+            "inputs": { "unet_name": "qwen_image_2.1_int8_convrot.safetensors", "weight_dtype": "default" } },
+  "453": { "class_type": "CLIPLoader",
+            "inputs": { "clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "weight_dtype": "default" } },
+  "454": { "class_type": "VAELoader",
+            "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
+  "455": { "class_type": "LoadImage",
+            "inputs": { "image": "⟨INPUT IMAGE FILENAME⟩" } },
+  "469": { "class_type": "QwenImage21Cache",
+            "inputs": { "model": ["451", 0], "device": "auto", "dtype": "default" } },
+  "474": { "class_type": "TextEncodeQwenImage21",
+            "inputs": { "clip": ["453", 0], "vae": ["454", 0],
+                        "prompt": "⟨INSTRUCTION⟩", "negative_prompt": "",
+                        "images.image_1": ["455", 0] } },
+  "458": { "class_type": "KSampler",
+            "inputs": { "model": ["469", 0], "seed": ⟨INT⟩, "steps": 25, "cfg": 1.0,
+                        "sampler_name": "euler", "scheduler": "simple",
+                        "positive": ["474", 0], "negative": ["474", 1],
+                        "latent_image": ["474", 2], "denoise": 1.0 } },
+  "457": { "class_type": "VAEDecode",
+            "inputs": { "samples": ["458", 0], "vae": ["454", 0] } },
+  "999": { "class_type": "SaveImage",
+            "inputs": { "filename_prefix": "⟨PREFIX⟩", "images": ["457", 0] } }
+}
+```
+
+Per reference image *i* (i = 2 … 10), add:
+
+```json
+"5⟨i⟩": { "class_type": "LoadImage", "inputs": { "image": "⟨REFERENCE i FILENAME⟩" } }
+```
+
+and wire it into node 474 as `"images.image_⟨i⟩": ["5⟨i⟩", 0]`. (The pipeline uses node ids
+`52 … 510` to avoid collisions with the 4xx ids.)
+
+### 5.3 Variable parts
+
+| Placeholder | Rules |
+|---|---|
+| `⟨INPUT IMAGE FILENAME⟩` | `name` returned by `/upload/image` (or a file already in the input dir). The canvas follows this image (its resolution/aspect). |
+| `⟨INSTRUCTION⟩` | Short, specific, imperative. |
+| `⟨REFERENCE i FILENAME⟩` | Up to 9 extra images for identity/consistency (10 total incl. the edit target). |
+| `⟨INT⟩` seed | Any int. |
+| `⟨PREFIX⟩` | Unique per job. |
+
+Fixed parts (do not change): `negative_prompt: ""`; `denoise: 1.0`; `cfg: 1.0`;
+`QwenImage21Cache` `device: "auto"` / `dtype: "default"`; the `latent_image: ["474", 2]`
+wiring (the encoded input image IS the canvas latent).
+
+### 5.4 Output size & iteration
+
+- The output comes out at **the input image's resolution** (canvas follows the edited image) —
+  unlike the legacy Kontext flow, which resized to a fixed Kontext resolution list.
+- **Iteration works:** feed the edited image back in as the next input with a follow-up
+  instruction (optionally with the same references for consistency).
+- If 1080p output is needed from an edit: run the edit, then the upscale tail (§4.4).
+
+## 6. Legacy flows (Qwen-Image-2512/2511 GGUF + Lightning) — `model=legacy`
+
+> Kept as a fallback (and selectable per request via the media-pipeline's `model=legacy`, or
+> globally via `MEDIA_IMAGE_MODEL=legacy`). Faster (4/8 steps) but 20B GGUF, no reference
+> images, older typography. Scheduled for removal after 1–2 weeks of green qwen21 QA
+> (`media_todo.md` Phase 4).
+
+### 6.1 Flow A (legacy) — Create image (text → 1080p image)
+
+API prompt (verified graph, 13 nodes). Placeholders in `⟨angle brackets⟩`. Everything else is
+fixed — do not change node types, sampler, or the upscale tail (the 4x-then-lanczos step is what
+makes text crisp at 1080p).
 
 ```json
 {
@@ -110,17 +276,13 @@ sampler, or the upscale tail (the 4x-then-lanczos step is what makes text crisp 
 }
 ```
 
-### 4.2 Variable parts
+Variable parts: `⟨POSITIVE PROMPT⟩` (quote exact strings for in-image text),
+`⟨NEGATIVE PROMPT⟩` (standard: `low resolution, low quality, deformed, deformed hands,
+oversaturated, waxy, AI look, messy composition, blurry text, distorted text, unreadable text,
+extra letters, watermark`), `⟨INT⟩` seed, `⟨PREFIX⟩`, and node 4 `width`/`height` (720p class
+render; node 12 targets the same aspect at 1080p class — keep the pairs aspect-matched).
 
-| Placeholder | Rules |
-|---|---|
-| `⟨POSITIVE PROMPT⟩` | Natural language. For images with text: **quote the exact strings** and specify placement + typography, e.g. `Visible text: "RENEWABLE ENERGY 2026", placed at the top in large bold sans-serif white lettering. …` Keep each quoted element short (a few words). |
-| `⟨NEGATIVE PROMPT⟩` | Use the standard one: `low resolution, low quality, deformed, deformed hands, oversaturated, waxy, AI look, messy composition, blurry text, distorted text, unreadable text, extra letters, watermark` |
-| `⟨INT⟩` seed | Any int. Lock the seed when iterating on a layout (only the text/prompt changes). |
-| `⟨PREFIX⟩` | Unique per job, e.g. `media_<jobid>`. |
-| `width`/`height` (node 4) | Render at 720p class: 1280×720 (16:9), 720×1280 (9:16), 1024×1024 (1:1). The upscale tail (nodes 12) targets the same aspect at 1080p class: 1920×1080, 1080×1920, 1440×1440. Keep both pairs aspect-matched. |
-
-### 4.3 Model/step variants (node 1 + node 5 + KSampler.steps)
+Model/step variants (node 1 + node 5 + KSampler.steps):
 
 | Config | unet_name | lora_name | steps | Notes |
 |---|---|---|---|---|
@@ -130,44 +292,16 @@ sampler, or the upscale tail (the 4x-then-lanczos step is what makes text crisp 
 
 Never mix a 4-step LoRA with 8 steps (or vice versa) — the LoRAs are tuned for their step count.
 
-### 4.4 Upscale model choice (node 10)
+Upscale model choice (node 10): `4xUltrasharp_4xUltrasharpV10.pt` (text/infographic default) or
+`RealESRGAN_x4plus.pth` (photos/general), both from `upscale_models/`.
 
-| Use case | `model_name` |
-|---|---|
-| Infographics / text / illustration | `4xUltrasharp_4xUltrasharpV10.pt` (default above — sharpens strokes, great for text) |
-| Photos / general | `RealESRGAN_x4plus.pth` (general-purpose) |
+Prompting for legible text: quote the exact text + placement + typography; keep elements short;
+high contrast + large type; if a word keeps garbling, reword, run a final render without the
+Lightning LoRA at 50 steps (slower), or fix it with the edit flow.
 
-Both are loaded from `upscale_models/` via `UpscaleModelLoader` — no other change needed.
+### 6.2 Flow B (legacy) — Edit image (image + instruction → edited image)
 
-### 4.5 Prompting for legible text (the part that matters)
-
-1. Quote the exact text, specify placement and typography (see example above).
-2. Keep each text element short; long paragraphs break. For dense content, generate the layout with clean areas and add final type in an editor (hybrid), or follow up with the **edit flow** (§5).
-3. Ask for high contrast + large type ("large bold", "high contrast", "clean white background").
-4. If a specific word keeps garbling: reword, or run a final render without the Lightning LoRA at 50 steps (slower), or fix that element with the edit flow.
-
-## 5. Flow B — Edit image (image + instruction → edited image)
-
-### 5.1 Provide the input image
-
-`LoadImage` reads from the ComfyUI input dir. Two options:
-
-**Option 1 — API upload (preferred for tooling):**
-
-```
-POST /upload/image    (multipart/form-data)
-  image:   <file bytes>
-  overwrite: true
-← {"name": "<basename>.png", "subfolder": "", "type": "input"}
-```
-
-Use the returned `name` as `LoadImage.inputs.image`. (Uploads land in `basedir/input/`.)
-
-**Option 2 — host filesystem:** place the file in `/home/chuck/data/comfyui/basedir/input/` and use its basename.
-
-### 5.2 API prompt (verified graph, 16 nodes)
-
-Placeholders in `⟨angle brackets⟩`. This graph matches the official ComfyUI blueprint
+API prompt (verified graph, 16 nodes). Matches the official ComfyUI blueprint
 `blueprints/Image Edit (Qwen 2511).json` adapted for GGUF — do not drop the
 `FluxKontextMultiReferenceLatentMethod` nodes (required for the GGUF version).
 
@@ -214,72 +348,63 @@ Placeholders in `⟨angle brackets⟩`. This graph matches the official ComfyUI 
 }
 ```
 
-### 5.3 Variable parts
+Fixed parts (do not change): node 9's empty negative prompt; `denoise: 1.0`; `shift: 3.1`;
+`strength: 1.0`; `reference_latents_method: "index_timestep_zero"`.
 
-| Placeholder | Rules |
-|---|---|
-| `⟨INPUT IMAGE FILENAME⟩` | `name` returned by `/upload/image` (or a file already in the input dir). |
-| `⟨INSTRUCTION⟩` | Short, specific, imperative. Verified examples: `Change the year in the title from 2026 to 2027 so the title reads "RENEWABLE ENERGY 2027". Change the background color to dark navy blue. Keep all other text, icons and layout exactly the same.` / `Change all text to bright white color so it is clearly readable on the dark navy background. Keep the layout, icons, colors and wording exactly the same.` |
-| `⟨INT⟩` seed | Any int. |
-| `⟨PREFIX⟩` | Unique per job. |
+Output size: `FluxKontextImageScale` resizes the input to the nearest Kontext resolution by aspect
+ratio — **16:9 → 1392×752**, 9:16 → 752×1392, 1:1 → 1024×1024 (list: 672×1568 … 1456×720). The
+edited image comes out at that size, not the original size. For 1080p: run the edit, then the
+create-flow upscale tail (nodes 10–12 of §6.1). Iteration works (feed the edited image back in).
 
-Fixed parts (do not change): node 9's empty negative prompt; `denoise: 1.0`;
-`shift: 3.1`; `strength: 1.0`; `reference_latents_method: "index_timestep_zero"`.
-
-### 5.4 Output size & iteration
-
-- `FluxKontextImageScale` resizes the input to the nearest Kontext resolution by aspect ratio — **16:9 → 1392×752**, 9:16 → 752×1392, 1:1 → 1024×1024 (list: 672×1568 … 1456×720). The edited image comes out at that size, not the original size.
-- If 1080p output is needed from an edit: run the edit, then the create-flow upscale tail (nodes 10–12 of §4.1) on the result.
-- **Iteration works:** feed the edited image back in as the next input with a follow-up instruction. Verified: pass 1 (recolor background) left dark text on dark bg; pass 2 ("make all text white") fixed it. OCR confidence rose 0.34–0.86 → 0.58–0.99.
-
-## 6. Model inventory (on disk, verified)
+## 7. Model inventory (on disk)
 
 All under `/home/chuck/data/comfyui/basedir/models/`:
 
 | File | Folder | Size | Role |
 |---|---|---|---|
-| `qwen-image-2512-Q4_0.gguf` | `diffusion_models/` | 11.85 GB | **Primary generation DiT** (create flow) |
-| `qwen-image-2512-Q3_K_M.gguf` | `diffusion_models/` | 9.93 GB | Fallback generation DiT (lower quality, lower VRAM) |
-| `qwen-image-edit-2511-Q4_0.gguf` | `diffusion_models/` | 11.85 GB | **Edit DiT** (edit flow) |
-| `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `text_encoders/` | 9.38 GB | Shared text encoder (both flows) |
-| `qwen_image_vae.safetensors` | `vae/` | 0.25 GB | Shared VAE (both flows) |
-| `Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Generation speed LoRA (8 steps) |
-| `Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Generation speed LoRA (4 steps — fastest) |
-| `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Edit speed LoRA (8 steps) |
+| `qwen_image_2.1_int8_convrot.safetensors` | `diffusion_models/` | 7.26 GB | **Primary DiT — Qwen-Image-2.1** (create + edit, default since 2026-09-23) |
+| `qwen3vl_8b_int8_convrot.safetensors` | `text_encoders/` | 9.35 GB | **Qwen-Image-2.1 text encoder** (Qwen3-VL 8B int8) |
+| `qwen_image_2.1_vae_bf16.safetensors` | `vae/` | 0.68 GB | **Qwen-Image-2.1 VAE** (64-ch RGBA) |
+| `qwen-image-2512-Q4_0.gguf` | `diffusion_models/` | 11.85 GB | Legacy generation DiT (`model=legacy` create) |
+| `qwen-image-2512-Q3_K_M.gguf` | `diffusion_models/` | 9.93 GB | Legacy fallback generation DiT (lower quality, lower VRAM) |
+| `qwen-image-edit-2511-Q4_0.gguf` | `diffusion_models/` | 11.85 GB | Legacy edit DiT (`model=legacy` edit) |
+| `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `text_encoders/` | 9.38 GB | Legacy shared text encoder |
+| `qwen_image_vae.safetensors` | `vae/` | 0.25 GB | Legacy shared VAE (keep until legacy removal) |
+| `Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Legacy generation speed LoRA (8 steps) |
+| `Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Legacy generation speed LoRA (4 steps — fastest) |
+| `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors` | `loras/` | 850 MB | Legacy edit speed LoRA (8 steps) |
 | `4xUltrasharp_4xUltrasharpV10.pt` | `upscale_models/` | 67 MB | Upscaler: text/infographic |
 | `RealESRGAN_x4plus.pth` | `upscale_models/` | 67 MB | Upscaler: photos/general |
 
 Model lists refresh automatically when files appear in these folders (verified — no restart needed).
+Legacy removal (after 1–2 weeks of green qwen21 QA): delete the 4 GGUF/LoRA/encoder rows + both
+Lightning LoRAs (≈31 GB); keep `qwen_image_vae.safetensors` until the `model=legacy` code path is
+dropped.
 
-## 7. VRAM budget & performance (measured 2026-08-26)
+## 8. VRAM budget & performance
 
 | Component | VRAM | Notes |
 |---|---|---|
-| vLLM (Qwen3.8-27B NVFP4) | ~56.3 GB | Committed baseline; **never touched** by ComfyUI (measured: identical before/after runs) |
+| vLLM (Qwen3.8-27B NVFP4) | ~56.3 GB | Committed baseline; **never touched** by ComfyUI |
 | ComfyUI budget | ~12 GB | Enforced by `--reserve-vram 60` (reserves 60 GB for other software) |
-| ComfyUI measured peaks | 9.3–14.2 GB attributable | Generation: 71.2 GB total peak; edit: 70.2 GB total peak |
-| GPU total | 72 GB (73,415 MiB) | Acceptance gate: total peak ≤ ~70 GB — all runs passed |
+| GPU total | 72 GB (73,415 MiB) | Acceptance gate: total peak ≤ ~70 GB |
 
-The encoder (9.4 GB) and DiT (11.9 GB) are **never resident at the same time** — ComfyUI offloads the encoder before loading the DiT (dynamic VRAM). Idle ComfyUI holds ~0.7 GB.
+**Qwen-Image-2.1 (default):** fits the 12 GB budget at **~1 MP** (1280×720 / 1344×768 keyframes)
+— int8_convrot DiT (7.26 GB) + int8 encoder (9.35 GB) stream, never resident at the same time
+(dynamic VRAM). Native 2K (2048²) does NOT fit the budget — keep the "1 MP render →
+SeedVR2/4xUltrasharp upscale" pattern. Expect **~30–120 s per keyframe** at 25 steps (no
+distilled LoRA at launch).
 
-Measured runs:
+**Legacy (measured 2026-08-26):** peaks 9.3–14.2 GB attributable; create 14–20 s (4/8 steps),
+edit 46–56 s (8 steps). The encoder (9.4 GB) and DiT (11.9 GB) are never resident at the same
+time — ComfyUI offloads the encoder before loading the DiT. Idle ComfyUI holds ~0.7 GB.
 
-| Run | Time | Peak GPU (of 73,415 MiB) | vLLM |
-|---|---|---|---|
-| Create: infographic 720p→1080p, **Q4_0 + 4-step (primary)** | **14 s** | 71,125 MiB (69.4 GiB) | untouched |
-| Create: infographic 720p→1080p, Q3_K_M + 8-step (fallback) | 20 s | 71,189 MiB (69.5 GiB) | untouched |
-| Create: photo + RealESRGAN, Q3_K_M + 8-step | 18 s | (same envelope) | untouched |
-| Edit: 16:9 infographic, Q4_0 + 8-step | 46 s | 70,175 MiB | untouched |
-| Edit: iteration pass, Q4_0 + 8-step | 56 s | 70,212 MiB | untouched |
-
-Q4_0+4-step vs Q3_K_M+8-step OCR (same prompt/seed): all quoted strings detected in both; Q4_0+4step scored equal-or-better on 6 of 7 (HYDRO 1.00 vs 0.85, 42% 0.97 vs 0.81) and is ~30% faster → **Q4_0 + 4-step is the primary create config.**
-
-- **Hard gate:** total GPU peak ≤ ~70 GB. ComfyUI is capped at ~12 GB by `--reserve-vram 60` (soft budget; dynamic VRAM streams weights).
+- **Hard gate:** total GPU peak ≤ ~70 GB. ComfyUI is capped at ~12 GB by `--reserve-vram 60`
+  (soft budget; dynamic VRAM streams weights).
 - vLLM holds ~56 GB and is **never displaced** — ComfyUI only uses free VRAM.
-- Expect ~20–60 s per job. If a job takes minutes, something is wrong (check `docker logs comfyui_backend`).
 - Idle ComfyUI retains ~0.7–4.5 GB (model cache) — normal.
 
-## 8. Reference implementation (Python, stdlib only)
+## 9. Reference implementation (Python, stdlib only)
 
 ```python
 #!/usr/bin/env python3
@@ -335,7 +460,7 @@ def upload_image(path, overwrite=True):
         body.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode())
     part("overwrite", "true" if overwrite else "false")
     data = open(path, "rb").read()
-    body.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{path.split('/')[-1]}\"\r\nContent-Type: application/octet-stream\r\n\r\n".encode())
+    body.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{path.split('/')[-1]}\r\nContent-Type: application/octet-stream\r\n\r\n".encode())
     body.write(data + b"\r\n")
     body.write(f"--{boundary}--\r\n".encode())
     req = urllib.request.Request(API + "/upload/image", data=body.getvalue(),
@@ -352,28 +477,37 @@ name = upload_image("/path/to/input.png")
 png = run(edit_prompt(instruction="Change the title to …", image=name, seed=42, prefix="media_job1e"))
 ```
 
-(`create_prompt` / `edit_prompt` = the JSON templates in §4.1 / §5.2 with placeholders filled.)
+(`create_prompt` / `edit_prompt` = the JSON templates in §4.1 / §5.2 with placeholders filled —
+Qwen-Image-2.1 by default; §6.1 / §6.2 for the legacy path.)
 
-## 9. Error handling
+## 10. Error handling
 
 | Symptom | Meaning / action |
 |---|---|
 | `POST /prompt` → 400 with `invalid` list | Prompt validation failed — check node class types / input names against `GET /object_info/{Node}`. |
-| `status.status_str == "error"` | See `status.messages` — usually a missing model file or CUDA OOM. On OOM: retry (transient) or drop to Q3_K_M for create. |
+| `status.status_str == "error"` | See `status.messages` — usually a missing model file or CUDA OOM. On OOM: retry (transient) or drop to Q3_K_M (legacy create). |
+| "node not found" for `TextEncodeQwenImage21` / `QwenImage21Cache` | ComfyUI is pre-v0.37.0 — run `scripts/qwen21_upgrade_matrix.sh` (or the pipeline is on the qwen21 default while ComfyUI was rolled back — set `MEDIA_IMAGE_MODEL=legacy`). |
 | Port 8188 not responding | ComfyUI down — operator action required; return "image service unavailable". |
 | Job queued but slow (> 2 min) | Check `GET /queue` (another job ahead) and `docker logs comfyui_backend`. |
 
-## 10. Operational notes for integrators
+## 11. Operational notes for integrators
 
 - **Never** start/stop/restart the ComfyUI container or vLLM from tooling. Submit jobs only.
 - **Concurrent jobs:** the queue serializes them; each job adds ~10–14 GB peak VRAM. Don't queue more than ~2 jobs at once while vLLM is busy.
 - **Unique filename prefixes** per job — the counter (`_00001_`) only increments per prefix.
 - **Seeds:** lock seeds when iterating on a specific image; randomize for fresh generations.
-- **Watch item:** Qwen-Image-2.0 (better typography, native 2K) is API-only as of 2026-08; when open weights release, the same graph works with the new model file (node 1 swap).
-## 11. Changelog
+- **ComfyUI is pinned at v0.37.0** (git tag, day-0 Qwen-Image-2.1 release). Rollback =
+  `git checkout v0.22.0` + `pip install -r requirements.txt` + restart (then set
+  `MEDIA_IMAGE_MODEL=legacy` so qwen21 jobs don't fail with node-not-found).
+- **Watch item:** a Qwen-Image-2.1 Lightning/distilled LoRA (LightX2V et al.) — if one lands,
+  re-test 4–8 steps and consider dropping the [10, 50] clamp floor (would restore legacy-class
+  speed on the new model).
+
+## 12. Changelog
 
 | Date | Change |
 |---|---|
-| 2026-08-28 | **Legacy cleanup.** Removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints, LTXV 0.9.8 fp8, SeedVR2 int8 build, duplicate XTTS dir, junk VAEs/bigvgan discriminator), 6 legacy workflow JSONs (kept `qwen-image-2512-infographic-720p.json` as reference), 4 obsolete custom nodes (animatediff-evolved, UltimateSDUpscale, ollamagemini, VideoConcat), and scratch/venv caches. All §6 in-use models verified intact; pipeline + ComfyUI health re-verified. |
+| 2026-09-23 | **Qwen-Image-2.1 becomes the default** for create + edit (unified 7B DiT, int8_convrot weights, ComfyUI pinned to v0.37.0, 25 steps, cfg=1.0). Edit flow gains up to 9 reference images (10 total) via `TextEncodeQwenImage21.images.image_N` for cross-shot identity/consistency; edit model goes through `QwenImage21Cache`. Canvas follows the edited image (template switch=False default). Native 2K doesn't fit the 12 GB budget — ~1 MP render + upscale. Legacy 2512/2511 GGUF+Lightning flows kept as §6 (`model=legacy`), scheduled for removal after 1–2 weeks of green QA. Runbook: `media_todo.md`; script: `scripts/qwen21_upgrade_matrix.sh`. |
+| 2026-08-28 | **Legacy cleanup.** Removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints, LTXV 0.9.8 fp8, SeedVR2 int8 build, duplicate XTTS dir, junk VAEs/bigvgan discriminator), 6 legacy workflow JSONs (kept `qwen-image-2512-infographic-720p.json` as reference), 4 obsolete custom nodes (animatediff-evolved, UltimateSDUpscale, ollamagemini, VideoConcat), and scratch/venv caches. All in-use models verified intact; pipeline + ComfyUI health re-verified. |
 | 2026-08-28 | **Ops note:** the ComfyUI Python venv + uv cache live in `run/` (bind-mounted). Deleting them is safe — the container entrypoint self-heals and rebuilds the venv on restart (verified: full rebuild from network in ~15 min, no jobs lost). **Caveat:** the rebuilt venv has base ComfyUI deps only and resolves numpy 2.5 (breaks numba → comfyui-mmaudio import fails). Run `scripts/comfyui_venv_deps.sh restart` after any venv rebuild to (re)install the 4 custom-node dep sets with `numpy<2.5` pinned (verified 2026-08-28: all 5 custom nodes import, 726+ node classes registered). |
 | 2026-08-27 | Image generation runs concurrently with vLLM (no more exclusive `images` mode); media-pipeline added to the `image` compose profile. |

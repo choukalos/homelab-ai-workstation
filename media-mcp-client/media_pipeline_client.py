@@ -173,19 +173,42 @@ class MediaPipelineClient:
         return json.loads(Path(local).read_text())
 
     def generate_image(self, prompt: str, width: int = 1344, height: int = 768,
-                       seed: int = 42, steps: int = 4, timeout: float = 600) -> str:
-        """Text -> image (keyframe). Returns GPU-host path of the PNG."""
-        return self._wait(self._post_json("/images",
-                                          {"prompt": prompt, "width": width,
-                                           "height": height, "seed": seed,
-                                           "steps": steps}), timeout)["image"]
+                       seed: int = 42, steps: int = 25, model: str | None = None,
+                       timeout: float = 600) -> str:
+        """Text -> image (keyframe). Returns GPU-host path of the PNG.
 
-    def edit_image(self, image: str, prompt: str, seed: int = 42, steps: int = 8,
+        model: 'qwen21' (default; Qwen-Image-2.1 — 25 steps, ~30-120 s at
+        1280x720) | 'legacy' (Qwen-Image-2512 GGUF + Lightning; pass steps=4).
+        steps: the server clamps qwen21 steps to [10, 50] (no distilled LoRA
+        at launch); the legacy path honors 4/8.
+        """
+        payload = {"prompt": prompt, "width": width, "height": height,
+                   "seed": seed, "steps": steps}
+        if model is not None:
+            payload["model"] = model
+        return self._wait(self._post_json("/images", payload), timeout)["image"]
+
+    def edit_image(self, image: str, prompt: str, seed: int = 42, steps: int = 25,
+                   model: str | None = None, references: list[str] | None = None,
                    timeout: float = 600) -> str:
-        """Image+text -> edited image. `image` is a LOCAL path (uploaded)."""
-        return self._wait(self._post_multipart("/images/edit", image,
-                                               {"prompt": prompt, "seed": str(seed),
-                                                "steps": str(steps)}), timeout)["image"]
+        """Image+text -> edited image. `image` is a LOCAL path (uploaded).
+
+        model: 'qwen21' (default; unified Qwen-Image-2.1 editing) | 'legacy'
+        (Qwen-Image-Edit-2511 GGUF + Lightning; pass steps=8).
+        references: up to 9 extra identity/consistency images (qwen21 only);
+        each entry = a ComfyUI input/ filename OR a media_jobs-relative path
+        like 'media_jobs/<job_id>/<file>.png' (staged into ComfyUI input/
+        server-side). The canvas follows `image`; references influence
+        identity only (e.g. a previous shot's keyframe for character/product
+        consistency across shots).
+        """
+        fields = {"prompt": prompt, "seed": str(seed), "steps": str(steps)}
+        if model is not None:
+            fields["model"] = model
+        if references:
+            fields["references"] = ",".join(str(r) for r in references)
+        return self._wait(self._post_multipart("/images/edit", image, fields),
+                          timeout)["image"]
 
     def generate_shot(self, keyframe: str, prompt: str, width: int = 768,
                       height: int = 512, frames: int = 97, fps: float = 24.0,
