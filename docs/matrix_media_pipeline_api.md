@@ -57,8 +57,8 @@ GET /jobs/{job_id}
 | GET | `/files/{name:path}` | — | file bytes (download; name = path relative to the run dir) |
 | GET | `/metrics` | — | Prometheus text format (metering; 404 when disabled — §5) |
 | POST | `/storyboard` | JSON `{brief, n_shots=5, aspect="16:9"}` | `{"storyboard":"<path>/storyboard.json","n_shots":N,"usage":{prompt_tokens,completion_tokens,total_tokens}}` |
-| POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, lora?, steps=4}` | `{"image":"<path>.png"}` |
-| POST | `/images/edit` | multipart `file, prompt, seed=42, steps=8` | `{"image":"<path>.png"}` |
+| POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy", lora? (legacy only)}` | `{"image":"<path>.png","model":"<model>"}` |
+| POST | `/images/edit` | multipart `file, prompt, seed=42, steps=25, model?="qwen21"\|"legacy", references? (qwen21 only)` | `{"image":"<path>.png","model":"<model>","references":N}` |
 | POST | `/shots` | multipart `file(keyframe), prompt, width=768, height=512, frames=97, fps=24, steps=8, strength=0.7, seed=42` | `{"video":"<path>.mp4","frames":N,"fps":F}` |
 | POST | `/tts` | JSON `{text, voice="trailer"}` | `{"audio":"<path>/vo.wav"}` |
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
@@ -81,6 +81,17 @@ Notes:
   `tts`/`music` accept **JSON** with host paths (or paths relative to the run
   dir). All 12 job routes accept optional `user` + `client` (JSON field or Form
   field).
+- `model` for `/images` + `/images/edit` (2026-09-23): `qwen21` (default,
+  Qwen-Image-2.1) or `legacy` (Qwen-Image-2512/2511 GGUF + Lightning). Server
+  default follows `MEDIA_IMAGE_MODEL` in `.env` (unset → `qwen21`). qwen21
+  `steps` is clamped to [10, 50] (default 25 — no distilled LoRA at launch);
+  legacy keeps its 4/8 defaults. `lora` only applies to legacy.
+- `references` for `/images/edit` (2026-09-23, qwen21 only): comma-separated
+  list of up to 9 reference images for character/product consistency (10 image
+  slots total incl. the edit target). Each entry is either a filename already
+  in ComfyUI `input/` or a media_jobs-relative path (e.g.
+  `media_jobs/<jid>/mp_<jid>_00001.png`) — the pipeline stages the latter into
+  ComfyUI `input/` server-side. The canvas follows the uploaded edit target.
 - `pipeline` for `/upscale`: `b` = SeedVR2 3B (quality, ~5 min), `a2` =
   4xUltrasharp (fast, ~1 min).
 - `voice` for `/tts`: `trailer` (bundled movie-trailer reference, zero-shot
@@ -147,8 +158,8 @@ pull them out (e.g. via `media_pull` / `/dl/{token}`) or move them to
 | Flow | Model |
 |---|---|
 | `storyboard` | Qwen3.8-27B via vLLM :8000 (strict JSON shot list) |
-| `images` | Qwen-Image-2512 (GGUF Q4) + Lightning 4-step LoRA |
-| `images/edit` | Qwen-Image-Edit-2511 (Q4) + Lightning 8-step LoRA (Kontext resolution, e.g. 16:9 → 1392×752) |
+| `images` | **Qwen-Image-2.1** (7B unified DiT, int8_convrot) + Qwen3-VL 8B int8 encoder + 64-ch RGBA VAE — 25 steps, cfg=1.0 (default since 2026-09-23; `model=legacy` → Qwen-Image-2512 Q4 GGUF + 4-step Lightning) |
+| `images/edit` | **same Qwen-Image-2.1 model** (unified T2I + edit; canvas follows the edited image; up to 10 images incl. references; `model=legacy` → Qwen-Image-Edit-2511 Q4 + 8-step Lightning) |
 | `shots` | LTXV 2B 0.9.6 distilled (8-step sigma schedule) + T5-XXL fp8 |
 | `tts` | XTTS-v2 (separate venv, releases VRAM on exit) |
 | `music` | ACE-Step 1.5 (short-lived server per job) |
@@ -175,7 +186,9 @@ The pipeline attributes each job to its `user`/`client` and measures the work:
   | `media_queue_depth` / `media_jobs_active` / `media_up` | gauge | — |
 
 - **Work units** (deterministic, not energy-based — DCGM is broken on this
-  driver/GPU): `images`/`images_edit` = steps × output MP (`mpix_steps`);
+  driver/GPU): `images`/`images_edit` = **effective steps** × output MP
+  (`mpix_steps`; qwen21 steps are the clamped [10,50] value, legacy the
+  requested 4/8);
   `shots`/`upscale`/`assemble`-with-`upscale_each` = frames × output MP
   (`mpix_frames`); `tts`/`music`/`sfx` = output audio seconds via ffprobe
   (`audio_seconds`); `storyboard` = real vLLM prompt/completion tokens;
@@ -265,6 +278,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-09-23 | **Qwen-Image-2.1 upgrade**: `/images` + `/images/edit` default to Qwen-Image-2.1 (ComfyUI v0.37.0 native nodes, int8_convrot weights, 25 steps, cfg=1.0); unified model for create + edit; `/images/edit` gains `references` (up to 9, 10 total) for cross-shot consistency; `model` field (`qwen21`\|`legacy`) + `MEDIA_IMAGE_MODEL` env on both image flows; legacy 2512/2511 GGUF+Lightning kept as fallback; qwen21 steps clamped [10,50]; metering model label + work units follow the selected model/effective steps. Runbook: `media_todo.md`. |
 | 2026-09-21 | **Job-dir retention** (`MEDIA_JOB_RETENTION_DAYS`, default 14 d): hourly background sweeper reclaims job dirs + stale `uploads/` files; `metrics/` (jobs.jsonl) and live jobs never touched; `/health` exposes sweep state. One-off: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs. |
 | 2026-09-07 | **Part-1 gap fill** (plan `media_pipeline_gaps.md`): `/trim`, `/freeze`, `/caption` job flows (ffmpeg, CPU); `/assemble` extensions — object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`, `vo_start`, `loudnorm` (backward compatible); sync endpoints `/info`, `/upload_local` (basedir-confined), `/download`, `/upload` (multipart, 500 MB cap), `/dl_token` + `GET /dl/{token}` (HMAC-signed, path-bound, time-limited pull URLs); ffmpeg flows metered at 0 work units (model `ffmpeg`). QA: `media-pipeline/qa_part1.py` 38/38. |
 | 2026-09-06 | **Work-unit metering** (spec `matrix_media_work.md` v2.1): `/metrics` endpoint, `user`/`client` on all 9 job routes, `timeout` status, `jobs.jsonl`, calibrated rates. |

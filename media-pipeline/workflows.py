@@ -3,6 +3,7 @@
 All functions return API-format prompt dicts. Video paths use the
 container-internal /comfy/mnt/... prefix (host run dir mounted there).
 """
+import os
 import uuid
 
 MNT = "/comfy/mnt/"  # container path prefix for the host run dir (trailing slash; concat relative paths)
@@ -183,3 +184,102 @@ def mmaudio_sfx(video_path_host: str, duration=8.0, steps=25, cfg=4.5, seed=42,
                                                           "images": ["1", 0]}},
         "5": {"class_type": "SaveAudio", "inputs": {"filename_prefix": prefix, "audio": ["4", 0]}},
     }
+
+# ------------------------------------------------------------------ Qwen-Image-2.1 (2026-09-20)
+# 7B single-stream DiT, unified T2I + editing (one model for both flows).
+# Requires ComfyUI v0.37.0+ (nodes TextEncodeQwenImage21 / QwenImage21Cache)
+# and the int8_convrot weights from Comfy-Org/Qwen-Image-2.1. cfg=1.0
+# (guidance-free; negative_prompt is a no-op at cfg=1). Native 2K, but the
+# 12 GB VRAM budget keeps us at ~1 MP. No distilled 4-step LoRA at launch:
+# 25 steps is the working default (official range 25-40).
+QWEN21_UNET = "qwen_image_2.1_int8_convrot.safetensors"
+QWEN21_CLIP = "qwen3vl_8b_int8_convrot.safetensors"
+QWEN21_VAE = "qwen_image_2.1_vae_bf16.safetensors"
+QWEN21_DEFAULT_STEPS = 25
+QWEN21_STEPS_MIN, QWEN21_STEPS_MAX = 10, 50
+QWEN21_MAX_REFS = 9  # +1 edit target = 10 image slots total
+IMAGE_MODELS = ("qwen21", "legacy")
+IMAGE_MODEL_ENV = "MEDIA_IMAGE_MODEL"
+
+
+def resolve_image_model(payload: dict) -> str:
+    """'qwen21' (new default) or 'legacy' (Qwen-Image-2512/2511 GGUF + Lightning).
+    Per-request payload['model'] > MEDIA_IMAGE_MODEL env > built-in 'qwen21'.
+    Unknown values fall back to the built-in default (robust for queued jobs)."""
+    m = str(payload.get("model") or os.environ.get(IMAGE_MODEL_ENV, "qwen21")).lower()
+    return m if m in IMAGE_MODELS else "qwen21"
+
+
+def qwen21_steps(payload: dict) -> int:
+    """Effective sampling steps for Qwen-Image-2.1: default 25, clamped to
+    [10, 50] (no distilled LoRA at launch; <10 steps degrades badly). Used by
+    BOTH the flow (actual run) and metering (work units) — single source of truth.
+    None/absent steps -> default 25."""
+    s = payload.get("steps")
+    s = int(s) if s is not None else QWEN21_DEFAULT_STEPS
+    return max(QWEN21_STEPS_MIN, min(QWEN21_STEPS_MAX, s))
+
+
+def qwen_image_21_t2i(prompt, width=1280, height=720, seed=42,
+                      steps=QWEN21_DEFAULT_STEPS, negative_prompt="", prefix="mp_out"):
+    """Qwen-Image-2.1 text-to-image (int8_convrot, cfg=1.0, euler/simple).
+    Official Comfy-Org template graph, subgraph unwound to API format."""
+    return {
+        "451": {"class_type": "UNETLoader",
+                "inputs": {"unet_name": QWEN21_UNET, "weight_dtype": "default"}},
+        "453": {"class_type": "CLIPLoader",
+                "inputs": {"clip_name": QWEN21_CLIP, "type": "qwen_image", "weight_dtype": "default"}},
+        "454": {"class_type": "VAELoader", "inputs": {"vae_name": QWEN21_VAE}},
+        "456": {"class_type": "EmptyLatentImage",
+                "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+        "474": {"class_type": "TextEncodeQwenImage21", "inputs": {
+            "clip": ["453", 0], "vae": ["454", 0],
+            "prompt": prompt, "negative_prompt": negative_prompt,
+        }},
+        "458": {"class_type": "KSampler", "inputs": {
+            "model": ["451", 0], "seed": int(seed), "steps": int(steps), "cfg": 1.0,
+            "sampler_name": "euler", "scheduler": "simple",
+            "positive": ["474", 0], "negative": ["474", 1],
+            "latent_image": ["456", 0], "denoise": 1.0,
+        }},
+        "457": {"class_type": "VAEDecode", "inputs": {"samples": ["458", 0], "vae": ["454", 0]}},
+        "999": {"class_type": "SaveImage", "inputs": {"images": ["457", 0], "filename_prefix": prefix}},
+    }
+
+
+def qwen_image_21_edit(prompt, image_name, references=None, seed=42,
+                       steps=QWEN21_DEFAULT_STEPS, negative_prompt="", prefix="mp_out"):
+    """Qwen-Image-2.1 unified editing. `image_name` = the image to edit; the
+    canvas follows it (the official template's switch=False default, so the
+    ComfySwitchNode/EmptyLatentImage pair is omitted). `references` = up to 9
+    additional reference images (10 total) for identity/consistency. Edit
+    models go through QwenImage21Cache (prefix-KV caching)."""
+    refs = [str(r) for r in (references or [])][:QWEN21_MAX_REFS]
+    p = {
+        "451": {"class_type": "UNETLoader",
+                "inputs": {"unet_name": QWEN21_UNET, "weight_dtype": "default"}},
+        "453": {"class_type": "CLIPLoader",
+                "inputs": {"clip_name": QWEN21_CLIP, "type": "qwen_image", "weight_dtype": "default"}},
+        "454": {"class_type": "VAELoader", "inputs": {"vae_name": QWEN21_VAE}},
+        "455": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "469": {"class_type": "QwenImage21Cache",
+                "inputs": {"model": ["451", 0], "device": "auto", "dtype": "default"}},
+        "474": {"class_type": "TextEncodeQwenImage21", "inputs": {
+            "clip": ["453", 0], "vae": ["454", 0],
+            "prompt": prompt, "negative_prompt": negative_prompt,
+            "images.image_1": ["455", 0],
+        }},
+        "458": {"class_type": "KSampler", "inputs": {
+            "model": ["469", 0], "seed": int(seed), "steps": int(steps), "cfg": 1.0,
+            "sampler_name": "euler", "scheduler": "simple",
+            "positive": ["474", 0], "negative": ["474", 1],
+            "latent_image": ["474", 2], "denoise": 1.0,
+        }},
+        "457": {"class_type": "VAEDecode", "inputs": {"samples": ["458", 0], "vae": ["454", 0]}},
+        "999": {"class_type": "SaveImage", "inputs": {"images": ["457", 0], "filename_prefix": prefix}},
+    }
+    for i, ref in enumerate(refs, start=2):
+        nid = f"5{i}"  # 52..510, no collisions with 4xx ids
+        p[nid] = {"class_type": "LoadImage", "inputs": {"image": ref}}
+        p["474"]["inputs"][f"images.image_{i}"] = [nid, 0]
+    return p

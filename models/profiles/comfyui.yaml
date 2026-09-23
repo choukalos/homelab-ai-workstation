@@ -1,6 +1,6 @@
 # comfyui — Image generation & editing (Qwen-Image)
 # Status: ACTIVE — runs concurrently with vLLM (no mode switch)
-# Updated: 2026-08-26
+# Updated: 2026-09-23 (Qwen-Image-2.1 upgrade)
 
 name: comfyui
 alias: none  # no LiteLLM alias — image generation/editing only
@@ -8,16 +8,26 @@ backend: comfyui
 status: active
 
 model:
-  primary:
+  primary:  # default since 2026-09-23 (MEDIA_IMAGE_MODEL unset)
+    create: qwen_image_2.1_int8_convrot.safetensors (Qwen-Image-2.1 7B single-stream DiT, int8_convrot), 25 steps, cfg=1.0
+    edit: same model (unified T2I+edit) via TextEncodeQwenImage21 + QwenImage21Cache; up to 10 images (1 edit target + 9 references)
+  shared:
+    text_encoder: qwen3vl_8b_int8_convrot.safetensors (9.35 GB)
+    vae: qwen_image_2.1_vae_bf16.safetensors (64-ch RGBA VAE)
+  legacy:  # model=legacy (or MEDIA_IMAGE_MODEL=legacy in .env)
     create: qwen-image-2512-Q4_0.gguf (Qwen-Image-2512 20B, GGUF Q4_0) + Qwen-Image-2512-Lightning-4steps LoRA, 4 steps
     edit: qwen-image-edit-2511-Q4_0.gguf (Qwen-Image-Edit-2511 20B, GGUF Q4_0) + Qwen-Image-Edit-2511-Lightning-8steps LoRA, 8 steps
-  shared:
     text_encoder: qwen_2.5_vl_7b_fp8_scaled.safetensors (9.4 GB)
     vae: qwen_image_vae.safetensors
   fallback:
     create: qwen-image-2512-Q3_K_M.gguf + 8-step Lightning LoRA (if a Q4_0 run OOMs)
-  expected_vram: "~12 GB cap (--reserve-vram 60); 9.3-14.4 GB measured peaks; total-GPU peak <= ~71.2 GB"
+  expected_vram: "~12 GB cap (--reserve-vram 60); qwen21 at ~1 MP expected to fit; native 2K does NOT fit the budget (render ~1 MP + upscale)"
   docs: docs/matrix_comfyui_media_api.md
+
+comfyui_core:
+  version: v0.37.0  # day-0 Qwen-Image-2.1 release (2026-09-21); pinned git tag in /comfy/mnt/ComfyUI
+  upgrade: scripts/qwen21_upgrade_matrix.sh (matrix side)
+  rollback: git checkout v0.22.0 + pip install -r requirements.txt + docker restart comfyui_backend
 
 launch:
   container: comfyui_backend
@@ -59,9 +69,10 @@ security:
   - SECURITY_LEVEL=weak (intentional, internal only)
 
 notes:
+  - 2026-09-23: Qwen-Image-2.1 upgrade (7B unified T2I+edit, int8_convrot, ComfyUI v0.37.0); legacy 2512/2511 kept behind model=legacy; see media_todo.md
   - 2026-08-26: create + edit flows verified end-to-end (VRAM peaks, timing 14-56 s, OCR legibility)
   - Tooling integration contract: docs/matrix_comfyui_media_api.md (endpoints, workflow JSON, reference client)
   - Ops guide: docs/matrix_images_mode.md
   - Models pre-downloaded in basedir/models/ (no HF_TOKEN needed); add files as `comfy` user via `docker exec comfyui_backend sudo -u comfy sh -c '...'`
   - venv for pip: /comfy/mnt/venv (sudo -u comfy)
-  - Watch item: Qwen-Image-2.0 open weights (drop-in replacement for node 1 when released)
+  - Watch item: Qwen-Image-2.1 Lightning/distilled LoRA (LightX2V et al.) — would restore 4-8 step speed; re-test and drop the [10,50] clamp floor if it lands

@@ -445,28 +445,76 @@ def flow_storyboard(payload: dict, jid: str):
             "usage": resp.get("usage") or {}}
 
 
+def _stage_references(jid: str, references) -> list[str]:
+    """Stage up to 9 reference images into ComfyUI's input dir (qwen21 edit).
+
+    Each entry is either a filename already in ComfyUI input/ (used as-is)
+    or a media_jobs-relative / absolute host path (e.g. media_jobs/<jid>/x.png)
+    copied in under a unique name. Returns the ComfyUI input/ filenames in
+    order. Raises on a missing source (fail fast at enqueue time is too late;
+    this runs in the flow, so the job errors cleanly)."""
+    if not references:
+        return []
+    if isinstance(references, str):
+        refs = [r.strip() for r in references.split(",") if r.strip()]
+    else:
+        refs = [str(r) for r in references if str(r).strip()]
+    refs = refs[:wf.QWEN21_MAX_REFS]
+    out = []
+    for i, ref in enumerate(refs):
+        if "/" in ref:
+            src = _resolve_src(ref)  # media_jobs-relative or absolute host path
+            dest_name = f"ref_{jid}_{i}{src.suffix}"
+            r = subprocess.run(["docker", "cp", str(src), f"{CONTAINER}:/basedir/input/{dest_name}"],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                raise RuntimeError(f"stage reference {ref} failed: {r.stderr[-500:]}")
+            out.append(dest_name)
+        else:
+            out.append(ref)  # already a ComfyUI input/ filename
+    return out
+
+
 def flow_images(payload: dict, jid: str):
     prefix = f"mp_{jid}"
+    model = wf.resolve_image_model(payload)
     with GPU_LOCK:
-        res = cc.comfy_run(wf.qwen_image_t2i(payload["prompt"], int(payload.get("width", 1280)),
-                                             int(payload.get("height", 720)), int(payload.get("seed", 42)),
-                                             payload.get("lora", "Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors"),
-                                             int(payload.get("steps", 4)), prefix=prefix))
+        if model == "qwen21":
+            w, h = int(payload.get("width", 1280)), int(payload.get("height", 720))
+            if w * h > 1_600_000:
+                print(f"[{jid}] WARNING: qwen21 at {w}x{h} ({w * h / 1e6:.1f} MP) is above the "
+                      f"~1 MP sweet spot for the 12 GB VRAM budget; expect slow/offloaded runs", flush=True)
+            res = cc.comfy_run(wf.qwen_image_21_t2i(
+                payload["prompt"], w, h, int(payload.get("seed", 42)),
+                steps=wf.qwen21_steps(payload), prefix=prefix))
+        else:
+            res = cc.comfy_run(wf.qwen_image_t2i(payload["prompt"], int(payload.get("width", 1280)),
+                                                 int(payload.get("height", 720)), int(payload.get("seed", 42)),
+                                                 payload.get("lora", "Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors"),
+                                                 int(payload.get("steps") or 4), prefix=prefix))
     paths = copy_comfy_outputs(jid, res["outputs"], prefix)
     if not paths:
         raise RuntimeError("no image output found")
-    return {"image": paths[0]}
+    return {"image": paths[0], "model": model}
 
 
 def flow_images_edit(payload: dict, jid: str, image_name: str):
     prefix = f"mp_{jid}"
+    model = wf.resolve_image_model(payload)
+    refs = []
     with GPU_LOCK:
-        res = cc.comfy_run(wf.qwen_image_edit(payload["prompt"], image_name, int(payload.get("seed", 42)),
-                                              steps=int(payload.get("steps", 8)), prefix=prefix))
+        if model == "qwen21":
+            refs = _stage_references(jid, payload.get("references"))
+            res = cc.comfy_run(wf.qwen_image_21_edit(
+                payload["prompt"], image_name, references=refs,
+                seed=int(payload.get("seed", 42)), steps=wf.qwen21_steps(payload), prefix=prefix))
+        else:
+            res = cc.comfy_run(wf.qwen_image_edit(payload["prompt"], image_name, int(payload.get("seed", 42)),
+                                                  steps=int(payload.get("steps") or 8), prefix=prefix))
     paths = copy_comfy_outputs(jid, res["outputs"], prefix)
     if not paths:
         raise RuntimeError("no image output found")
-    return {"image": paths[0]}
+    return {"image": paths[0], "model": model, "references": len(refs)}
 
 
 def flow_shots(payload: dict, jid: str, keyframe_name: str):
@@ -1091,10 +1139,16 @@ async def api_images(payload: dict):
 
 @app.post("/images/edit")
 async def api_images_edit(file: UploadFile = File(...), prompt: str = Form(...),
-                          seed: int = Form(42), steps: int = Form(8),
+                          seed: int = Form(42), steps: int = Form(None),
+                          model: str = Form(None),
+                          references: str = Form(None),
                           user: str = Form(None), client: str = Form(None)):
+    # model: 'qwen21' (default) | 'legacy' (2511 GGUF + Lightning).
+    # references: comma-separated; each = ComfyUI input/ filename OR a
+    # media_jobs-relative path (qwen21 only; max 9 + the edit target).
     with job_slot():
         payload = {"prompt": prompt, "seed": seed, "steps": steps,
+                   "model": model, "references": references,
                    "user": user, "client": client}
         jid = new_job("images_edit", payload)
         await save_upload(jid, file)

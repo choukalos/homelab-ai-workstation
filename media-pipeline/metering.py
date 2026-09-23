@@ -30,6 +30,8 @@ from pathlib import Path
 from prometheus_client import (CONTENT_TYPE_LATEST, Counter, Gauge, Histogram,
                                generate_latest)
 
+import workflows as wf  # qwen21 step resolution (single source of truth with the flows)
+
 # ------------------------------------------------------------------ config
 def _env_bool(k: str, d: bool) -> bool:
     return os.environ.get(k, str(d)).strip().lower() in ("1", "true", "yes", "on")
@@ -59,8 +61,7 @@ MNT = "/comfy/mnt"  # RUN_DIR as seen from inside the container
 
 MODEL_BY_FLOW = {
     "storyboard": "qwen38-27b",
-    "images": "qwen-image-2512",
-    "images_edit": "qwen-image-edit-2511",
+    # images / images_edit are resolved per job (qwen21 vs legacy) — see _model_for()
     "shots": "ltxv-2b-0.9.6-distilled",
     "tts": "xtts-v2",
     "music": "ace-step-1.5",
@@ -162,17 +163,30 @@ def _mp(w: int, h: int) -> float:
     return (w * h) / 1e6
 
 
+def _model_for(flow: str, payload: dict) -> str | None:
+    """Model label for metering. images/images_edit depend on the selected
+    image model (per-request 'model' > MEDIA_IMAGE_MODEL env > qwen21)."""
+    if flow in ("images", "images_edit"):
+        m = str(payload.get("model") or os.environ.get("MEDIA_IMAGE_MODEL", "qwen21")).lower()
+        if m == "legacy":
+            return "qwen-image-2512" if flow == "images" else "qwen-image-edit-2511"
+        return "qwen-image-2.1"
+    return MODEL_BY_FLOW.get(flow)
+
+
 # ------------------------------------------------------------------ work units
 def _work_units(jid: str, flow: str, payload: dict, output: dict):
     """(units, kind) for the job's GPU work; (None, None) if not applicable or
     not measurable. Best-effort: any failure -> (None, None)."""
     try:
         if flow == "images":
-            steps = int(payload.get("steps", 4))
+            m = str(payload.get("model") or os.environ.get("MEDIA_IMAGE_MODEL", "qwen21")).lower()
+            steps = wf.qwen21_steps(payload) if m != "legacy" else int(payload.get("steps", 4))
             return (steps * _mp(int(payload.get("width", 1280)),
                                 int(payload.get("height", 720))), "mpix_steps")
         if flow == "images_edit":
-            steps = int(payload.get("steps", 8))
+            m = str(payload.get("model") or os.environ.get("MEDIA_IMAGE_MODEL", "qwen21")).lower()
+            steps = wf.qwen21_steps(payload) if m != "legacy" else int(payload.get("steps", 8))
             w, h = _image_dimensions(output["image"])
             return steps * _mp(w, h), "mpix_steps"
         if flow == "shots":
@@ -264,7 +278,7 @@ def record_job(job: dict) -> None:
         usage = output.get("usage") if flow == "storyboard" else None
         units, kind = _work_units(jid, flow, payload, output)
         cost = _cost(flow, units, kind, usage)
-        model = MODEL_BY_FLOW.get(flow)
+        model = _model_for(flow, payload)
         if flow == "upscale":
             model = "seedvr2-3b" if payload.get("pipeline", "b") == "b" else "4xultrasharp"
 

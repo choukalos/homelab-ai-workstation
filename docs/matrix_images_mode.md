@@ -1,17 +1,21 @@
 # ComfyUI — Image Generation & Editing (Qwen-Image)
 
-> Updated: 2026-08-26 (supersedes the old "images mode" / stop-vLLM model)
+> Updated: 2026-09-23 (Qwen-Image-2.1 default; supersedes the old "images mode" / stop-vLLM model)
 > Compose: `compose/comfyui.yml` (profile: `image`)
 > Profile: `models/profiles/comfyui.yaml`
 > **API reference for tooling: `docs/matrix_comfyui_media_api.md`**
+> **Upgrade runbook: `media_todo.md`** (Qwen-Image-2.1, 2026-09-23)
 
 ## Overview
 
 ComfyUI runs **concurrently with vLLM** — no mode switch, no stopping vLLM, no
 downtime. ComfyUI is capped at a ~12 GB VRAM budget via `--reserve-vram 60`
-(reserves 60 GB for other software), and Qwen-Image's dynamic-VRAM streaming
-(9.4 GB encoder + 11.9 GB DiT are never resident at the same time) keeps it
-inside the budget.
+(reserves 60 GB for other software). Since 2026-09-23 the default image model
+is **Qwen-Image-2.1** (7B single-stream DiT int8_convrot + Qwen3-VL 8B int8
+text encoder + 64-ch RGBA VAE, ComfyUI v0.37.0 native nodes) — smaller than
+the legacy 20B GGUFs and fast to stream in/out. The legacy
+Qwen-Image-2512/2511 Q4_0 GGUF + Lightning path remains available as
+`model=legacy` (per request or `MEDIA_IMAGE_MODEL=legacy` in `.env`).
 
 **`matrix-coder` (vLLM) stays fully online during all image work.**
 
@@ -27,10 +31,18 @@ under the ~70 GB acceptance gate, vLLM memory identical before/after.
 
 ## What it does
 
-- **Create image**: text prompt → 1920×1080 PNG (720p render → 4x upscale →
-  lanczos). Qwen-Image-2512 Q4_0 GGUF + 4-step Lightning LoRA. ~15–40 s.
-- **Edit image**: existing image + text instruction → edited image.
-  Qwen-Image-Edit-2511 Q4_0 GGUF + 8-step Lightning LoRA. ~45–60 s.
+- **Create image** (default, since 2026-09-23): text prompt → PNG. **Qwen-Image-2.1**
+  (7B unified DiT, int8_convrot), 25 steps, cfg=1.0, euler/simple. ~1 MP
+  (1280×720) render; larger outputs via the existing SeedVR2/4xUltrasharp
+  upscale path. ~30–120 s per image (no distilled LoRA at launch).
+- **Edit image** (default): existing image + text instruction → edited image,
+  **same Qwen-Image-2.1 model** (unified T2I + edit), canvas follows the edited
+  image. Supports **up to 9 additional reference images** (10 total) for
+  character/product consistency across shots (`references` field on
+  `POST /images/edit`).
+- **Legacy path** (`model=legacy`): Qwen-Image-2512 Q4_0 GGUF + 4-step Lightning
+  LoRA (create), Qwen-Image-Edit-2511 Q4_0 GGUF + 8-step Lightning LoRA (edit).
+  ~15–60 s. Kept as the rollback/fallback during the transition.
 - Legible in-image text (verified by OCR), stable iteration loop for edits.
 
 Full API contract (endpoints, workflow JSON, reference client, error handling):
@@ -140,3 +152,10 @@ Idle ComfyUI retains ~0.7 GB (model cache) — normal.
   verified end-to-end (VRAM, timing, OCR).
 - 2026-08-27: **media-pipeline** orchestrator containerized (Docker, `image` profile) and integrated
   into `model-manager` (starts/stops with ComfyUI; `model-manager rebuild media-pipeline`).
+- 2026-09-23: **Qwen-Image-2.1 upgrade** — ComfyUI pinned to v0.37.0 (day-0
+  release, native `TextEncodeQwenImage21`/`QwenImage21Cache` nodes), int8_convrot
+  weights (7.26 GB DiT + 9.35 GB Qwen3-VL 8B int8 encoder + 0.68 GB RGBA VAE),
+  new default for create + edit (unified model, up to 10 images in the edit
+  flow). Legacy 2512/2511 GGUF + Lightning kept behind `model=legacy` /
+  `MEDIA_IMAGE_MODEL=legacy`. Runbook: `media_todo.md`;
+  `scripts/qwen21_upgrade_matrix.sh` (matrix side).
