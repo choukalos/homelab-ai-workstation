@@ -9,6 +9,9 @@
 #   2. pins ComfyUI to v0.37.0 (the day-0 Qwen-Image-2.1 release) via git
 #   3. installs core requirements into the persistent venv (numpy<2.5 pinned,
 #      same constraint as scripts/comfyui_venv_deps.sh — numba breaks on numpy 2.5)
+#      NOTE: git + venv ops run as uid 1024 (comfy) — the repo/venv are owned
+#      by 1024 and the container default user is comfytoo (1025), so a plain
+#      `docker exec` hits git's dubious-ownership guard.
 #   4. restarts comfyui_backend and waits for :8188
 #   5. verifies: ComfyUI version, new nodes present, vLLM still healthy
 #   6. downloads the 3 int8_convrot weights (~17.3 GB) as the comfy user
@@ -41,23 +44,23 @@ log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 log "=== qwen21 upgrade start (target ComfyUI ${TAG}) ==="
 
 # --- 1. record rollback ref -------------------------------------------------
-CUR_COMMIT=$(docker exec "$CONTAINER" git -C "$COMFY_SRC" rev-parse HEAD)
-CUR_DESCRIBE=$(docker exec "$CONTAINER" git -C "$COMFY_SRC" describe --tags --always 2>/dev/null || echo unknown)
+CUR_COMMIT=$(docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" rev-parse HEAD)
+CUR_DESCRIBE=$(docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" describe --tags --always 2>/dev/null || echo unknown)
 log "current ComfyUI: ${CUR_DESCRIBE} (${CUR_COMMIT})"
 
 # --- 2. pin ComfyUI to v0.37.0 ----------------------------------------------
-if [ "$(docker exec "$CONTAINER" git -C "$COMFY_SRC" rev-parse --short HEAD)" = "$(docker exec "$CONTAINER" git -C "$COMFY_SRC" rev-parse --short "refs/tags/${TAG}" 2>/dev/null || true)" ]; then
+if [ "$(docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" rev-parse --short HEAD)" = "$(docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" rev-parse --short "refs/tags/${TAG}" 2>/dev/null || true)" ]; then
   log "ComfyUI already at ${TAG} — skipping checkout"
 else
   log "fetching tags + checking out ${TAG}"
-  docker exec "$CONTAINER" git -C "$COMFY_SRC" fetch --tags origin
-  docker exec "$CONTAINER" git -C "$COMFY_SRC" checkout "${TAG}"
-  log "checked out: $(docker exec "$CONTAINER" git -C "$COMFY_SRC" rev-parse HEAD)"
+  docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" fetch --tags origin
+  docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" checkout "${TAG}"
+  log "checked out: $(docker exec -u comfy "$CONTAINER" git -C "$COMFY_SRC" rev-parse HEAD)"
 fi
 
 # --- 3. venv deps (core requirements, numpy<2.5 pinned) ----------------------
 log "pip install -r requirements.txt (numpy<2.5 constraint)"
-docker exec "$CONTAINER" sh -c "
+docker exec -u comfy "$CONTAINER" sh -c "
   echo 'numpy<2.5' > /tmp/comfy_constraints.txt
   ${VENV_PY} -m pip install -q -c /tmp/comfy_constraints.txt -r ${COMFY_SRC}/requirements.txt
   ${VENV_PY} -c 'import comfy_kitchen' 2>/dev/null && echo 'comfy_kitchen import OK' || echo 'comfy_kitchen not importable (check pip output)'
