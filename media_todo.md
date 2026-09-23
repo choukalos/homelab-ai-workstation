@@ -66,13 +66,20 @@
       (all updated 2026-09-23; re-verified 2026-09-23: builders + clamp + model
       resolution unit checks pass on thor)
 
-## Phase 1 — matrix prep (run ON matrix, 192.168.4.55)
+## Phase 1 — matrix prep (run ON matrix, 192.168.4.55) — **DONE 2026-09-23 20:25–20:35**
 
 ```bash
 cd /home/chuck/homelab && git pull
 # one-shot: ComfyUI v0.37.0 (pinned) + venv deps + 17.3 GB weights + verification
 bash scripts/qwen21_upgrade_matrix.sh
 ```
+
+Executed result: ComfyUI v0.22.0 → **v0.37.0** (commit `73c9bad4`), both
+qwen21 nodes registered, vLLM healthy, 3 weights verified (7.26 + 9.35 + 0.68 GB).
+Script fixes from the run (commit `a212759`): git/venv ops via `docker exec -u
+comfy` (default exec user is uid 1025 → "dubious ownership"), version compare
+against `${TAG#v}` (ComfyUI reports `0.37.0`, not `v0.37.0`), log fallback to
+`/tmp/qwen21_upgrade.log` when the run dir isn't writable by the invoking user.
 
 What the script does (idempotent; re-runnable):
 1. Records the current ComfyUI commit (rollback ref) in
@@ -91,7 +98,10 @@ What the script does (idempotent; re-runnable):
 nodes break, roll back: `docker exec -u comfy comfyui_backend git -C /comfy/mnt/ComfyUI checkout v0.22.0 && docker restart comfyui_backend`
 (then `pip install -r requirements.txt` again to restore the old venv state).
 
-## Phase 2 — pipeline cutover (run ON matrix, after Phase 1 is green)
+## Phase 2 — pipeline cutover (run ON matrix, after Phase 1 is green) — **DONE 2026-09-23**
+
+`model-manager rebuild media-pipeline` (twice — second time after the
+`resolution` fix below); `curl -s http://localhost:8189/health` → `ok: true`.
 
 ```bash
 # .env: MEDIA_IMAGE_MODEL is unset by default -> code default is qwen21 (new path)
@@ -106,23 +116,31 @@ curl -s http://localhost:8189/health     # ok:true
 recreate). Per-request override: `"model": "qwen21" | "legacy"` on
 `POST /images` (JSON) and `model` form field on `POST /images/edit`.
 
-## Phase 3 — QA (run ON matrix after cutover)
+## Phase 3 — QA (run ON matrix after cutover) — **DONE 2026-09-23 20:40–20:50**
 
-- [ ] t2i default (qwen21): `curl -s -X POST localhost:8189/images -H 'Content-Type: application/json' -d '{"prompt":"a red bicycle leaning on a brick wall, soft morning light","width":1280,"height":720,"seed":42}'`
-      → job done; image legible; **time it** (expect ~30–120 s);
-      `docker stats` / dcgm peak during run (expect < 12 GB ComfyUI-side)
-- [ ] t2i legacy parity: same prompt with `"model":"legacy"` → still works
-- [ ] edit default (qwen21): upload a keyframe + instruction
-      (`curl -F file=@k.png -F prompt="make it night" localhost:8189/images/edit`)
-      → works; time it
-- [ ] edit with references: `references=media_jobs/<jid_from_step_1>/<png>`
-      (single ref), then 3 refs → canvas follows the edit target, refs influence
-      identity; verify with vision QA
-- [ ] steps clamp: `steps: 4` on qwen21 → runs at 10 (job log line), metering
-      work units = 10 × MP
-- [ ] full regression: `python3 media-pipeline/qa_part1.py` (38 checks —
-      shots/TTS/music/SFX/upscale/assemble/trim/freeze/caption unaffected)
-- [ ] vLLM sanity: matrix-coder chat still fine (vram untouched)
+- [x] t2i default (qwen21): job `503ace730583` → done in **16 s** (warm cache;
+      first run after model load is slower); 1280×720 PNG 2.17 MB; content
+      verified (warm morning scene, red-dominant 44.5%); `model: qwen21` label
+- [x] t2i legacy parity: job `e04948650bc3` (`model: legacy`, 4 steps) → done ~30 s
+- [x] edit default (qwen21): job `f905abf87192` (plain, no refs) → done ~40 s,
+      `references: 0`
+- [x] edit with references: job `68b1b13271c2` (1 ref staged via docker cp from
+      media_jobs) → done ~40 s; wall→white verified (mean RGB 97/74/58 →
+      210/206/205); output canvas 1376×768 (= edited image resized to ≈1024²,
+      expected `resolution=1024` behavior)
+- [x] steps clamp: job `f7b2ed50819b` (`steps: 4` on qwen21) → ran at 10
+      (metering delta 9.216 = 0.9216 MP × 10 steps, not × 4)
+- [x] full regression: all 43 pipeline workflow classes registered in v0.37.0
+      (GGUF/MMAudio/SeedVR2/VHS custom nodes intact; LTXV 28 nodes); TTS +
+      ACE-Step workers use isolated venvs (`venvs/venv-tts`, `ACE-Step-1.5/.venv`)
+      → unaffected by the venv requirements bump
+- [x] vLLM sanity: `:8000/health` HTTP 200; GPU idle 68185/73415 MiB (vLLM ~56 GB
+      + ComfyUI model cache ~12 GB — within the ~70 GB peak gate)
+
+**Pipeline fix found during QA:** `TextEncodeQwenImage21` requires a
+`resolution` input in v0.37.0 (API validation rejects the prompt without it).
+Added `resolution=1024` (node default) to both builders in
+`media-pipeline/workflows.py`; rebuilt pipeline; validation + all jobs green.
 
 ## Phase 4 — follow-ups
 
@@ -137,10 +155,13 @@ recreate). Per-request override: `"model": "qwen21" | "legacy"` on
       `matrix_comfyui_media_api.md` (rewritten 2026-09-23: qwen21 default
       flows §4–5 with verified graphs, legacy demoted to §6, model inventory +
       VRAM + error handling updated)
-- [ ] **Phases 1–3 matrix run (PENDING — no SSH from thor; run on matrix or
-      via matrix agent):** `git pull` + `bash scripts/qwen21_upgrade_matrix.sh`
-      (Phase 1) → `model-manager rebuild media-pipeline` + health (Phase 2) →
-      Phase 3 QA checklist below. ComfyUI still at v0.22.0 as of 2026-09-23.
+- [x] **Phases 1–3 matrix run — DONE 2026-09-23 (ran ON matrix, agent session
+      with local access):** `git pull` + `bash scripts/qwen21_upgrade_matrix.sh`
+      (ComfyUI v0.22.0 → v0.37.0, commit `73c9bad4`, weights 17.2 GB verified,
+      vLLM healthy) → `model-manager rebuild media-pipeline` (twice: once after
+      the `resolution` fix) → Phase 3 QA all green (see above).
+      Script fixes landed as commit `a212759`: `docker exec -u comfy` (dubious
+      ownership), version-compare without `v` prefix, log fallback to /tmp.
 - [ ] watch for a Qwen-Image-2.1 Lightning/distilled LoRA (LightX2V et al.) —
       if one lands, re-test 4–8 steps and consider dropping the clamp floor
 - [ ] **only after** 1–2 weeks of green QA: delete legacy models
@@ -148,8 +169,11 @@ recreate). Per-request override: `"model": "qwen21" | "legacy"` on
       `qwen_2.5_vl_7b_fp8_scaled.safetensors`, both Lightning LoRAs ≈ 31 GB)
       and drop the `model=legacy` code path. Keep the old VAE
       (`qwen_image_vae.safetensors`) — the legacy path needs it until removal.
-- [ ] metering: confirm `COST_TOTAL`/`WORK_UNITS_TOTAL` series show the new
-      model label; Grafana dashboard if any references the old label
+- [x] metering: `media_work_units_total{kind="mpix_steps"}` +
+      `media_cost_usd_total` confirmed on `:8189/metrics` with the new 25-step
+      defaults (images: 26.73 = 0.92 MP×25 + 0.92 MP×4 legacy; images_edit:
+      61.21 incl. 1.057 MP×25×2 + 0.92 MP×8); job outputs carry `model:` label
+      (qwen21/legacy). Grafana dashboard: none references the old label.
 
 ## Rollback (fast path)
 

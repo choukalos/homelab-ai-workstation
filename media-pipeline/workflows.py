@@ -221,9 +221,12 @@ def qwen21_steps(payload: dict) -> int:
 
 
 def qwen_image_21_t2i(prompt, width=1280, height=720, seed=42,
-                      steps=QWEN21_DEFAULT_STEPS, negative_prompt="", prefix="mp_out"):
+                      steps=QWEN21_DEFAULT_STEPS, negative_prompt="",
+                      prefix="mp_out", resolution=1024):
     """Qwen-Image-2.1 text-to-image (int8_convrot, cfg=1.0, euler/simple).
-    Official Comfy-Org template graph, subgraph unwound to API format."""
+    Official Comfy-Org template graph, subgraph unwound to API format.
+    `resolution` = TextEncodeQwenImage21's reference-image resize bound
+    (required input in v0.37.0; 1024 = the node default)."""
     return {
         "451": {"class_type": "UNETLoader",
                 "inputs": {"unet_name": QWEN21_UNET, "weight_dtype": "default"}},
@@ -235,6 +238,7 @@ def qwen_image_21_t2i(prompt, width=1280, height=720, seed=42,
         "474": {"class_type": "TextEncodeQwenImage21", "inputs": {
             "clip": ["453", 0], "vae": ["454", 0],
             "prompt": prompt, "negative_prompt": negative_prompt,
+            "resolution": int(resolution),
         }},
         "458": {"class_type": "KSampler", "inputs": {
             "model": ["451", 0], "seed": int(seed), "steps": int(steps), "cfg": 1.0,
@@ -248,12 +252,14 @@ def qwen_image_21_t2i(prompt, width=1280, height=720, seed=42,
 
 
 def qwen_image_21_edit(prompt, image_name, references=None, seed=42,
-                       steps=QWEN21_DEFAULT_STEPS, negative_prompt="", prefix="mp_out"):
+                       steps=QWEN21_DEFAULT_STEPS, negative_prompt="",
+                       prefix="mp_out", resolution=1024):
     """Qwen-Image-2.1 unified editing. `image_name` = the image to edit; the
     canvas follows it (the official template's switch=False default, so the
     ComfySwitchNode/EmptyLatentImage pair is omitted). `references` = up to 9
     additional reference images (10 total) for identity/consistency. Edit
-    models go through QwenImage21Cache (prefix-KV caching)."""
+    models go through QwenImage21Cache (prefix-KV caching). `resolution`
+    = reference-image resize bound (required input; 1024 = node default)."""
     refs = [str(r) for r in (references or [])][:QWEN21_MAX_REFS]
     p = {
         "451": {"class_type": "UNETLoader",
@@ -268,6 +274,7 @@ def qwen_image_21_edit(prompt, image_name, references=None, seed=42,
             "clip": ["453", 0], "vae": ["454", 0],
             "prompt": prompt, "negative_prompt": negative_prompt,
             "images.image_1": ["455", 0],
+            "resolution": int(resolution),
         }},
         "458": {"class_type": "KSampler", "inputs": {
             "model": ["469", 0], "seed": int(seed), "steps": int(steps), "cfg": 1.0,

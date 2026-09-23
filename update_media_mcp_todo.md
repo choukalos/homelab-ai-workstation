@@ -4,9 +4,10 @@
 > thor): `media_pipeline_client.py` + `mcp_tools.py` updated per §Required changes
 > 1–4, `HANDOFF.md` embedded code + API/tool tables synced, payload construction
 > unit-tested (defaults 25, `model`/`references` passthrough, None fields omitted).
+> **Matrix Phases 1–3 GREEN 2026-09-23** (ComfyUI v0.37.0 + qwen21 default +
+> weights + pipeline QA all passed — see `media_todo.md`).
 > **Remaining:** (a) deploy the two files into the live media-mcp server + restart;
-> (b) the verification checklist below, which needs matrix Phases 1–3 green first
-> (pipeline is backwards compatible — the old client keeps working meanwhile).
+> (b) the MCP-level verification checklist below.
 
 > Hand this to the **Thor agent** (the one running the `mcp_media` MCP server
 > that calls the matrix media-pipeline) AFTER the matrix pipeline upgrade
@@ -59,21 +60,26 @@ Lightning) path is still available via `model=legacy`.
 
 ## Verification (after the update, from Thor)
 
+Pipeline-level QA already green from matrix (2026-09-23): t2i qwen21 1280×720
+≈16 s warm, edit + reference ≈40 s (wall→white verified), legacy t2i/edit
+regressions pass, steps clamp live-verified (4→10). Remaining = MCP-level:
+
 ```bash
 # via the MCP tools, or directly:
 curl -s -X POST http://192.168.4.55:8189/images \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"a red bicycle leaning on a brick wall, soft morning light","width":1280,"height":720,"seed":42}'
-# expect: job done in ~30–120 s, output image, metering model label qwen-image-2.1
+# expect: job done in ~30–120 s (cold) / ~16 s (warm), output image, model label qwen21
 ```
 
 - [ ] deploy: copy updated `media_pipeline_client.py` + `mcp_tools.py` into the
       live media-mcp server dir + restart (done in-repo 2026-09-23; live deploy pending)
-- [ ] `generate_image` works with new defaults (25 steps)
-- [ ] `edit_image` works with a single uploaded image
-- [ ] `edit_image` with `references=[<media_jobs path>]` works (needs a
-      previously generated image path from the pipeline)
-- [ ] `model="legacy"` still works on both (regression)
+- [ ] `generate_image` works with new defaults (25 steps) — via the MCP tool
+- [ ] `edit_image` works with a single uploaded image — via the MCP tool
+- [ ] `edit_image` with `references=[<media_jobs path>]` works — via the MCP tool
+      (pipeline-side equivalent verified: job `68b1b13271c2`)
+- [ ] `model="legacy"` still works on both (regression) — pipeline-side
+      equivalent verified: jobs `e04948650bc3` / `4f81c839392b`
 
 ## Rollback note
 

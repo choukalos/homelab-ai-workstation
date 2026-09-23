@@ -96,7 +96,8 @@ No upscale tail — render at ~1 MP and upscale separately if 1080p is needed (�
             "inputs": { "width": 1280, "height": 720, "batch_size": 1 } },
   "474": { "class_type": "TextEncodeQwenImage21",
             "inputs": { "clip": ["453", 0], "vae": ["454", 0],
-                        "prompt": "⟨POSITIVE PROMPT⟩", "negative_prompt": "⟨NEGATIVE PROMPT⟩" } },
+                        "prompt": "⟨POSITIVE PROMPT⟩", "negative_prompt": "⟨NEGATIVE PROMPT⟩",
+                        "resolution": 1024 } },
   "458": { "class_type": "KSampler",
             "inputs": { "model": ["451", 0], "seed": ⟨INT⟩, "steps": 25, "cfg": 1.0,
                         "sampler_name": "euler", "scheduler": "simple",
@@ -117,6 +118,7 @@ No upscale tail — render at ~1 MP and upscale separately if 1080p is needed (�
 | `⟨NEGATIVE PROMPT⟩` | `TextEncodeQwenImage21` takes the negative as an input; the pipeline passes `""`. Only set it if you have a specific failure mode. |
 | `⟨INT⟩` seed | Any int. Lock the seed when iterating on a layout. |
 | `⟨PREFIX⟩` | Unique per job, e.g. `media_<jobid>`. |
+| `resolution` (474) | **Required** in v0.37.0 (API validation rejects the prompt without it). Resizes reference images to ≈ `resolution`² pixels (multiple of 32, aspect preserved); `0` keeps original sizes. Default `1024` = the node default and the pipeline's value (≈1 MP, the VRAM sweet spot). Irrelevant for t2i (no images) but must still be present. |
 | `width`/`height` (node 456) | **~1 MP sweet spot for the 12 GB VRAM budget:** 1280×720 (16:9), 720×1280 (9:16), 1024×1024 (1:1). Native 2K (2048²) does NOT fit the budget — render ~1 MP and upscale. |
 | `steps` (node 458) | 25 default (official range 25–40). The media-pipeline clamps to [10, 50] — <10 degrades badly (no distilled LoRA at launch). |
 
@@ -183,7 +185,7 @@ ComfySwitchNode/EmptyLatentImage pair. The edit model goes through `QwenImage21C
   "474": { "class_type": "TextEncodeQwenImage21",
             "inputs": { "clip": ["453", 0], "vae": ["454", 0],
                         "prompt": "⟨INSTRUCTION⟩", "negative_prompt": "",
-                        "images.image_1": ["455", 0] } },
+                        "images.image_1": ["455", 0], "resolution": 1024 } },
   "458": { "class_type": "KSampler",
             "inputs": { "model": ["469", 0], "seed": ⟨INT⟩, "steps": 25, "cfg": 1.0,
                         "sampler_name": "euler", "scheduler": "simple",
@@ -209,7 +211,7 @@ and wire it into node 474 as `"images.image_⟨i⟩": ["5⟨i⟩", 0]`. (The pip
 
 | Placeholder | Rules |
 |---|---|
-| `⟨INPUT IMAGE FILENAME⟩` | `name` returned by `/upload/image` (or a file already in the input dir). The canvas follows this image (its resolution/aspect). |
+| `⟨INPUT IMAGE FILENAME⟩` | `name` returned by `/upload/image` (or a file already in the input dir). The canvas follows this image, **resized to ≈ `resolution`² pixels** (multiple of 32, aspect preserved) — e.g. a 1280×720 input yields a 1376×768 output at `resolution=1024`. All reference images are resized the same way. |
 | `⟨INSTRUCTION⟩` | Short, specific, imperative. |
 | `⟨REFERENCE i FILENAME⟩` | Up to 9 extra images for identity/consistency (10 total incl. the edit target). |
 | `⟨INT⟩` seed | Any int. |
@@ -508,6 +510,7 @@ Qwen-Image-2.1 by default; §6.1 / §6.2 for the legacy path.)
 | Date | Change |
 |---|---|
 | 2026-09-23 | **Qwen-Image-2.1 becomes the default** for create + edit (unified 7B DiT, int8_convrot weights, ComfyUI pinned to v0.37.0, 25 steps, cfg=1.0). Edit flow gains up to 9 reference images (10 total) via `TextEncodeQwenImage21.images.image_N` for cross-shot identity/consistency; edit model goes through `QwenImage21Cache`. Canvas follows the edited image (template switch=False default). Native 2K doesn't fit the 12 GB budget — ~1 MP render + upscale. Legacy 2512/2511 GGUF+Lightning flows kept as §6 (`model=legacy`), scheduled for removal after 1–2 weeks of green QA. Runbook: `media_todo.md`; script: `scripts/qwen21_upgrade_matrix.sh`. |
+| 2026-09-23 | **Matrix cutover executed + QA green.** ComfyUI upgraded v0.22.0 → v0.37.0 (`scripts/qwen21_upgrade_matrix.sh`, commit `a212759` fixes: `docker exec -u comfy` for dubious-ownership git, version-compare without `v` prefix, log fallback to /tmp). All 3 qwen21 weights downloaded (17.2 GB). Pipeline fix: `TextEncodeQwenImage21` requires a `resolution` input in v0.37.0 (default 1024) — added to both builders in `workflows.py`. QA: t2i 1280×720 @25 steps ≈16 s warm; edit + 1 reference ≈40 s (wall→white verified, canvas 1376×768); legacy t2i/edit regressions pass. All 43 pipeline workflow classes registered; custom nodes (GGUF, MMAudio, SeedVR2, VHS) intact; TTS/ACE-Step workers use isolated venvs (unaffected); vLLM healthy; GPU idle 68/73 GB (within ~70 GB gate). |
 | 2026-08-28 | **Legacy cleanup.** Removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints, LTXV 0.9.8 fp8, SeedVR2 int8 build, duplicate XTTS dir, junk VAEs/bigvgan discriminator), 6 legacy workflow JSONs (kept `qwen-image-2512-infographic-720p.json` as reference), 4 obsolete custom nodes (animatediff-evolved, UltimateSDUpscale, ollamagemini, VideoConcat), and scratch/venv caches. All in-use models verified intact; pipeline + ComfyUI health re-verified. |
 | 2026-08-28 | **Ops note:** the ComfyUI Python venv + uv cache live in `run/` (bind-mounted). Deleting them is safe — the container entrypoint self-heals and rebuilds the venv on restart (verified: full rebuild from network in ~15 min, no jobs lost). **Caveat:** the rebuilt venv has base ComfyUI deps only and resolves numpy 2.5 (breaks numba → comfyui-mmaudio import fails). Run `scripts/comfyui_venv_deps.sh restart` after any venv rebuild to (re)install the 4 custom-node dep sets with `numpy<2.5` pinned (verified 2026-08-28: all 5 custom nodes import, 726+ node classes registered). |
 | 2026-08-27 | Image generation runs concurrently with vLLM (no more exclusive `images` mode); media-pipeline added to the `image` compose profile. |

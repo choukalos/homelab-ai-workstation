@@ -27,7 +27,11 @@ set -euo pipefail
 
 CONTAINER="${CONTAINER:-comfyui_backend}"
 TAG="v0.37.0"
-LOG="/home/chuck/data/comfyui/run/qwen21_upgrade.log"
+LOG="${LOG:-/home/chuck/data/comfyui/run/qwen21_upgrade.log}"
+if ! ( : >> "$LOG" ) 2>/dev/null; then
+  LOG="/tmp/qwen21_upgrade.log"
+  echo "NOTE: default log not writable, using ${LOG}"
+fi
 HF_BASE="https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main"
 VENV_PY="/comfy/mnt/venv/bin/python"
 COMFY_SRC="/comfy/mnt/ComfyUI"
@@ -81,7 +85,7 @@ done
 # --- 5. verify ----------------------------------------------------------------
 VER=$(curl -s http://localhost:8188/system_stats | python3 -c "import json,sys; print(json.load(sys.stdin)['system']['comfyui_version'])")
 log "ComfyUI version: ${VER}"
-[ "${VER}" = "${TAG}" ] || { log "ERROR: expected ${TAG}, got ${VER}"; exit 1; }
+[ "${VER}" = "${TAG#v}" ] || { log "ERROR: expected ${TAG#v}, got ${VER}"; exit 1; }
 
 for NODE in TextEncodeQwenImage21 QwenImage21Cache; do
   if [ -n "$(curl -s http://localhost:8188/object_info/${NODE} | tr -d '[:space:]')" ]; then
