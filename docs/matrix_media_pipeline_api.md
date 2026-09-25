@@ -60,7 +60,10 @@ GET /jobs/{job_id}
 | POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy", lora? (legacy only)}` | `{"image":"<path>.png","model":"<model>"}` |
 | POST | `/images/edit` | multipart `file, prompt, seed=42, steps=25, model?="qwen21"\|"legacy", references? (qwen21 only)` | `{"image":"<path>.png","model":"<model>","references":N}` |
 | POST | `/shots` | multipart `file(keyframe), prompt, width=768, height=512, frames=97, fps=24, steps=8, strength=0.7, seed=42` | `{"video":"<path>.mp4","frames":N,"fps":F}` |
-| POST | `/tts` | JSON `{text, voice="trailer"}` | `{"audio":"<path>/vo.wav"}` |
+| POST | `/tts` | JSON `{text, voice="trailer"}` — `voice` = library name (see `/voices`) **or** a reference wav path (host absolute under run/basedir, or run-dir-relative) | `{"audio":"<path>/vo.wav"}` |
+| GET | `/voices` | sync (not a job) — list the TTS voice library | `{"voices":[{name, description, gender, style, added, protected, ref_exists, sample}]}` |
+| POST | `/voices` | JSON `{name, source, description?, gender?, style?, sample_text?}` — register a new voice from a reference wav (3–15 s; QC'd, normalized to 16 kHz mono, sample generated on GPU) | `job_id` → `{"voice","ref","sample","ref_duration_s"}` |
+| DELETE | `/voices/{name}` | sync — remove a voice (ref + sample + manifest entry). `trailer`/`default` are protected → 400 | `{"deleted":"<name>"}` |
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
 | POST | `/sfx` | multipart `file(video), duration=8, steps=25, cfg=4.5, seed=42, prompt="", negative_prompt="", fps=24` | `{"audio":"<path>.flac"}` |
 | POST | `/upscale` | multipart `file(video), pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, fps=24, seed=42` | `{"video":"<path>.mp4"}` |
@@ -94,8 +97,27 @@ Notes:
   ComfyUI `input/` server-side. The canvas follows the uploaded edit target.
 - `pipeline` for `/upscale`: `b` = SeedVR2 3B (quality, ~5 min), `a2` =
   4xUltrasharp (fast, ~1 min).
-- `voice` for `/tts`: `trailer` (bundled movie-trailer reference, zero-shot
-  clone) or a path to a custom reference wav.
+- `voice` for `/tts` (2026-09-25): a **library name** from `GET /voices`
+  (e.g. `trailer`, `default`, `narrator_f`, `deep_m`) or a **reference wav
+  path** (host absolute under the run/basedir dirs, or run-dir-relative). The
+  worker is unchanged — `trailer`/`default` pass through as `--voice`,
+  everything else resolves to `--reference-audio`. Unknown name → clean 400
+  listing available voices (previously: a worker crash with an argparse
+  traceback). Raw-path support now actually works (previously the server never
+  forwarded `--reference-audio`).
+- **Voice library** (2026-09-25): manifest at
+  `<basedir>/models/tts/voices/manifest.json` (auto-seeded on first boot with
+  the protected `trailer` + `default` entries). `POST /voices` QC's the
+  reference (3–15 s), normalizes it to 16 kHz mono, installs
+  `<name>_ref.wav`, and generates a `<name>_sample.wav` audition via the TTS
+  worker on the GPU. Re-POSTing a name re-registers it (keeps `added`).
+  `DELETE /voices/{name}` removes ref + sample + manifest entry (protected
+  names → 400). The retention sweeper only touches `media_jobs/` — the voices
+  dir is permanent. Current portfolio: `trailer` (deep male, ~123 Hz F0),
+  `default` (stock male, ~193 Hz), `deep_m` (warm deep male, ~150 Hz),
+  `narrator_f` (female, ~212 Hz — pitch-shifted clone of the stock sample).
+  All XTTS-v2 zero-shot clones of the same stock speaker; add a real recorded
+  reference (3–15 s clean speech) via `POST /voices` for a truly new speaker.
 - `strength` for `/shots`: how strongly the keyframe anchors the clip
   (default **0.7** — empirical warble knee; lower = less warble, less motion).
   Prompt visual **style**, not fast motion.
@@ -278,7 +300,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
-| 2026-09-23 | **Qwen-Image-2.1 upgrade**: `/images` + `/images/edit` default to Qwen-Image-2.1 (ComfyUI v0.37.0 native nodes, int8_convrot weights, 25 steps, cfg=1.0); unified model for create + edit; `/images/edit` gains `references` (up to 9, 10 total) for cross-shot consistency; `model` field (`qwen21`\|`legacy`) + `MEDIA_IMAGE_MODEL` env on both image flows; legacy 2512/2511 GGUF+Lightning kept as fallback; qwen21 steps clamped [10,50]; metering model label + work units follow the selected model/effective steps. Runbook: `media_todo.md`. |
+| 2026-09-25 | **TTS voice library** (plan `voices_todo.md`): `GET/POST/DELETE /voices` + manifest at `<basedir>/models/tts/voices/manifest.json` (auto-seeded; `trailer`/`default` protected); `/tts` `voice` now accepts a library name **or** a reference wav path (raw-path support fixed — the server previously never forwarded `--reference-audio`); unknown voice → clean 400 instead of a worker crash; `POST /voices` QC (3–15 s) + 16 kHz mono normalization + GPU sample generation; seeded `narrator_f` (female, ~212 Hz F0) + `deep_m` (~150 Hz) as pitch-shifted clones of the stock sample. Worker CLI unchanged; all logic in `server.py`. | **Qwen-Image-2.1 upgrade**: `/images` + `/images/edit` default to Qwen-Image-2.1 (ComfyUI v0.37.0 native nodes, int8_convrot weights, 25 steps, cfg=1.0); unified model for create + edit; `/images/edit` gains `references` (up to 9, 10 total) for cross-shot consistency; `model` field (`qwen21`\|`legacy`) + `MEDIA_IMAGE_MODEL` env on both image flows; legacy 2512/2511 GGUF+Lightning kept as fallback; qwen21 steps clamped [10,50]; metering model label + work units follow the selected model/effective steps. Runbook: `media_todo.md`. |
 | 2026-09-21 | **Job-dir retention** (`MEDIA_JOB_RETENTION_DAYS`, default 14 d): hourly background sweeper reclaims job dirs + stale `uploads/` files; `metrics/` (jobs.jsonl) and live jobs never touched; `/health` exposes sweep state. One-off: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs. |
 | 2026-09-07 | **Part-1 gap fill** (plan `media_pipeline_gaps.md`): `/trim`, `/freeze`, `/caption` job flows (ffmpeg, CPU); `/assemble` extensions — object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`, `vo_start`, `loudnorm` (backward compatible); sync endpoints `/info`, `/upload_local` (basedir-confined), `/download`, `/upload` (multipart, 500 MB cap), `/dl_token` + `GET /dl/{token}` (HMAC-signed, path-bound, time-limited pull URLs); ffmpeg flows metered at 0 work units (model `ffmpeg`). QA: `media-pipeline/qa_part1.py` 38/38. |
 | 2026-09-06 | **Work-unit metering** (spec `matrix_media_work.md` v2.1): `/metrics` endpoint, `user`/`client` on all 9 job routes, `timeout` status, `jobs.jsonl`, calibrated rates. |

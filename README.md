@@ -182,8 +182,9 @@ Detailed design docs are in `docs/`:
 - [vLLM Features](docs/matrix_vllm_features.md) — Feature status & eval plans
 - [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
 - [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — media pipeline tooling contract (images, video, TTS, music, SFX, upscale, assemble)
-- [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — port 8189 contract: endpoints, job model, queue, VRAM budget, metering
-- [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — :8189 HTTP API contract + metering (jobs, queue, models, /metrics)
+- [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — port 8189 contract: endpoints, job model, queue, VRAM budget, metering (incl. TTS voice library, 2026-09-25)
+- [Voice Library Plan](voices_todo.md) — XTTS-v2 voice portfolio: matrix side done 2026-09-25, thor MCP side pending
+- [Voice Library — Thor Handoff](voices_thor_handoff.md) — standalone Part-2 work order for the MCP host
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision

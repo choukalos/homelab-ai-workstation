@@ -5,7 +5,9 @@ Flows (each returns a job_id; poll GET /jobs/{id}):
   POST /images       text -> image (Qwen-Image-2512 GGUF + Lightning LoRA)
   POST /images/edit  image+text -> image (Qwen-Image-Edit-2511)
   POST /shots        keyframe+text -> video clip (LTXV 2B I2V)
-  POST /tts          text -> speech (XTTS-v2, trailer voice)
+  POST /tts          text -> speech (XTTS-v2; voice = trailer | default | a
+                      library name from GET /voices | a reference wav path,
+                      or explicit reference_audio)
   POST /music        prompt+lyrics -> song (ACE-Step 1.5)
   POST /sfx          video -> synced SFX bed (MMAudio)
   POST /upscale      video -> 1080p (A2=Ultrasharp fast | B=SeedVR2 quality)
@@ -15,6 +17,10 @@ Flows (each returns a job_id; poll GET /jobs/{id}):
   POST /freeze       still image or video frame -> static N-second clip (ffmpeg, CPU)
   POST /caption      burn text into a clip (ffmpeg drawtext, CPU)
   GET  /info         ffprobe metadata (sync, not a job)
+  GET  /voices       list the TTS voice library (sync)
+  POST /voices       register a TTS voice from a reference clip (job; XTTS
+                      zero-shot cloning — QC + normalize + sample generation)
+  DELETE /voices/{name} remove a TTS voice (sync; trailer/default protected)
   POST /upload_local bridge an arbitrary host file into media_jobs (sync, not a job)
   POST /download     ingest a URL into media_jobs (sync, not a job)
   POST /upload       client file upload, multipart (sync, not a job; no auth on
@@ -34,6 +40,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import os
 import shutil
 import subprocess
@@ -127,6 +134,22 @@ UPLOADS_DIR = JOB_DIR / "uploads"
 MEDIA_JOB_RETENTION_DAYS = float(os.environ.get("MEDIA_JOB_RETENTION_DAYS", "14"))
 RETENTION_SWEEP_INTERVAL_S = int(os.environ.get("MEDIA_RETENTION_SWEEP_INTERVAL_S", "3600"))
 BASEDIR = Path("/home/chuck/data/comfyui/basedir")  # ComfyUI input/output root
+
+# ------------------------------------------------------------------ TTS voice library
+# XTTS-v2 is zero-shot cloning: every voice is a reference clip + a manifest
+# entry. The library lives under basedir (NOT media_jobs) so the 14-day
+# retention sweeper never touches it. The server runs as root in its container
+# and writes here directly; the TTS worker (uid 1024 in comfyui_backend) only
+# reads. trailer/default are protected (seeded; trailer_ref.wav is generated
+# on first use by the worker).
+VOICES_DIR = BASEDIR / "models" / "tts" / "voices"
+VOICES_MANIFEST = VOICES_DIR / "manifest.json"
+VOICES_PROTECTED = ("trailer", "default")
+VOICES_NAME_RE = re.compile(r"^[a-z0-9_]{2,32}$")
+VOICES_SAMPLE_TEXT = ("In a world of endless noise, one clear voice can change "
+                      "everything. This is a sample of that voice.")
+VOICES_REF_MIN_S = 3.0    # below this XTTS cloning degrades
+VOICES_REF_MAX_S = 15.0   # longer clips drag the timbre / pick up noise
 MAX_PENDING = MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH  # total in-flight capacity
 _qlock = threading.Lock()
 _qcond = threading.Condition(_qlock)
@@ -533,12 +556,185 @@ def flow_shots(payload: dict, jid: str, keyframe_name: str):
             "fps": float(payload.get("fps", 25.0))}
 
 
+# ------------------------------------------------------------------ TTS voices
+# Voice library management (manifest + reference clips under basedir) and
+# resolution of the /tts 'voice' value. The worker CLI is unchanged: it takes
+# --voice {trailer,default} or --reference-audio <path>; all library logic
+# lives here so existing jobs/clients keep working.
+
+def _load_voices_manifest() -> dict:
+    if VOICES_MANIFEST.exists():
+        try:
+            d = json.loads(VOICES_MANIFEST.read_text())
+            if isinstance(d, dict) and isinstance(d.get("voices"), dict):
+                return d
+        except Exception as e:
+            logger.warning("voices manifest unreadable (%s); treating as empty", e)
+    return {"voices": {}}
+
+
+def _save_voices_manifest(m: dict) -> None:
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = VOICES_MANIFEST.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(m, indent=2) + "\n")
+    tmp.replace(VOICES_MANIFEST)  # atomic
+
+
+def _seed_voices_manifest() -> None:
+    """Create the voice manifest with the two legacy voices on first boot."""
+    if VOICES_MANIFEST.exists():
+        return
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    m = {"voices": {
+        "trailer": {"file": "trailer_ref.wav", "sample": "trailer_sample.wav",
+                    "description": "Deep male movie-trailer narrator (pitch-shifted "
+                                   "clone of the stock sample). The default voice.",
+                    "gender": "male", "style": "trailer", "added": now},
+        "default": {"file": "en_sample.wav", "sample": "default_sample.wav",
+                    "description": "Standard male XTTS stock voice (unmodified "
+                                   "en_sample.wav).",
+                    "gender": "male", "style": "default", "added": now},
+    }}
+    try:
+        _save_voices_manifest(m)
+        logger.info("voices manifest seeded at %s", VOICES_MANIFEST)
+    except Exception as e:
+        logger.warning("could not seed voices manifest: %s", e)
+
+
+def _list_voices() -> list[dict]:
+    out = []
+    for name, v in _load_voices_manifest()["voices"].items():
+        ref = VOICES_DIR / v.get("file", f"{name}_ref.wav")
+        sample = VOICES_DIR / v.get("sample", f"{name}_sample.wav")
+        out.append({
+            "name": name,
+            "description": v.get("description", ""),
+            "gender": v.get("gender", "unknown"),
+            "style": v.get("style", ""),
+            "added": v.get("added"),
+            "protected": name in VOICES_PROTECTED,
+            "ref_exists": ref.is_file(),
+            "sample": str(sample) if sample.is_file() else None,
+        })
+    out.sort(key=lambda x: x["name"])
+    return out
+
+
+def _resolve_voice(voice: str) -> tuple[str, str]:
+    """Resolve a /tts 'voice' value to (kind, value).
+
+    kind="voice"      -> pass through to the worker's --voice {trailer,default}
+    kind="reference"  -> pass to --reference-audio (container path)
+
+    Rules:
+      1. "trailer"/"default"               -> legacy worker voices (the worker
+         generates trailer_ref.wav on first use)
+      2. a manifest name                   -> its reference clip
+      3. a path (contains "/" or ends .wav) -> host path under RUN_DIR/BASEDIR
+    Raises ValueError (with the available voice names) otherwise.
+    """
+    v = str(voice or "trailer").strip()
+    if v in VOICES_PROTECTED:
+        return "voice", v
+    m = _load_voices_manifest()["voices"]
+    available = ", ".join(sorted(set(m) | set(VOICES_PROTECTED)))
+    if v in m:
+        return "reference", to_container_any(VOICES_DIR / m[v].get("file", f"{v}_ref.wav"))
+    if "/" in v or v.lower().endswith(".wav"):
+        p = Path(v).expanduser()
+        if not p.is_absolute():
+            for base in (JOB_DIR, RUN_DIR):
+                cand = (base / v).resolve()
+                if cand.is_file():
+                    p = cand
+                    break
+        p = p.resolve()
+        if p.is_file() and (str(p).startswith(str(RUN_DIR) + "/")
+                            or str(p).startswith(str(BASEDIR) + "/")):
+            return "reference", to_container_any(p)
+        raise ValueError(
+            f"voice {v!r} is not a registered voice and not a usable reference "
+            f"wav (must be a file under {RUN_DIR} or {BASEDIR}). "
+            f"Available voices: {available}")
+    raise ValueError(
+        f"unknown voice {v!r}. Available: {available} "
+        "(or pass a reference wav path, or 'reference_audio')")
+
+
+def _probe_duration_s(path) -> float:
+    """ffprobe duration in seconds (host path; ffprobe runs in the container)."""
+    r = subprocess.run(["docker", "exec", "-u", "comfy", CONTAINER, "ffprobe",
+                        "-v", "quiet", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", to_container_any(str(path))],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {r.stderr[-500:]}")
+    return float(r.stdout.strip())
+
+
 def flow_tts(payload: dict, jid: str):
     out_host = JOB_DIR / jid / "vo.wav"
     out_container = f"{JOB_DIR_CONTAINER}/{jid}/vo.wav"  # worker runs inside container
-    run_worker("tts_worker.py", ["--text", payload["text"],
-                "--voice", payload.get("voice", "trailer"), "--out", out_container], timeout=1800)
+    ref = str(payload.get("reference_audio") or payload.get("voice") or "trailer").strip()
+    kind, val = _resolve_voice(ref)
+    args = ["--text", payload["text"]]
+    if kind == "voice":
+        args += ["--voice", val]
+    else:
+        args += ["--reference-audio", val]
+    args += ["--out", out_container]
+    run_worker("tts_worker.py", args, timeout=1800)
     return {"audio": str(out_host)}
+
+
+def flow_voices_add(payload: dict, jid: str):
+    """Register a TTS voice: QC + normalize a reference clip, upsert the
+    manifest, generate a sample with the new voice (GPU)."""
+    name = str(payload.get("name", "")).strip()
+    if not VOICES_NAME_RE.match(name):
+        raise ValueError(f"invalid voice name {name!r} (use [a-z0-9_] 2-32 chars)")
+    if name in VOICES_PROTECTED:
+        raise ValueError(f"voice {name!r} is protected; choose another name")
+    src = Path(str(payload.get("source", ""))).expanduser()
+    if not src.is_absolute() or not src.is_file():
+        raise ValueError("source must be an existing absolute path on this host "
+                         f"(e.g. a media_jobs file: {JOB_DIR}/<jid>/<file>)")
+    dur = _probe_duration_s(src)
+    if not (VOICES_REF_MIN_S <= dur <= VOICES_REF_MAX_S):
+        raise ValueError(f"reference clip is {dur:.1f}s; XTTS wants "
+                         f"{VOICES_REF_MIN_S:.0f}-{VOICES_REF_MAX_S:.0f}s "
+                         "(>=6s recommended for stable cloning)")
+    # Normalize to 16k mono wav in the job dir, then install into the library.
+    ref_job = JOB_DIR / jid / "ref_16k.wav"
+    run_ffmpeg(["-y", "-i", to_container_any(str(src)), "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", to_container_any(str(ref_job))])
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    ref_host = VOICES_DIR / f"{name}_ref.wav"
+    shutil.copy2(ref_job, ref_host)
+    # Sample with the new voice (GPU) so it can be auditioned immediately.
+    sample_text = str(payload.get("sample_text") or VOICES_SAMPLE_TEXT)
+    run_worker("tts_worker.py",
+               ["--text", sample_text, "--reference-audio", to_container_any(ref_host),
+                "--out", f"{JOB_DIR_CONTAINER}/{jid}/sample.wav"],
+               timeout=1800)
+    sample_host = VOICES_DIR / f"{name}_sample.wav"
+    shutil.copy2(JOB_DIR / jid / "sample.wav", sample_host)
+    # Manifest upsert (atomic; keeps the existing description on re-register).
+    m = _load_voices_manifest()
+    prev = m["voices"].get(name, {})
+    m["voices"][name] = {
+        "file": f"{name}_ref.wav",
+        "sample": f"{name}_sample.wav",
+        "description": str(payload.get("description") or prev.get("description") or ""),
+        "gender": str(payload.get("gender") or prev.get("gender") or "unknown"),
+        "style": str(payload.get("style") or prev.get("style") or ""),
+        "added": prev.get("added") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _save_voices_manifest(m)
+    logger.info("voice registered: %s (ref=%s, dur=%.1fs)", name, ref_host, dur)
+    return {"voice": name, "ref": str(ref_host), "sample": str(sample_host),
+            "ref_duration_s": round(dur, 2)}
 
 
 def flow_music(payload: dict, jid: str):
@@ -1055,6 +1251,7 @@ FLOW_MAP = {
     "images_edit": flow_images_edit,
     "shots": flow_shots,
     "tts": flow_tts,
+    "voices_add": flow_voices_add,
     "music": flow_music,
     "sfx": flow_sfx,
     "upscale": flow_upscale,
@@ -1181,10 +1378,66 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
 
 @app.post("/tts")
 async def api_tts(payload: dict):
+    # Validate the voice up front so a bad name is a clean 400, not a job error.
+    ref = str(payload.get("reference_audio") or payload.get("voice") or "trailer").strip()
+    try:
+        _resolve_voice(ref)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     with job_slot():
         jid = new_job("tts", payload)
         enqueue_job(jid, "tts", payload, {})
     return {"job_id": jid}
+
+
+# ------------------------------------------------------------------ TTS voice library
+@app.get("/voices")
+def api_voices():
+    """List the TTS voice library (sync)."""
+    return {"voices": _list_voices()}
+
+
+@app.post("/voices")
+async def api_voices_add(payload: dict):
+    """Register a TTS voice (job). XTTS-v2 is zero-shot cloning: every voice
+    is a 3-15s single-speaker reference clip. The job QC's the clip
+    (duration + audio), normalizes it to 16k mono, installs it in the
+    library, and generates a sample with the new voice.
+
+    payload: {name, source, description?, gender?, style?, sample_text?,
+              user?, client?}
+      name     [a-z0-9_] 2-32 chars; trailer/default are protected
+      source   absolute host path to the reference clip (e.g. a media_jobs
+               file from POST /upload)
+    output: {voice, ref, sample, ref_duration_s}
+    """
+    name = str(payload.get("name", "")).strip()
+    if not VOICES_NAME_RE.match(name):
+        raise HTTPException(400, f"invalid voice name {name!r} (use [a-z0-9_] 2-32 chars)")
+    if name in VOICES_PROTECTED:
+        raise HTTPException(400, f"voice {name!r} is protected")
+    with job_slot():
+        jid = new_job("voices_add", payload)
+        enqueue_job(jid, "voices_add", payload, {})
+    return {"job_id": jid}
+
+
+@app.delete("/voices/{name}")
+def api_voices_delete(name: str):
+    """Remove a TTS voice (sync). trailer/default are protected."""
+    if name in VOICES_PROTECTED:
+        raise HTTPException(400, f"voice {name!r} is protected")
+    m = _load_voices_manifest()
+    if name not in m["voices"]:
+        raise HTTPException(404, f"voice {name!r} not found")
+    del m["voices"][name]
+    _save_voices_manifest(m)
+    for f in (f"{name}_ref.wav", f"{name}_sample.wav"):
+        pth = VOICES_DIR / f
+        if pth.is_file():
+            pth.unlink()
+    logger.info("voice deleted: %s", name)
+    return {"deleted": name}
 
 
 @app.post("/music")
@@ -1358,6 +1611,7 @@ def api_dl(token: str):
 
 
 if __name__ == "__main__":
+    _seed_voices_manifest()  # idempotent; creates the library manifest on first boot
     # Start the media_jobs retention sweeper (hourly; see MEDIA_JOB_RETENTION_DAYS).
     threading.Thread(target=_retention_loop, name="retention", daemon=True).start()
     # Bind host is configurable so it can run on the host loopback (127.0.0.1)

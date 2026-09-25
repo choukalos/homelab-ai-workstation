@@ -1,5 +1,17 @@
 # media-mcp → media-pipeline handoff
 
+> **2026-09-25 update (voice library):** the pipeline now has a **TTS voice
+> library** — `GET /voices` (list), `POST /voices` (register a new voice from a
+> 3–15 s reference wav; QC + normalize + GPU sample), `DELETE /voices/{name}`
+> (remove; `trailer`/`default` protected). `/tts` `voice` now accepts a library
+> **name** (`trailer`, `default`, `narrator_f`, `deep_m`, …) **or** a reference
+> wav **path** (the raw-path contract now actually works — the server previously
+> never forwarded `--reference-audio`). Unknown voice → clean 400. Seeded
+> portfolio: `trailer` (deep male), `default` (stock male), `deep_m` (warm deep
+> male), `narrator_f` (female). Three new MCP tools (`media_list_voices`,
+> `media_add_voice`, `media_delete_voice`) are **pending on the MCP host** —
+> standalone handoff: `voices_thor_handoff.md` (repo root).
+>
 > **2026-09-23 update (Qwen-Image-2.1):** `/images` + `/images/edit` now default to
 > **Qwen-Image-2.1** (unified create+edit, 25 steps, ~30–120 s at 1280×720). Client step
 > defaults updated 4/8 → 25; both image tools gain `model` (`qwen21` default | `legacy` =
@@ -319,9 +331,35 @@ class MediaPipelineClient:
 
     def text_to_speech(self, text: str, voice: str = "trailer",
                        timeout: float = 1800) -> str:
-        """Script -> voice-over wav. Returns GPU-host path."""
+        """Script -> voice-over wav. `voice` = library name (see list_voices)
+        or a reference wav path. Returns GPU-host path."""
         return self._wait(self._post_json("/tts", {"text": text, "voice": voice}),
                           timeout)["audio"]
+
+    # ------------------------------------------------- voice library (2026-09-25)
+    def list_voices(self) -> list:
+        """GET /voices (sync) -> [{name, description, gender, style, added,
+        protected, ref_exists, sample}]."""
+        with urllib.request.urlopen(f"{self.base}/voices", timeout=30) as r:
+            return json.load(r)["voices"]
+
+    def add_voice(self, name: str, source: str, description: str = "",
+                  gender: str = "", style: str = "", sample_text: str = "",
+                  timeout: float = 1800) -> dict:
+        """POST /voices (job): register a voice from a reference wav (3-15 s).
+        `source` = host path under the run/basedir dirs (or run-dir-relative).
+        QC + 16 kHz mono normalization + GPU sample generation. Re-registering
+        an existing name re-places it (keeps `added`)."""
+        return self._wait(self._post_json("/voices", {
+            "name": name, "source": source, "description": description,
+            "gender": gender, "style": style, "sample_text": sample_text}),
+            timeout)["output"]
+
+    def delete_voice(self, name: str) -> dict:
+        """DELETE /voices/{name} (sync). 400 on protected names, 404 missing."""
+        req = urllib.request.Request(f"{self.base}/voices/{name}", method="DELETE")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
 
     def generate_music(self, prompt: str, lyrics: str = "", duration: int = 30,
                        seed: int = 42, timeout: float = 3600) -> str:
@@ -592,8 +630,37 @@ def media_generate_shot(keyframe: str, prompt: str, width: int = 768, height: in
 
 @mcp.tool()
 def media_text_to_speech(text: str, voice: str = "trailer") -> str:
-    """Generate voice-over speech (movie-trailer voice by default). Returns a wav path."""
+    """Generate voice-over speech via the GPU-host media pipeline (movie-trailer
+    voice by default; `voice` can also be a library name — see media_list_voices
+    — or a path to a custom reference wav on the GPU host). Returns {path,
+    location='gpu_host'}."""
     return _localize(pipe.text_to_speech(text, voice), "vo")
+
+
+@mcp.tool()
+def media_list_voices() -> str:
+    """List the TTS voice library (sync): names, descriptions, gender/style,
+    and the audition sample path for each. Use it to pick a `voice` for
+    media_text_to_speech. Returns a JSON list."""
+    return json.dumps(pipe.list_voices())
+
+
+@mcp.tool()
+def media_add_voice(name: str, source: str, description: str = "",
+                    gender: str = "", style: str = "") -> str:
+    """Register a new TTS voice from a reference wav (3-15 s of clean speech)
+    on the GPU host. QC + normalization + GPU sample generation; re-registering
+    a name replaces it. `source` = host path under the run/basedir dirs (stage
+    external files with media_download_url first). Returns the job output
+    (voice, ref, sample paths)."""
+    return json.dumps(pipe.add_voice(name, source, description, gender, style))
+
+
+@mcp.tool()
+def media_delete_voice(name: str) -> str:
+    """Remove a TTS voice (ref + sample + manifest entry). `trailer`/`default`
+    are protected (400). Returns {"deleted": name}."""
+    return json.dumps(pipe.delete_voice(name))
 
 
 @mcp.tool()
@@ -728,7 +795,10 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy", lora? (legacy only)}` | `{"image":"<path>.png","model":"<model>"}` |
 | POST | `/images/edit` | multipart `file, prompt, seed=42, steps=25, model?="qwen21"\|"legacy", references? (qwen21 only, comma-separated)` | `{"image":"<path>.png","model":"<model>","references":N}` |
 | POST | `/shots` | multipart `file(keyframe), prompt, width=768, height=512, frames=97, fps=24, strength=0.7, seed=42` | `{"video":"<path>.mp4"}` |
-| POST | `/tts` | JSON `{text, voice="trailer"}` | `{"audio":"<path>/vo.wav"}` |
+| POST | `/tts` | JSON `{text, voice="trailer"}` — `voice` = library name (see `/voices`) or a reference wav path | `{"audio":"<path>/vo.wav"}` |
+| GET | `/voices` | — (sync) — list the TTS voice library | `{"voices":[{name, description, gender, style, added, protected, ref_exists, sample}]}` |
+| POST | `/voices` | JSON `{name, source, description?, gender?, style?, sample_text?}` — register a voice from a reference wav (3–15 s; QC + normalize + GPU sample) | `job_id` → `{"voice","ref","sample","ref_duration_s"}` |
+| DELETE | `/voices/{name}` | — (sync) — remove a voice (protected: `trailer`, `default` → 400) | `{"deleted":"<name>"}` |
 | POST | `/music` | JSON `{prompt, lyrics="", duration=30, seed=42}` | `{"audio":"<path>/music.wav"}` |
 | POST | `/sfx` | multipart `file(video), duration=8, steps=25, cfg=4.5, seed=42, prompt="", negative_prompt="", fps=24` | `{"audio":"<path>.flac"}` |
 | POST | `/upscale` | multipart `file(video), pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, fps=24, seed=42` | `{"video":"<path>.mp4"}` |
@@ -748,8 +818,18 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
   copies them into the job dir). `assemble`/`storyboard`/`images`/`tts`/`music` accept
   **JSON** with host paths (or paths relative to the run dir).
 - `pipeline` for `/upscale`: `b` = SeedVR2 3B (quality, ~5 min), `a2` = 4xUltrasharp (fast, ~1 min).
-- `voice` for `/tts`: `trailer` (bundled movie-trailer reference, zero-shot clone) or a path
-  to a custom reference wav.
+- `voice` for `/tts`: a **library name** from `GET /voices` (`trailer`, `default`,
+  `narrator_f`, `deep_m`, …) or a **reference wav path** (host absolute under the
+  run/basedir dirs, or run-dir-relative). Unknown name → 400 listing available
+  voices. The worker is unchanged — names resolve server-side to `--voice`
+  (trailer/default) or `--reference-audio` (everything else).
+- **Voice library** (2026-09-25): manifest at `<basedir>/models/tts/voices/manifest.json`
+  (auto-seeded; `trailer`/`default` protected). `POST /voices` QC's the reference
+  (3–15 s), normalizes to 16 kHz mono, installs `<name>_ref.wav`, and generates a
+  `<name>_sample.wav` audition on the GPU. The retention sweeper only touches
+  `media_jobs/` — the voices dir is permanent. Current portfolio (all XTTS-v2
+  zero-shot clones of the stock speaker): `trailer` (deep male), `default`
+  (stock male), `deep_m` (warm deep male), `narrator_f` (female).
 - Output paths are **host paths** on the GPU host. The remote MCP server fetches them via
   `GET /files/{name}` (name = path relative to the run dir) or directly if it has filesystem access.
 - **Job queue (bounded):** at most `MAX_CONCURRENT_JOBS` (default 1) run at once; up to
@@ -758,7 +838,10 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 
 ---
 
-## 5. The 17 MCP tools (quick reference)
+## 5. The 20 MCP tools (quick reference)
+
+> `media_list_voices` / `media_add_voice` / `media_delete_voice` (2026-09-25) are
+> **pending on the MCP host** — see `voices_thor_handoff.md` (repo root).
 
 | MCP tool | Pipeline endpoint | Params (MCP) | Returns |
 |---|---|---|---|
@@ -766,7 +849,10 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | `media_generate_image` | `/images` | `prompt:str, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy"` | image path |
 | `media_edit_image` | `/images/edit` | `image:path, prompt:str, seed=42, steps=25, model?="qwen21"\|"legacy", references?:list[str] (max 9, qwen21 only)` | image path |
 | `media_generate_shot` | `/shots` | `keyframe:path, prompt:str, width=768, height=512, frames=97, fps=24, strength=0.7, seed=42` | video path |
-| `media_text_to_speech` | `/tts` | `text:str, voice="trailer"` | wav path |
+| `media_text_to_speech` | `/tts` | `text:str, voice="trailer"` (library name or reference wav path) | wav path |
+| `media_list_voices` ⏳ | `/voices` | — (sync) | JSON list of voices |
+| `media_add_voice` ⏳ | `/voices` | `name:str, source:path, description?="", gender?="", style?=""` (job) | job output JSON |
+| `media_delete_voice` ⏳ | `/voices/{name}` | `name:str` (sync) | `{"deleted": name}` |
 | `media_generate_music` | `/music` | `prompt:str, lyrics="", duration=30, seed=42` | wav path |
 | `media_sfx` | `/sfx` | `video:path, description="", duration=8.0` | audio path |
 | `media_upscale_video` | `/upscale` | `video:path, pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, seed=42` | video path |
