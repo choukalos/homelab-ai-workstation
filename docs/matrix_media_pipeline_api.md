@@ -17,7 +17,9 @@ GPU of its own. It owns the GPU job queue, drives ComfyUI (:8188) + vLLM
 (:8000), spawns TTS/ACE-Step workers, and does ffmpeg assembly.
 
 Base URL: `http://<gpu-host>:8189` (LAN-only, no auth — never expose publicly.
-Public auth is the Caddy layer on thor only; see `auth_todo.md`).
+Public auth is the Caddy layer on thor only; the MCP layer authenticates per-user
+(key = user, key passed to the pipeline), and finished files are exposed publicly
+via `siri.choukalos.com` / `choukalos.com/files`).
 
 ---
 

@@ -21,8 +21,8 @@ Last consolidated: 2026-09-25.
 
 ### Media pipeline / MCP follow-ups (from 2026-09-25 verification)
 
-- [ ] **MCP tool calls abort at ~30 s while pipeline jobs keep running** — the MCP client (pi/gateway side) aborts tool calls at 30 s (measured exactly 30.000 s); image jobs (30–120 s), video jobs (minutes) and upscaling (~5 min/shot) complete server-side but the agent sees a timeout. Options: raise the MCP tool-call timeout for `mcp_media`, or make the long-running media tools return a job id immediately and poll `GET /jobs/{id}`. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
-- [ ] **`media_pull` rejects `media_jobs/<job_id>/<file>` paths (404)** — only a bare job id works (resolves the job's primary output); the tool description says "media_jobs file (or job_id)". Fix the path handling or the description. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+- [ ] **MCP tool calls abort at ~30 s while pipeline jobs keep running** — the MCP client (pi/gateway side) aborts tool calls at 30 s (measured exactly 30.000 s); image jobs (30–120 s), video jobs (minutes) and upscaling (~5 min/shot) complete server-side but the agent sees a timeout. **In progress (2026-09-25): being worked from the `mcp_media` tool side (thor)** — retest long jobs after the change lands. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+- [x] **`media_pull` rejects `media_jobs/<job_id>/<file>` paths (404)** — **FIXED (thor `mcp_media` tool, 2026-09-25):** `media_pull` now accepts `media_jobs/<job_id>/<file>` paths (verified: signed URL minted for `media_jobs/8fb134a2ea1b/mp_8fb134a2ea1b_00001_.png`). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
 - [ ] **Pipeline is a single-worker queue** — jobs run strictly serially (a CPU ffmpeg freeze queued behind a GPU image edit). Fine for now; revisit if throughput matters (per-flow worker pools). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
 
 ### Modes / switching
@@ -41,6 +41,7 @@ Last consolidated: 2026-09-25.
 
 ## Done (this consolidation)
 
+- [x] **Media MCP auth + `media_pull` path fix (thor, 2026-09-25)** — auth for the `mcp_media` tool updated (key = user, key passed to the pipeline); finished files exposed publicly via `siri.choukalos.com` / `choukalos.com/files`. `media_pull` now accepts `media_jobs/<job_id>/<file>` paths (verified: signed URL minted). `auth_todo.md` deleted post-completion. The 30 s MCP tool-call abort is still open (being worked from the `mcp_media` tool side — see Active).
 - [x] **Media MCP client + TTS voice library (matrix + thor, 2026-09-25)** — Qwen-Image-2.1 client defaults + `model`/`references` pass-through, voice library (`trailer`/`default`/`narrator_f`/`deep_m`), and the three voice MCP tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`) deployed on the MCP host and verified end-to-end (15 checks: gen/edit/legacy/image-refs, TTS by name + by path + unknown-voice 400, add/delete round-trip, freeze/assemble smoke, pull/info). Evidence: `docs/matrix_validation_log.md` (Run 2026-09-25); contract: `docs/matrix_media_pipeline_api.md` + `media-mcp-client/HANDOFF.md`. Working docs `update_media_mcp_todo.md`, `voices_todo.md`, `voices_thor_handoff.md` deleted post-completion.
 - [x] **Experiment system: manual testing** — the system has been exercised end-to-end in production: MTP experiment (2026-07-05), Qwen3.8-27B NVFP4 candidate round (2026-08-14 → 2026-08-24), promotion to `matrix-coder`, MTP 3→2 tuning + speed fix (2026-08-25, 123.95 tok/s). *(TODO.md, originally "Manual Testing")*
 - [x] **Pre-git-commit cleanup** — `.gitignore` covers `__pycache__/` and `*.pyc`; zero tracked pyc files. *(TODO.md, originally "Pre-Git Commit Cleanup")*

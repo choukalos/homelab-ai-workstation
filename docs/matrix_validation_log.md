@@ -180,8 +180,8 @@ pipeline since the MCP client aborts long tool calls (see Findings).
 
 | # | Finding | Severity | Status |
 |---|---|---|---|
-| 1 | **MCP tool calls abort at 30 s** (client/gateway side — exact 30.000 s observed: 17:46:17.457 → 17:46:47.457) while pipeline jobs continue and complete server-side. Long flows (image 30–120 s, shots/upscale minutes) need a submit-and-poll pattern or a raised tool timeout on the MCP host. | Medium (thor) | Open — see TODO.md |
-| 2 | `media_pull` accepts a **job id** but 404s on `media_jobs/<job_id>/<file>` paths, though the tool description says "media_jobs file (or job_id)". | Low (thor) | Open — see TODO.md (doc or behavior fix) |
+| 1 | **MCP tool calls abort at 30 s** (client/gateway side — exact 30.000 s observed: 17:46:17.457 → 17:46:47.457) while pipeline jobs continue and complete server-side. Long flows (image 30–120 s, shots/upscale minutes) need a submit-and-poll pattern or a raised tool timeout on the MCP host. | Medium (thor) | In progress — being worked from the `mcp_media` tool side (thor); retest after the change lands. See TODO.md |
+| 2 | `media_pull` accepts a **job id** but 404s on `media_jobs/<job_id>/<file>` paths, though the tool description says "media_jobs file (or job_id)". | Low (thor) | **FIXED 2026-09-25** (thor `mcp_media` tool) — verified: `media_pull` now mints a signed URL for `media_jobs/8fb134a2ea1b/mp_8fb134a2ea1b_00001_.png` |
 | 3 | Pipeline runs a **single worker queue** (`MAX_CONCURRENT_JOBS=1`): CPU ffmpeg jobs (freeze/assemble) queue behind GPU jobs. Expected behavior, but plan long commercial builds accordingly. | Info | Documented |
 
 ## Notes

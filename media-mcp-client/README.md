@@ -83,7 +83,10 @@ thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
   signed tokens: `media_dl_token(path)` → share `MEDIA_PIPELINE_URL + url_path`
   (HMAC-SHA256, path-bound, time-limited — default 24 h, max 168 h). Uploads:
   `media_upload_file` (multipart) or `media_download_url` (URL ingest). The
-  pipeline is unauthenticated by design — see `auth_todo.md` on the GPU host.
+  pipeline is unauthenticated by design (LAN-trust); public access is the Caddy
+  layer on thor + the MCP per-user key (key = user, key passed to the pipeline),
+  and finished files are exposed publicly via `siri.choukalos.com` /
+  `choukalos.com/files`.
 - All media jobs run through a **bounded FIFO queue** on the GPU host: at most `MAX_CONCURRENT_JOBS`
   (default 1, set in the GPU host's `.env`) run at once; the rest wait with `status=queued` (visible
   via `/health` + `queue_position`). GPU flows additionally serialize on a GPU lock.
