@@ -49,9 +49,9 @@ thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
 | `media_edit_image` | Qwen-Image-Edit | image path |
 | `media_generate_shot` | LTXV I2V | video path |
 | `media_text_to_speech` | XTTS-v2 (voice = library name or reference wav path) | wav path |
-| `media_list_voices` ⏳ | voice library (sync) | JSON list of voices |
-| `media_add_voice` ⏳ | register voice from reference wav (3–15 s; QC + GPU sample) | job output JSON |
-| `media_delete_voice` ⏳ | remove a voice (sync; `trailer`/`default` protected) | `{"deleted": name}` |
+| `media_list_voices` | voice library (sync) | JSON list of voices |
+| `media_add_voice` | register voice from reference wav (3–15 s; QC + GPU sample) | job output JSON |
+| `media_delete_voice` | remove a voice (sync; `trailer`/`default` protected) | `{"deleted": name}` |
 | `media_generate_music` | ACE-Step | wav path |
 | `media_sfx` | MMAudio | audio path |
 | `media_upscale_video` | SeedVR2 / 4xUltrasharp | video path |

@@ -183,8 +183,7 @@ Detailed design docs are in `docs/`:
 - [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
 - [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — media pipeline tooling contract (images, video, TTS, music, SFX, upscale, assemble)
 - [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — port 8189 contract: endpoints, job model, queue, VRAM budget, metering (incl. TTS voice library, 2026-09-25)
-- [Voice Library Plan](voices_todo.md) — XTTS-v2 voice portfolio: matrix side done 2026-09-25, thor MCP side pending
-- [Voice Library — Thor Handoff](voices_thor_handoff.md) — standalone Part-2 work order for the MCP host
+- [MCP Media Client](media-mcp-client/HANDOFF.md) — thor MCP tooling over the pipeline: contract, reference code, voice-library tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`), Qwen-Image-2.1 defaults (`media-mcp-client/README.md`)
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision

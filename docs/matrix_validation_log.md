@@ -143,3 +143,53 @@ recreated. QA: `media-pipeline/qa_part1.py` (fixtures in `media_jobs/qa_tests/`)
 4. `media_jobs/PIPELINE_CHANGES.md` is the change log; canonical contract:
    `docs/matrix_media_pipeline_api.md` (12 job flows + 6 sync endpoints).
 5. Part 2 (thor) not started — self-contained THOR HANDOFF section in `media_pipeline_gaps.md`.
+
+# Run: 2026-09-25 — TTS voice library + media MCP client (Part 2) verification
+
+Change: voice-library endpoints (`/voices` GET/POST/DELETE) + Qwen-Image-2.1 defaults
+shipped on the matrix pipeline (2026-09-25, see `docs/matrix_media_pipeline_api.md`
+changelog); the **thor MCP client** (`media-mcp-client/`) was redeployed with the three
+new voice tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`) and the
+updated image/TTS contracts (steps default 4/8 → 25, `model` + `references` passthrough,
+`voice` = library name **or** reference wav path). This run verifies the deployed MCP
+tools end-to-end. All jobs submitted **via the MCP tools** (payloads inspected via
+`GET /jobs/{id}` to confirm the client sent the right fields); slow jobs polled on the
+pipeline since the MCP client aborts long tool calls (see Findings).
+
+## Results — 15/15 checks passing
+
+| # | Check | Job / evidence | Result |
+|---|---|---|---|
+| 1 | `media_list_voices` (sync) | manifest | ✅ 4 voices: `trailer`, `default`, `narrator_f`, `deep_m` (ref + sample + metadata each) |
+| 2 | `media_generate_image` qwen21 default (25 steps) | `7f7eb7d1249b` | ✅ done ~42 s; payload `steps=25`; vision QA: coherent scene (typical model artifacts on bike wheels) |
+| 3 | `media_text_to_speech` `voice="narrator_f"` | `68e0d8b97398` | ✅ done; F0 ≈ 245 Hz (bright female, matches portfolio) |
+| 4 | `media_text_to_speech` `voice="default"` → trailer | `b9c387752ad5` | ✅ done; F0 ≈ 133 Hz (deep male trailer voice) |
+| 5 | `media_edit_image` single image | `5d1ce0d1296d` | ✅ done; payload `steps=25`, `references=null`, output `model=qwen21, references=0`; vision QA 5/5 (sunset-beach edit, subject preserved) |
+| 6 | `media_edit_image` with `references` | `8af46ff03ae0` | ✅ done; payload `references=[media_jobs/7f7eb7d1249b/…]` passed through; output `references=1`; vision QA 4/5 (second bicycle added, style-consistent) |
+| 7 | `media_generate_image` `model="legacy"` (regression) | `3c61bae9f27d` | ✅ done; payload `model=legacy` passed through; vision QA: coherent image (legacy 2512 GGUF path intact) |
+| 8 | `media_text_to_speech` `voice=<wav path>` (previously-broken contract) | `326835ff1e5e` | ✅ done; reference wav resolved + `--reference-audio` forwarded (server fix verified live) |
+| 9 | unknown voice → clean 400 | `voice="nope"` | ✅ `Pipeline HTTP 400: unknown voice 'nope'. Available: deep_m, default, narrator_f, trailer (or pass a reference wav path, or 'reference_audio')` — no worker crash |
+| 10 | `media_add_voice` `test_v` (7.2 s ref wav) | `d3f6410fc88b` | ✅ done; manifest entry + `test_v_ref.wav` + `test_v_sample.wav` created; `ref_duration_s=7.2` |
+| 11 | `media_delete_voice` `test_v` (sync) | — | ✅ `{"deleted": "test_v"}`; manifest + files removed; protected names untouched |
+| 12 | `media_freeze` (keyframe → 2 s static clip) | `7c1b74781e11` | ✅ done |
+| 13 | `media_assemble` smoke (frozen shot + TTS VO) | `b829e9a1d4c9` | ✅ `final.mp4` 2.0 s 1280×720 h264+aac (VO mixed in) |
+| 14 | `media_pull` signed URL | job ids | ✅ 48 h / 2 h tokens minted, URLs resolve (used for all vision QA above) |
+| 15 | `media_info` (sync) | `b829e9a1d4c9` | ✅ duration/codec/resolution/fps reported |
+
+## Findings (operational, not pipeline bugs)
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| 1 | **MCP tool calls abort at 30 s** (client/gateway side — exact 30.000 s observed: 17:46:17.457 → 17:46:47.457) while pipeline jobs continue and complete server-side. Long flows (image 30–120 s, shots/upscale minutes) need a submit-and-poll pattern or a raised tool timeout on the MCP host. | Medium (thor) | Open — see TODO.md |
+| 2 | `media_pull` accepts a **job id** but 404s on `media_jobs/<job_id>/<file>` paths, though the tool description says "media_jobs file (or job_id)". | Low (thor) | Open — see TODO.md (doc or behavior fix) |
+| 3 | Pipeline runs a **single worker queue** (`MAX_CONCURRENT_JOBS=1`): CPU ffmpeg jobs (freeze/assemble) queue behind GPU jobs. Expected behavior, but plan long commercial builds accordingly. | Info | Documented |
+
+## Notes
+
+1. F0 estimates computed on the pipeline host (autocorrelation on the voiced mid-section);
+   ±10 Hz accuracy — sufficient for voice-identity confirmation, not pitch measurement.
+2. Vision QA used `vision_analyze_image` over `media_pull` signed URLs (the vision server
+   cannot read matrix paths directly).
+3. Working docs `update_media_mcp_todo.md`, `voices_todo.md`, `voices_thor_handoff.md`
+   deleted post-completion (repo convention: completed working docs removed, evidence kept
+   here + in `docs/matrix_media_pipeline_api.md` changelog).

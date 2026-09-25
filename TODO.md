@@ -1,7 +1,7 @@
 # TODO
 
 Consolidated open work across the homelab repo. Sources are listed per item.
-Last consolidated: 2026-08-28.
+Last consolidated: 2026-09-25.
 
 ## Active
 
@@ -19,6 +19,12 @@ Last consolidated: 2026-08-28.
 - [ ] **Consider W8A16 + MTP** as a potential quality upgrade over the current NVFP4 (4-bit) + MTP daily driver. *(EXPERIMENTS_RESULTS.md, Next Steps)*
 - [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
 
+### Media pipeline / MCP follow-ups (from 2026-09-25 verification)
+
+- [ ] **MCP tool calls abort at ~30 s while pipeline jobs keep running** — the MCP client (pi/gateway side) aborts tool calls at 30 s (measured exactly 30.000 s); image jobs (30–120 s), video jobs (minutes) and upscaling (~5 min/shot) complete server-side but the agent sees a timeout. Options: raise the MCP tool-call timeout for `mcp_media`, or make the long-running media tools return a job id immediately and poll `GET /jobs/{id}`. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+- [ ] **`media_pull` rejects `media_jobs/<job_id>/<file>` paths (404)** — only a bare job id works (resolves the job's primary output); the tool description says "media_jobs file (or job_id)". Fix the path handling or the description. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+- [ ] **Pipeline is a single-worker queue** — jobs run strictly serially (a CPU ffmpeg freeze queued behind a GPU image edit). Fine for now; revisit if throughput matters (per-flow worker pools). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+
 ### Modes / switching
 
 - [ ] **Verify `qwen-long` mode switch end-to-end** — compose + profile exist but the switch has not been verified in production. *(docs/matrix_runtime_modes.md)*
@@ -35,6 +41,7 @@ Last consolidated: 2026-08-28.
 
 ## Done (this consolidation)
 
+- [x] **Media MCP client + TTS voice library (matrix + thor, 2026-09-25)** — Qwen-Image-2.1 client defaults + `model`/`references` pass-through, voice library (`trailer`/`default`/`narrator_f`/`deep_m`), and the three voice MCP tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`) deployed on the MCP host and verified end-to-end (15 checks: gen/edit/legacy/image-refs, TTS by name + by path + unknown-voice 400, add/delete round-trip, freeze/assemble smoke, pull/info). Evidence: `docs/matrix_validation_log.md` (Run 2026-09-25); contract: `docs/matrix_media_pipeline_api.md` + `media-mcp-client/HANDOFF.md`. Working docs `update_media_mcp_todo.md`, `voices_todo.md`, `voices_thor_handoff.md` deleted post-completion.
 - [x] **Experiment system: manual testing** — the system has been exercised end-to-end in production: MTP experiment (2026-07-05), Qwen3.8-27B NVFP4 candidate round (2026-08-14 → 2026-08-24), promotion to `matrix-coder`, MTP 3→2 tuning + speed fix (2026-08-25, 123.95 tok/s). *(TODO.md, originally "Manual Testing")*
 - [x] **Pre-git-commit cleanup** — `.gitignore` covers `__pycache__/` and `*.pyc`; zero tracked pyc files. *(TODO.md, originally "Pre-Git Commit Cleanup")*
 - [x] **ComfyUI legacy model/workflow cleanup (2026-08-28)** — removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints, old LTXV/SeedVR2 builds, dup XTTS dir), 6 legacy workflow JSONs, 4 obsolete custom nodes, and scratch/venv caches. All 25 pipeline models verified intact; pipeline + ComfyUI healthy. See `docs/matrix_comfyui_media_api.md` changelog.

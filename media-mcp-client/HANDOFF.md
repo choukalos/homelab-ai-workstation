@@ -8,9 +8,10 @@
 > wav **path** (the raw-path contract now actually works — the server previously
 > never forwarded `--reference-audio`). Unknown voice → clean 400. Seeded
 > portfolio: `trailer` (deep male), `default` (stock male), `deep_m` (warm deep
-> male), `narrator_f` (female). Three new MCP tools (`media_list_voices`,
-> `media_add_voice`, `media_delete_voice`) are **pending on the MCP host** —
-> standalone handoff: `voices_thor_handoff.md` (repo root).
+> male), `narrator_f` (female). The three voice MCP tools (`media_list_voices`,
+> `media_add_voice`, `media_delete_voice`) were **deployed on the MCP host and
+> verified end-to-end 2026-09-25** (evidence: `docs/matrix_validation_log.md`;
+> working docs `voices_todo.md` / `voices_thor_handoff.md` deleted post-completion).
 >
 > **2026-09-23 update (Qwen-Image-2.1):** `/images` + `/images/edit` now default to
 > **Qwen-Image-2.1** (unified create+edit, 25 steps, ~30–120 s at 1280×720). Client step
@@ -841,7 +842,7 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 ## 5. The 20 MCP tools (quick reference)
 
 > `media_list_voices` / `media_add_voice` / `media_delete_voice` (2026-09-25) are
-> **pending on the MCP host** — see `voices_thor_handoff.md` (repo root).
+> **deployed + verified** (2026-09-25, `docs/matrix_validation_log.md`).
 
 | MCP tool | Pipeline endpoint | Params (MCP) | Returns |
 |---|---|---|---|
@@ -850,9 +851,9 @@ Base URL: `http://<gpu-host>:8189`. Job lifecycle: `queued` → `running` → `d
 | `media_edit_image` | `/images/edit` | `image:path, prompt:str, seed=42, steps=25, model?="qwen21"\|"legacy", references?:list[str] (max 9, qwen21 only)` | image path |
 | `media_generate_shot` | `/shots` | `keyframe:path, prompt:str, width=768, height=512, frames=97, fps=24, strength=0.7, seed=42` | video path |
 | `media_text_to_speech` | `/tts` | `text:str, voice="trailer"` (library name or reference wav path) | wav path |
-| `media_list_voices` ⏳ | `/voices` | — (sync) | JSON list of voices |
-| `media_add_voice` ⏳ | `/voices` | `name:str, source:path, description?="", gender?="", style?=""` (job) | job output JSON |
-| `media_delete_voice` ⏳ | `/voices/{name}` | `name:str` (sync) | `{"deleted": name}` |
+| `media_list_voices` | `/voices` | — (sync) | JSON list of voices |
+| `media_add_voice` | `/voices` | `name:str, source:path, description?="", gender?="", style?=""` (job) | job output JSON |
+| `media_delete_voice` | `/voices/{name}` | `name:str` (sync) | `{"deleted": name}` |
 | `media_generate_music` | `/music` | `prompt:str, lyrics="", duration=30, seed=42` | wav path |
 | `media_sfx` | `/sfx` | `video:path, description="", duration=8.0` | audio path |
 | `media_upscale_video` | `/upscale` | `video:path, pipeline="b"\|"a2", resolution=1080, noise_scale=0.0, seed=42` | video path |
