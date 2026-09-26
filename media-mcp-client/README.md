@@ -1,5 +1,12 @@
 # media-mcp-client — remote-side files for the media-pipeline service
 
+> **2026-09-25:** the deployed thor `mcp_media` tool set has moved ahead of these
+> files — the 30 s MCP tool-call abort is fixed via submit-and-poll (`non_blocking`
+> on every job tool + `media_job_result(job_id, wait_seconds≤25)` polling), plus
+> tool renames (`media_pull`, `media_put`, `media_upload`, `media_download`) and
+> `{path, location}` return shapes. See `HANDOFF.md` (2026-09-25 note) and
+> `TODO.md` (repo resync pending).
+
 These are the **two files to copy to the other machine** (the one running the
 media-mcp server) so it can leverage the GPU-host media-pipeline service:
 

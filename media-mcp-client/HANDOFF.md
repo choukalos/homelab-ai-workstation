@@ -1,5 +1,31 @@
 # media-mcp → media-pipeline handoff
 
+> **2026-09-25 update (30 s tool-call abort — submit-and-poll):** the MCP client
+> (pi/gateway) aborts tool calls at 30 s, while pipeline jobs take 30 s–minutes.
+> **Fixed on the `mcp_media` tool side (thor, 2026-09-25):** every job tool now
+> takes `non_blocking` (default `false` = legacy blocking behavior) — with
+> `non_blocking=true` the tool submits and returns `{job_id, status}` in ~1 s,
+> and the new **`media_job_result(job_id, wait_seconds=20)`** tool polls the job,
+> blocking ≤25 s per call (deliberately under the 30 s client abort). It returns
+> `{status: "running"}` while the job is in flight (call it again) and the final
+> result when done — same shape as the blocking tool (`{path, location}` for
+> media jobs, `{shots}` for storyboard, voice output for `media_add_voice`).
+> Long flows (image 30–120 s, shots/upscale minutes) are driven by repeated
+> polls; no tool call can exceed the client timeout. Job ids are valid while the
+> job is in the pipeline's **ephemeral job registry** (poll promptly; finished
+> files are retained 14 d and can be pulled via `media_pull` if you know the
+> path). Retested live 2026-09-25 (image job `14802a5b1eee` submitted
+> non-blocking, polled to `done` — no client abort). Evidence:
+> `docs/matrix_validation_log.md` (Run 2026-09-25, Finding 1 — FIXED).
+>
+> **Note:** the deployed thor `mcp_media` tool set has evolved beyond the code
+> embedded below (which is the pre-2026-09-25 baseline): tool renames
+> (`media_upload_local`→`media_upload`, `media_download_url`→`media_download`,
+> `media_dl_token`+`media_fetch_dl`→`media_pull`), new tools
+> (`media_job_result`, `media_put`, `media_fetch`), `non_blocking` on all job
+> tools, and `{path, location}` return shapes. Repo resync pending (see
+> `TODO.md`).
+>
 > **2026-09-25 update (voice library):** the pipeline now has a **TTS voice
 > library** — `GET /voices` (list), `POST /voices` (register a new voice from a
 > 3–15 s reference wav; QC + normalize + GPU sample), `DELETE /voices/{name}`
@@ -538,7 +564,10 @@ pipe = MediaPipelineClient()
 
 ## 3. `mcp_tools.py` (the 17 MCP tools)
 
-One MCP tool per pipeline flow. Each **BLOCKS** until the GPU-host job finishes.
+One MCP tool per pipeline flow. Each **BLOCKS** until the GPU-host job finishes
+— **except** on the deployed thor build (2026-09-25), where every job tool also
+accepts `non_blocking=true` (submit-and-poll: returns `{job_id}` in ~1 s; poll
+with `media_job_result` — see the top note).
 
 ```python
 """mcp_tools — MCP tool definitions that wrap the media-pipeline service.
@@ -904,6 +933,11 @@ isn't already in the environment — so an exported env var always wins.
   `mimetypes`, ...). It works on any Python 3.10+ box with network access to the GPU host.
 - **Blocking tools.** Each MCP tool waits for the job (per-flow timeout) so the LLM gets a
   single call → result. Long flows (shot gen, upscale) have generous timeouts (1–2 h).
+  **Caveat (fixed 2026-09-25 on the deployed thor build):** the MCP client (pi/gateway)
+  aborts tool calls at 30 s, so blocking calls for jobs >30 s fail from the agent's side
+  even though the job completes server-side. The deployed tools instead expose
+  `non_blocking` (submit → `{job_id}` in ~1 s) + `media_job_result(job_id, wait_seconds≤25)`
+  (poll ≤25 s per call, under the 30 s abort) — drive long jobs with repeated polls.
 - **Local vs host paths.** By default tools return **GPU-host paths** (useful when the remote
   box shares a filesystem with the GPU host). Set `MEDIA_LOCAL_DIR` to download results and
   return **local** paths instead.
@@ -950,6 +984,7 @@ These make the output look good (tuned on the GPU host):
 | Job `error` with OOM | Transient on the GPU host — retry. (The host manages VRAM; you don't.) |
 | Job queued but slow | Another job is ahead. `GET /health` shows `running`/`queued`/`queue_position`. |
 | `503 queue full` | The GPU host queue is full. Wait `retry_after_seconds` and retry. |
+| Tool call aborted at ~30 s while the job keeps running | The MCP client aborts long tool calls. Use the deployed submit-and-poll pattern: `non_blocking=true` on the job tool, then `media_job_result(job_id, wait_seconds≤25)` until `done` (see top note). |
 | Returned path not accessible from the remote box | Set `MEDIA_LOCAL_DIR` so results are downloaded locally (local paths returned). |
 | `ModuleNotFoundError: mcp` | `pip install "mcp[cli]"` (only needed for `mcp_tools.py`; the client itself is stdlib-only). |
 
