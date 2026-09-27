@@ -7,12 +7,14 @@ Last consolidated: 2026-09-27 (experiment cleanup + backup-chain plan).
 
 ### Backup chain: Lego → Athena + Lego data cleanup (2026-09-27)
 
-- [x] **Lego cleanup: delete old Comcast work dirs** — DONE 2026-09-27 (executed in parallel via DSM while this was being planned): `Comcast - Jan 2023` (49.5 GB), `Comcast - March 2021` (25.4 GB), `Comcast - Dec 2023` (1.3 GB), `Comcast - March 2023` all deleted; `Comcast - Sept 2025` (68.9 GB) kept. Verified 19:23 UTC — only Sept 2025 remains, ~80 GB freed. *(docs/backup_chain_plan.md §2.1)*
-- [ ] **Lego cleanup: user decisions on other candidates** — `homes/chuck/#recycle` 966 GB (empty bin?), `chuck/backup` 488 GB, `chuck/iMac_Backup_Critical` 76 GB (2016 iMac), `margarethe/Backup` 121 GB (2008–2018), `margarethe/Margarethe Backup May 2020` 5.8 GB. *(docs/backup_chain_plan.md §2.2)*
-- [ ] **Athena access** — NAS not discoverable on the LAN (no DSM ports found on 192.168.4.0/22 / .5.0/24). Needed: Athena IP/reachability, DSM account for config, current USB-backup task details, Athena capacity. *(docs/backup_chain_plan.md §5)*
-- [ ] **Lego → Athena backup (Hyper Backup pull, recommended)** — Athena Hyper Backup "File" task pulling Lego's SMB shares as the `backup` user into `Athena:/lego-backup/<share>/`; daily incremental, ≥4-week retention; initial sync ~19 TB (video lib alone 15.1 TB). Spot-verify file hashes week 1. *(docs/backup_chain_plan.md §3)*
-- [ ] **Update Athena's 3× USB backups** — extend the existing USB tasks to include the `lego-backup/` data (whole-volume or added source); weekly cadence; verify contents after first extended run. *(docs/backup_chain_plan.md §3.3)*
-- [ ] **Align Lego ↔ Athena directory structure** — canonical layout proposal in the plan; apply on Athena after its current layout is known. *(docs/backup_chain_plan.md §4)*
+Execution plan (human-readable, Phase 1/2 = user, Phase 3 = agent): **`nas_backup_plan.md`**.
+Detailed reference: `docs/backup_chain_plan.md`.
+
+- [x] **Lego cleanup: delete old Comcast work dirs** — DONE 2026-09-27 (executed in parallel via DSM while this was being planned): `Comcast - Jan 2023` (49.5 GB), `Comcast - March 2021` (25.4 GB), `Comcast - Dec 2023` (1.3 GB), `Comcast - March 2023` all deleted; `Comcast - Sept 2025` (68.9 GB) kept. Verified 19:23 UTC — only Sept 2025 remains, ~80 GB freed. *(nas_backup_plan.md §4, docs/backup_chain_plan.md §2.1)*
+- [ ] **Phase 1 (user): Lego cleanup decisions** — `homes/chuck/#recycle` 966 GB (empty bin?), `chuck/backup` 488 GB, `chuck/iMac_Backup_Critical` 76 GB (2016 iMac), `margarethe/Backup` 121 GB (2008–2018), `margarethe/Margarethe Backup May 2020` 5.8 GB. *(nas_backup_plan.md §4)*
+- [ ] **Athena access + capacity** — NAS not discoverable on the LAN (no DSM ports found on 192.168.4.0/22 / .5.0/24). Needed: Athena IP/reachability, free capacity (decides mirror/Hyper Backup scope — Athena is smaller than Lego), USB drive sizes, old rsync script. *(nas_backup_plan.md §7)*
+- [ ] **Phase 2 (user): Athena setup** — Hyper Backup "File" task pulling Lego's SMB shares as the `backup` user (versioned store); `lego/` mirror share with per-share subfolders (browsable failover copy for Infuse + SSH-as-chuck); cifs-utils + SSH + static IP. *(nas_backup_plan.md §5)*
+- [ ] **Phase 3 (agent): scripts** — Lego→Athena rsync mirror sync (daily, `--delete`, verify, logged); USB + FireSafe backup script replacing the old rsync shell script (auto drive detection for varying sizes, monthly + FireSafe modes, verify, safe unmount); failover runbook; monitoring. *(nas_backup_plan.md §6)*
 
 ### vLLM / model experiments
 

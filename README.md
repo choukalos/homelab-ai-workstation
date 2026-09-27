@@ -129,6 +129,7 @@ home/
     experiment_archive.md  # Experiment start/end history
   EXPERIMENTS_RESULTS.md # Experiment round results & promotion history
   TODO.md               # Consolidated open work
+  nas_backup_plan.md    # NAS backup plan: Lego → Athena (Synology) → USB/FireSafe (Phase 1/2 = user, Phase 3 = agent)
   .env                  # Environment vars (gitignored)
 ```
 
@@ -176,7 +177,8 @@ Detailed design docs are in `docs/`:
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision
 - [Inventory](docs/matrix_inventory.md) — Append-only system snapshots
 - [Backup](docs/matrix_backup.md) — `/home/chuck/data` → Lego NAS: design, scope decisions, incident history (operations: `scripts/backup/README.md`)
-- [Backup Chain Plan](docs/backup_chain_plan.md) — Lego → Athena (Synology) + 3× USB drives: full inventory, Comcast cleanup, Hyper Backup pull design (pending Athena access)
+- [Backup Chain Plan](docs/backup_chain_plan.md) — Lego → Athena (Synology) + 3× USB drives: full inventory, Comcast cleanup, design reference (pending Athena access)
+- [NAS Backup Plan](nas_backup_plan.md) — the execution plan: Phase 1 (user: Lego cleanup), Phase 2 (user: Athena Hyper Backup + mirror share), Phase 3 (agent: mirror sync + USB/FireSafe scripts + failover runbook)
 - [Manual Tasks](docs/matrix_manual_tasks.md) — Operator-approval tasks (resolved + open)
 - [Validation Log](docs/matrix_validation_log.md) — Post-change validation evidence
 - [TODO](TODO.md) — Consolidated open work

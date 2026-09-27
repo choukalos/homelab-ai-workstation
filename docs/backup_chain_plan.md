@@ -2,9 +2,18 @@
 
 > Created: 2026-09-27
 > Status: **PLAN — pending Athena access + user decisions**
+> **Execution plan (human-readable, Phase 1/2 for the user + Phase 3 summary): [`nas_backup_plan.md`](../nas_backup_plan.md)** — this doc is the detailed reference (inventory, SMB quirks, options analysis).
 > Scope: (1) clean up stale data on Lego, (2) add a new backup leg: **Lego → Athena (Synology)**,
 > (3) update Athena's existing backups to the 3 external USB drives so they cover the new data,
 > (4) align the directory structure of Lego and Athena.
+
+> **Design update 2026-09-27 (user requirements):** Athena must serve as a **failover** for
+> Lego (browsable, same directory structure, Infuse + SSH-as-chuck access), Athena has **less
+> space** than Lego, and the USB tier is **3 drives of varying sizes, manual ~monthly +
+> FireSafe 1–2×/year** (replacing the user's old rsync shell script). Consequence: the
+> recommended design is now **two copies on Athena** — a Hyper Backup *versioned store*
+> (safety net with history) **plus** an rsync *browsable mirror* (the failover/Infuse copy,
+> scoped to fit Athena's capacity) — with the USB tier handled by new scripts (Phase 3).
 
 ---
 
@@ -117,10 +126,13 @@ Sept 2025 dir is retained.)*
 | Fits Athena's existing USB chain | ✅ (USB tasks are almost certainly Hyper Backup too) | ⚠️ mirror folder would need adding to USB tasks | ⚠️ same |
 | Ongoing ops | DSM task, no scripts to babysit | new scripts + cron + mounts to maintain | rsyncd configs on both NASes |
 
-**Recommendation: Option A (Hyper Backup pull).** It is the native Synology mechanism,
-matches the requested pull model exactly, keeps the existing matrix→Lego tooling untouched,
-and slots directly into the Athena→USB chain (the USB drives then get an offline copy of the
-Lego data with no extra machinery).
+**Recommendation (updated 2026-09-27): Option A (Hyper Backup pull) *plus* an rsync
+browsable mirror on Athena.** The failover requirement (Infuse + SSH + "same structure" if
+Lego is down) cannot be served by a Hyper Backup version store — it needs a plain mirrored
+tree. So Athena holds (a) the Hyper Backup versioned store (history/safety net) and (b) a
+`lego/` mirror share filled by an rsync script (Phase 3), scoped to Athena's smaller
+capacity (§3 of `nas_backup_plan.md` has the sizing table). The mirror is the failover
+copy; if space is tight the mirror wins it and Hyper Backup covers a subset.
 
 Option B stays on the table for the subset of data that must be a **browsable mirror** (e.g. if
 Athena is ever used as a direct restore target for matrix/thor data) — but mirroring all 19 TB
@@ -151,18 +163,15 @@ through matrix is not worth it.
 
 ### 3.3 Updating the USB-drive backups
 
-Athena's existing 3× USB backups (assumed Hyper Backup tasks to the external drives) must be
-extended so the offline copies include the new Lego data:
+Athena's existing 3× USB backups (the user's old rsync shell script — "doesn't work very
+well") will be **replaced by new scripts (Phase 3, `nas_backup_plan.md` §5)**: automatic
+drive detection (the 3 drives are of varying sizes), size-fit check, incremental rsync with
+post-run verify, logging, safe unmount; manual trigger ~monthly plus a separate FireSafe
+mode (1–2×/year). The offline copies cover Athena's data, which now includes the Lego pull.
 
-- **Preferred:** point the USB tasks at the **whole data volume** (or add the `lego-backup/`
-  folder as an additional source) so everything on Athena — including the Lego pull — lands on
-  the USB drives.
-- **Schedule:** weekly full/rotating (USB drives are the offline tier; they don't need daily
-  cadence — daily would wear the drives).
+- **Cadence:** monthly (manual) + FireSafe 1–2×/year — USB drives are the offline tier.
 - **Verify:** after the first extended USB run, list the drive contents and confirm the
-  `lego-backup/` tree is present; spot-check one file hash.
-
-(Exact steps depend on what the USB tasks currently are — **open question §5**.)
+  Athena tree is present; spot-check one file hash.
 
 ### 3.4 What happens to the chain
 
@@ -210,10 +219,12 @@ Athena:
 1. **Athena access:** IP/hostname, is it powered on / on which segment? DSM web UI + SSH
    access (which account — admin, or a limited account with Hyper Backup + external-storage
    rights)?
-2. **Athena layout:** current top-level folders/shares (for §4 alignment), and free capacity
-   (the initial pull needs ~19 TB + versioning headroom — realistically plan for ~25 TB).
-3. **Athena USB backups:** what tool/tasks back up to the 3 drives today (Hyper Backup?),
-   schedule, and what they currently cover?
+2. **Athena capacity:** total + free space (Athena is *smaller* than Lego — the sizing table
+   in `nas_backup_plan.md` §3 decides the mirror/Hyper Backup scope; a full 19 TB mirror
+   needs ~20 TB+ free).
+3. **Athena USB backups:** the 3 drives' sizes (they vary), the old rsync shell script (paste
+   it — so the replacement keeps the layout/behavior), and what the FireSafe drive is (4th
+   external drive? separate device?).
 4. **Cleanup decisions (§2.2):** confirm keep/delete for `chuck/backup` (488 GB),
    `iMac_Backup_Critical` (76 GB), `margarethe/Backup` (121 GB),
    `Margarethe Backup May 2020` (5.8 GB); confirm emptying `chuck/#recycle` (966 GB).
