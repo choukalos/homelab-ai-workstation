@@ -1,66 +1,142 @@
-# backup_todo.md — /home/chuck/data backup (matrix)
+# backup_todo.md — /home/chuck/data backup (matrix → Lego)
 
-Status: **parked — needs a dedicated design conversation before building.**
-(2026-09-21: split out of the directory-layout audit; see `fix_todo.md` F4.)
+Status: **LIVE 2026-09-26 — routine track complete; models track running
+(2026-09-27).** Credentials set (`username=backup`), cron installed (Sunday
+03:00), first routine snapshot taken + verified (MD5 match vs source). The
+models backup (~115 GB) started 2026-09-27 00:34 after the reboot that
+cleared the wedged CIFS state (D-state `cifsd`/`umount` — unkillable —
+caused by repeated idle-session deaths on Lego's SMB server); expect
+~15–30 min (continuous I/O keeps the session alive). Remaining: confirm the
+run's post-run verify passed and spot-check one file (open item #1). fstab
+is `soft` + `vers=2.1`. Scripts in `scripts/backup/` (see its README.md).
+History: parked 2026-09-21 after directory-layout audit (fix_todo F4); design
+conversation held 2026-07-15 (thor conversation) — plan below; built
+2026-09-26 per this plan; first live run 2026-09-26.
 
 ## The problem
 
-`/home/chuck/data/` on matrix is 331 GB with the stated intent that it "should be
+`/home/chuck/data/` on matrix is ~346 GB with the stated intent that it "should be
 backed up", but there is currently **no backup mechanism** (no restic/borg/rclone,
-no cron, no backup docs).
+no cron, no backup docs, no `.smbcredentials`).
 
-## Decisions / notes from chuck (2026-09-21)
+## Confirmed design
 
-1. **We need a backup.**
-2. **Do NOT back up by re-downloading model caches.** No blanket "models are
-   re-downloadable, skip them" policy — instead:
-3. **Back up SELECTED models only:**
-   - `qwen3.8 NVFP4` — the daily driver (vLLM primary model)
-   - the **current media pipeline models** (ComfyUI-based: image/upscale/TTS/music/SFX)
-4. **Selected-model backups should be occasional** (e.g. after a model set changes /
-   monthly), not part of every regular backup run.
-5. **Backup target: chuck's server "Lego".**
+### Target: "Lego" NAS
 
-## Inventory snapshot (2026-09-21, for the design conversation)
+- `lego.local` → **192.168.5.100** (resolves via mDNS today; add a static
+  `/etc/hosts` entry for robustness). SMB ports 445/139 verified open
+  (2026-07-15). SSH 22 also open (fallback access).
+- Access: **CIFS mount** with credentials in `/home/chuck/.smbcredentials`
+  (chmod 600). Mount point: **`/mnt/lego/`** (fstab, `vers=2.1`, `soft`,
+  `noauto` + `x-systemd.automount` so a downed NAS can't wedge the backup
+  script or boot). Per-host subfolder: `/mnt/lego/<hostname>/` so the same
+  scripts onboard thor / future hosts unchanged.
+- Backup/restore layout on Lego:
+  ```
+  <share>/homelab/
+    routine/YYYY-MM-DD/     # weekly snapshots
+    models/YYYY-MM-DD/      # occasional snapshots
+  ```
 
-### Regular data (non-model) — what a routine backup should cover (TBD)
+### Tool: rsync over the CIFS mount (not restic/borg)
 
-| Path | Size | Notes |
+Rationale: routine data is <1 GB, model data is ~110 GB of large files that
+change rarely. rsync gives exactly the "only what changed since last week"
+behavior we want, restore is a plain rsync back, and there's no new daemon or
+repo format to maintain. (Revisit restic if data ever leaves the LAN.)
+
+### Snapshot scheme: hardlink rotation (`rsync --link-dest`)
+
+Each run rsyncs into a new dated snapshot dir with `--link-dest` pointing at
+the previous snapshot: unchanged files become hardlinks (zero extra disk),
+changed/new files take real space. This gives **both** "2 weeks of history"
+**and** "only weekly changes consume space" — a full view per week at delta
+cost. Deletion of old snapshots is plain `rm -rf` (hardlink-safe).
+
+### Track 1 — routine data, automated weekly (cron, e.g. Sunday 03:00)
+
+Scope (what a routine run covers):
+
+| Path | Size | Why |
 |---|---|---|
-| `data/media/projects/` | ~50 MB | finished media deliverables (kitchen-strikes-back, potato-wars, neon-thunder) — the real keepers |
-| `data/comfyui/run/media_jobs/` | 2.2 GB | pipeline job outputs; subject to 14-day retention (fix_todo F2) — probably NOT a backup target |
-| `data/comfyui/basedir/{input,output,user,config}` | ~700 MB | ComfyUI inputs/outputs/settings |
-| `data/logs/` | 0 | empty |
-| homelab repo itself | 4.1 GB | already on GitHub — not a backup concern |
+| `data/media/projects/` | ~86 MB | finished deliverables — the real keepers |
+| `data/comfyui/basedir/{input,output,user,config}` | ~730 MB | inputs/outputs/settings/workflows/DB |
 
-### Selected models (occasional backup) — candidates from inventory
+Excluded (decisions #2/#4): `data/comfyui/run/media_jobs/` (14-day retention,
+re-runnable), `data/logs/` (empty), homelab repo (already on GitHub),
+everything under model caches (Track 2).
+
+- Retention: **keep 4 weekly snapshots** (~2 weeks of history); prune older.
+- Cost: ~0.8 GB first run, then only the weekly delta (MB-scale).
+
+### Track 2 — selected production models, occasional (on-demand script + optional monthly cron)
+
+Manifest-driven: `scripts/backup/model_manifest.txt` lists the production
+model paths; the script rsyncs exactly those, same `--link-dest` rotation.
+
+Confirmed live set (2026-07-15):
 
 | Path | Size | Role |
 |---|---|---|
-| `data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4` | 22 GB | **daily driver** (matrix-coder profile) |
-| `data/models/hub/models--Inferact--Qwen3.8-27B-NVFP4` | 25 GB | duplicate NVFP4 (which one is live? verify before choosing) |
-| `data/comfyui/basedir/models/diffusion_models` | 32 GB | Qwen-Image etc. (media pipeline image gen) |
-| `data/comfyui/basedir/models/SEEDVR2` | 3.7 GB | media pipeline upscale (pipeline B) |
-| `data/comfyui/basedir/models/acestep` | 9.4 GB | media pipeline music (ACE-Step) |
-| `data/comfyui/basedir/models/mmaudio` | 5.3 GB | media pipeline SFX (MMAudio) |
-| `data/comfyui/basedir/models/tts` | 1.8 GB | media pipeline voice-over (trailer voice) |
-| `data/comfyui/basedir/models/text_encoders` | 14 GB | Qwen-Image text encoders |
+| `data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4` | 22 GB | **daily driver** — verified live: `compose/qwen-coder.yml` runs `--model unsloth/Qwen3.8-27B-NVFP4` |
+| `data/comfyui/basedir/models/diffusion_models` | 39 GB | Qwen-Image 2.1 int8 + GGUF (image gen/edit) |
+| `data/comfyui/basedir/models/text_encoders` | 23 GB | Qwen3-VL-8B, T5-XXL (Qwen-Image encoders) |
+| `data/comfyui/basedir/models/acestep` | 9.4 GB | music (ACE-Step) |
+| `data/comfyui/basedir/models/checkpoints` | 6 GB | misc checkpoints — **included** (resolved 2026-09-26) |
+| `data/comfyui/basedir/models/mmaudio` | 5.3 GB | SFX (MMAudio) |
+| `data/comfyui/basedir/models/SEEDVR2` | 3.7 GB | upscale pipeline B |
+| `data/comfyui/basedir/models/vae` | 2.5 GB | VAEs |
 | `data/comfyui/basedir/models/loras` | 2.4 GB | LoRAs |
-| `data/comfyui/basedir/models/vae` | 1.8 GB | VAEs |
-| `data/comfyui/basedir/models/checkpoints` | 6 GB | misc checkpoints |
+| `data/comfyui/basedir/models/tts` | 1.8 GB | voice-over (trailer voice, XTTS) |
 
-(Explicitly OUT per decision #2: the rest of `data/models/hub/` — gemma-4-31b 59G,
-Qwen3.8-FP8 29G, experiment candidates — and `data/ollama/` 34G, `data/huggingface/` 18G,
-`data/comfyui/basedir/models/upscale_models` 128M etc. — re-downloadable, not backed up.)
+≈ **109 GB** (115 GB if checkpoints included). Retention: keep last 2 model
+snapshots (rollback to the previous model set). Cost: ~110 GB once, then only
+model-set deltas. (Built 2026-09-26: checkpoints included → ~115 GB.)
 
-## Open questions for the design conversation
+Explicitly OUT (re-downloadable, per decision #2): `models--Inferact--Qwen3.8-27B-NVFP4`
+(25 GB — duplicate of the live unsloth copy; deletion is a separate decision),
+rest of `data/models/hub/` (gemma-4-31b, Qwen3.8-FP8, experiment candidates),
+`data/ollama/` (34 GB), `data/huggingface/` (18 GB), `upscale_models` (128 MB),
+`animatediff_*`, `controlnet`, etc.
 
-- **Lego details:** OS, reachable how (LAN? VPN?), path/capacity, access method
-  (SSH? NFS/SMB mount? S3-compatible object store?).
-- **Tool:** restic vs borg vs rclone (Lego-side storage type drives this).
-- **Routine backup scope:** exactly which non-model paths, how often (daily? weekly?),
-  retention on the Lego side.
-- **Selected-model backup trigger:** on-demand script vs calendar (monthly)?
-  Which of the two NVFP4 copies is the live one?
-- **Encryption** (at rest on Lego) and **verification** (restore test plan).
-- **Sizing:** routine data is small (<2 GB) — the occasional model backup is ~70-90 GB.
+### Scripts (in `scripts/backup/`)
+
+- `backup-routine.sh` — mount-check → rsync routine scope → `--link-dest`
+  snapshot → prune to 4 → post-run verify (re-rsync dry-run must be 0 files).
+- `backup-models.sh` — same flow, manifest-driven, prune to 2.
+- `backup-restore.sh <routine|models> [YYYY-MM-DD]` — rsync a chosen snapshot
+  back to source paths; `--dry-run` by default, `--apply` to execute.
+- `model_manifest.txt` — the production-model list (edit when the set changes).
+- cron: weekly routine (Sun 03:00); model run on-demand (monthly max).
+
+### Verification
+
+- Every run: rsync exit code + dry-run diff count logged to
+  `~/.local/state/backup/backup.log` (+ `cron.log` for the cron run).
+- Monthly: restore drill — pull one small file from a snapshot, sha256-compare
+  against source.
+
+## Open items
+
+1. **Models track first run** — 🔄 IN PROGRESS 2026-09-27. The routine track
+   is live (first snapshot 2026-09-26, verified). The models backup (~115 GB)
+   started 2026-09-27 00:34 via `/home/chuck/homelab/scripts/backup/backup-models.sh`
+   (continuous I/O keeps the session alive). **Remaining:** once it finishes,
+   confirm `~/.local/state/backup/backup.log` ends with the post-run verify
+   OK (0 changed files) and spot-check one model file's MD5 against source
+   (same drill as the routine track). Context for what nearly bit us:
+   repeated idle-session deaths on Lego's SMB server had wedged the CIFS
+   kernel state (D-state `cifsd`/`umount`/zombie rsync — unkillable,
+   `timeout`/`kill` can't rescue a D-state process); the 2026-09-27 reboot
+   cleared it. fstab is `vers=2.1,soft` (no `file_mode` — the server reports
+   755 for everything anyway, and a forced `file_mode` breaks `--link-dest`
+   hardlinking with `-a`; scripts use `-rt`). Credentials (`username=backup`),
+   sudoers rule, cifs module, and cron are all in place.
+2. **Checkpoints (6 GB)** — ✅ RESOLVED 2026-09-26: included in
+   `model_manifest.txt` (safe side; one line to remove if not wanted).
+3. **Encryption at rest** — plaintext on a LAN-only NAS, per plan. Revisit
+   restic if Lego ever becomes reachable off-LAN.
+4. **Inferact NVFP4 duplicate (25 GB)** — delete locally (separate decision,
+   not part of this backup). Unchanged.
+5. **Static hosts entry** — `lego.local` → 192.168.5.100 resolves via **DNS**
+   (not `/etc/hosts` — grep of /etc/hosts is empty). No action needed.

@@ -1,0 +1,18 @@
+# model_manifest.txt — Track 2: production model set.
+# One absolute path per line; must live under $DATA_ROOT (/home/chuck/data).
+# Edit when the production set changes. backup-models.sh rsyncs exactly these.
+#
+# Confirmed live set 2026-07-15 (see backup_todo.md). ~109 GB.
+# 2026-09-26 build decision: checkpoints (6 GB) INCLUDED — remove its line
+# to exclude (open item #2 resolved in the safe direction).
+
+/home/chuck/data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4
+/home/chuck/data/comfyui/basedir/models/diffusion_models
+/home/chuck/data/comfyui/basedir/models/text_encoders
+/home/chuck/data/comfyui/basedir/models/acestep
+/home/chuck/data/comfyui/basedir/models/checkpoints
+/home/chuck/data/comfyui/basedir/models/mmaudio
+/home/chuck/data/comfyui/basedir/models/SEEDVR2
+/home/chuck/data/comfyui/basedir/models/vae
+/home/chuck/data/comfyui/basedir/models/loras
+/home/chuck/data/comfyui/basedir/models/tts
