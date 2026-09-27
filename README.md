@@ -122,7 +122,7 @@ home/
     backup/              # Lego NAS backup: rsync-over-CIFS snapshots (docs/matrix_backup.md + backup/README.md)
   docs/                 # Design docs & reference materials
   media-pipeline/       # Media orchestrator service (Docker build context: server.py, workflows.py, Dockerfile)
-  media-mcp-client/     # Remote MCP client (thin HTTP client + FastMCP tools for the media pipeline)
+  media-mcp-client/     # Pointer to the mcp_media MCP server (source of truth: homelab-ai-harness repo, mcp/servers/media)
   qwen3.8-experiment/   # Qwen3.8 validation scripts (image analysis, tool-calling tests)
   data/benchmarks/      # Benchmark baseline + result snapshots
   state/                # Runtime state (gitignored)
@@ -170,7 +170,7 @@ Detailed design docs are in `docs/`:
 - [ComfyUI (Images)](docs/matrix_images_mode.md) — ComfyUI operational guide
 - [ComfyUI Media API](docs/matrix_comfyui_media_api.md) — media pipeline tooling contract (images, video, TTS, music, SFX, upscale, assemble)
 - [Media-Pipeline API](docs/matrix_media_pipeline_api.md) — port 8189 contract: endpoints, job model, queue, VRAM budget, metering (incl. TTS voice library, 2026-09-25)
-- [MCP Media Client](media-mcp-client/HANDOFF.md) — thor MCP tooling over the pipeline: contract, reference code, voice-library tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`), Qwen-Image-2.1 defaults (`media-mcp-client/README.md`)
+- [MCP Media Client](media-mcp-client/README.md) — the `mcp_media` MCP server (thor): source of truth is [`mcp/servers/media`](https://github.com/choukalos/homelab-ai-harness/tree/main/mcp/servers/media) in the homelab-ai-harness repo (22 tools, submit-and-poll, voice library, Qwen-Image-2.1 defaults)
 - [Monitoring](docs/matrix_monitoring_health.md) — Health endpoints & metrics
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision

@@ -9,7 +9,7 @@
 > media production (storyboard → shots → TTS/music/SFX → upscale → assembly) use the **media-pipeline**
 > service on port 8189 (see `docs/matrix_media_pipeline_api.md` for the full API contract,
 > `docs/matrix_images_mode.md` §Media pipeline orchestrator, `media-pipeline/`,
-> and the remote client in `media-mcp-client/`). The pipeline defaults to Qwen-Image-2.1 and exposes
+> and the remote client in `media-mcp-client/` (pointer to `mcp/servers/media` in the homelab-ai-harness repo). The pipeline defaults to Qwen-Image-2.1 and exposes
 > `model` (`qwen21` | `legacy`) + `references` per request.
 
 ---

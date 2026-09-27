@@ -66,7 +66,7 @@ Bounded job queue: at most `MAX_CONCURRENT_JOBS` (default 1) media jobs run at o
 with `status=queued`. Waiting depth is capped by `MAX_QUEUE_DEPTH` (default 5) — total in-flight
 = `MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH` (default 6); when full, new jobs are rejected with
 `HTTP 503` + a `retry_after_seconds` back-off. Both set in `/home/chuck/homelab/.env`.
-See `media-pipeline/` (build context) and the remote client in `media-mcp-client/`.
+See `media-pipeline/` (build context) and the remote client in `media-mcp-client/` (pointer to `mcp/servers/media` in the homelab-ai-harness repo).
 
 **Full API contract + metering:** `docs/matrix_media_pipeline_api.md` (endpoints, job model,
 queue, VRAM budget, commercial recipe). Since 2026-09-06 the pipeline attributes every job to

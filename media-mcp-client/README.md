@@ -1,103 +1,54 @@
-# media-mcp-client — remote-side files for the media-pipeline service
+# media-mcp-client — pointer to the `mcp_media` MCP server
 
-> **2026-09-25:** the deployed thor `mcp_media` tool set has moved ahead of these
-> files — the 30 s MCP tool-call abort is fixed via submit-and-poll (`non_blocking`
-> on every job tool + `media_job_result(job_id, wait_seconds≤25)` polling), plus
-> tool renames (`media_pull`, `media_put`, `media_upload`, `media_download`) and
-> `{path, location}` return shapes. See `HANDOFF.md` (2026-09-25 note) and
-> `TODO.md` (repo resync pending).
+> **2026-09-27:** the handoff snapshot that used to live here (`mcp_tools.py`,
+> `media_pipeline_client.py`, `HANDOFF.md` — the pre-2026-09-25 baseline) was
+> removed. It had drifted behind the deployed tool set, and a second copy is
+> exactly what causes that drift. The authoritative `mcp_media`
+> implementation is fully checked into git:
+>
+> **Source of truth: [`mcp/servers/media`](https://github.com/choukalos/homelab-ai-harness/tree/main/mcp/servers/media) in [choukalos/homelab-ai-harness](https://github.com/choukalos/homelab-ai-harness)**
+> — `server.py` (22 FastMCP tools), `media_pipeline_client.py` (thin
+> stdlib-only HTTP client), e2e tests, and the full contract in that
+> directory's README. The deployed thor `mcp_media` container is built from
+> that repo.
 
-These are the **two files to copy to the other machine** (the one running the
-media-mcp server) so it can leverage the GPU-host media-pipeline service:
+## What it is
 
-| File | Purpose |
-|---|---|
-| `media_pipeline_client.py` | Thin HTTP client (stdlib-only, **zero deps**) for the pipeline API. Blocking calls, job polling, file fetch. |
-| `mcp_tools.py` | MCP tool definitions (FastMCP) that wrap the client — one tool per flow. |
+`mcp_media` is a FastMCP server (SSE) on thor (the MCP host) that wraps the
+**media-pipeline** service on this GPU host (Matrix, port 8189): it POSTs
+jobs, polls, and downloads results. All GPU work (ComfyUI, VLLM,
+TTS/music/SFX workers) runs on Matrix; the MCP container only submits and
+fetches. It forwards the caller's `user`/`client` identity headers for
+metering.
 
-## What goes where
-- **GPU host** (this box): the `media-pipeline/` service (port 8189). See `../media-pipeline/`.
-- **Remote machine**: these two files, dropped into the existing media-mcp server.
+## Contract (read the GitHub README)
 
-## Setup on the remote machine
-```bash
-# 1. Copy the two files into the media-mcp server's directory
-cp media_pipeline_client.py mcp_tools.py /path/to/media-mcp/
+Full tool table, endpoints, and history:
+[`mcp/servers/media/README.md`](https://github.com/choukalos/homelab-ai-harness/blob/main/mcp/servers/media/README.md).
 
-# 2. Point it at the GPU host
-export MEDIA_PIPELINE_URL=http://<gpu-host>:8189
+Key points (2026-09-25 state, verified):
 
-# 3. (optional) If the remote box has NO shared filesystem with the GPU host,
-#    set this so results are downloaded locally and local paths are returned:
-export MEDIA_LOCAL_DIR=/tmp/media_mcp_out
+- **22 tools** — 13 job flows (`media_storyboard`, `media_generate_image`
+  [Qwen-Image-2.1 default; `model`: `qwen21`|`legacy`], `media_edit_image`
+  [+`references`, up to 9], `media_generate_shot`, `media_text_to_speech`
+  [voice = library name or reference wav], `media_generate_music`,
+  `media_sfx`, `media_upscale_video`, `media_assemble`, `media_trim`,
+  `media_freeze`, `media_caption`, `media_add_voice`), 8 sync
+  (`media_info`, `media_upload`, `media_download`, `media_put`,
+  `media_pull`, `media_fetch`, `media_list_voices`, `media_delete_voice`),
+  1 poll (`media_job_result`).
+- **Submit-and-poll:** every job tool takes `non_blocking` (default
+  `false` = legacy blocking). `true` → `{job_id, status}` in ~1 s, then
+  poll `media_job_result(job_id, wait_seconds≤25)` — keeps every tool call
+  under the ~30 s pi/LiteLLM tool-call abort.
+- **Result shape:** `{path, location}` for media jobs; finished files are
+  retained 14 d and can be re-pulled via `media_pull` (signed public URL,
+  `https://siri.choukalos.com/media/pipeline/dl/<token>`).
+- **TTS voice library:** `trailer` (default), `default`, `narrator_f`,
+  `deep_m`; `trailer`/`default` protected from deletion.
 
-# 4. Ensure the MCP framework is available (mcp_tools.py uses FastMCP)
-pip install "mcp[cli]"        # if not already present
+## Matrix-side references (this repo)
 
-# 5. Register mcp_tools with your MCP server (see note below)
-```
-
-### Integrating into your existing media-mcp server
-`mcp_tools.py` uses **FastMCP** (`from mcp.server.fastmcp import FastMCP`). If your
-media-mcp server uses the same framework, just import its tools:
-```python
-from mcp_tools import mcp as media_mcp
-# mount/serve media_mcp alongside your other tools
-```
-If your server uses a different MCP framework, copy the `@mcp.tool()` function
-bodies into your framework's decorators — the logic is identical. Each tool is a
-thin wrapper around a `media_pipeline_client.MediaPipelineClient` method.
-
-## The tools
-| MCP tool | Pipeline flow | Returns |
-|---|---|---|
-| `media_storyboard` | LLM shot list | `{"shots":[{id,visual,vo}]}` |
-| `media_generate_image` | Qwen-Image T2I | image path |
-| `media_edit_image` | Qwen-Image-Edit | image path |
-| `media_generate_shot` | LTXV I2V | video path |
-| `media_text_to_speech` | XTTS-v2 (voice = library name or reference wav path) | wav path |
-| `media_list_voices` | voice library (sync) | JSON list of voices |
-| `media_add_voice` | register voice from reference wav (3–15 s; QC + GPU sample) | job output JSON |
-| `media_delete_voice` | remove a voice (sync; `trailer`/`default` protected) | `{"deleted": name}` |
-| `media_generate_music` | ACE-Step | wav path |
-| `media_sfx` | MMAudio | audio path |
-| `media_upscale_video` | SeedVR2 / 4xUltrasharp | video path |
-| `media_assemble` | ffmpeg concat+mix (object shots, timestamped SFX list, `vo_start`, `loudnorm`) | final mp4 path |
-| `media_trim` | ffmpeg cut to time range | clip path |
-| `media_freeze` | ffmpeg still/frame → static N-s clip | clip path |
-| `media_caption` | ffmpeg drawtext burn-in | clip path |
-| `media_info` | ffprobe metadata (sync) | `{duration_s, width, height, fps, ...}` |
-| `media_upload_local` | bridge basedir file → media_jobs (sync; GPU-host only) | media_jobs path |
-| `media_download_url` | ingest http(s) URL → media_jobs (sync) | media_jobs path |
-| `media_upload_file` | multipart upload → media_jobs (sync, 500 MB cap) | media_jobs path |
-| `media_dl_token` | mint signed pull URL (HMAC, path-bound, time-limited) | `{token, url_path, expires_at}` |
-| `media_fetch_dl` | download via signed token | local path |
-
-- Inputs that are **local paths** (keyframe for `media_generate_shot`, image for
-  `media_edit_image`, video for `media_sfx`/`media_upscale_video`) are **uploaded**
-  to the pipeline automatically.
-- Outputs are **GPU-host paths** by default. If `MEDIA_LOCAL_DIR` is set, results
-  are downloaded there and **local paths** are returned.
-
-## Notes
-- **Identity / metering (since 2026-09-06):** the client forwards `user`/`client`
-  on every job POST so the GPU host can attribute cost in `/metrics` +
-  `jobs.jsonl`. Set `MEDIA_USER` and/or `MEDIA_CLIENT` on the media-mcp server
-  (defaults: OS username / `mcp`). See `docs/matrix_media_pipeline_api.md` §5 on
-  the GPU host.
-- **File transfer (since 2026-09-07):** matrix :8189 has no auth (LAN-trust);
-  public auth is the Caddy layer on thor only. Off-LAN clients pull results via
-  signed tokens: `media_dl_token(path)` → share `MEDIA_PIPELINE_URL + url_path`
-  (HMAC-SHA256, path-bound, time-limited — default 24 h, max 168 h). Uploads:
-  `media_upload_file` (multipart) or `media_download_url` (URL ingest). The
-  pipeline is unauthenticated by design (LAN-trust); public access is the Caddy
-  layer on thor + the MCP per-user key (key = user, key passed to the pipeline),
-  and finished files are exposed publicly via `siri.choukalos.com` /
-  `choukalos.com/files`.
-- All media jobs run through a **bounded FIFO queue** on the GPU host: at most `MAX_CONCURRENT_JOBS`
-  (default 1, set in the GPU host's `.env`) run at once; the rest wait with `status=queued` (visible
-  via `/health` + `queue_position`). GPU flows additionally serialize on a GPU lock.
-- For 1080p-quality commercials, run `media_assemble` with `upscale_each=true` (SeedVR2 per shot) and
-  `text_overlays` for titles (see the quality plan in the media-pipeline working doc).
-- `media_pipeline_client.py` has **no third-party dependencies** (urllib only), so
-  it works on any Python 3.10+ box with network access to the GPU host.
+- Pipeline HTTP API contract: [`docs/matrix_media_pipeline_api.md`](../docs/matrix_media_pipeline_api.md)
+- Verification evidence: [`docs/matrix_validation_log.md`](../docs/matrix_validation_log.md)
+- Service code: [`media-pipeline/`](../media-pipeline/)

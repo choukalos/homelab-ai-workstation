@@ -210,7 +210,7 @@ Idle cost ~0.7 GB — safe to leave running.
 
 **Details:** [ComfyUI Media API](matrix_comfyui_media_api.md) (tooling contract) ·
 [ComfyUI Ops](matrix_images_mode.md) (operations) · `media-pipeline/` (service) ·
-`media-mcp-client/` (remote MCP client)
+`media-mcp-client/` (pointer to the `mcp_media` MCP server — homelab-ai-harness repo, `mcp/servers/media`)
 
 ---
 

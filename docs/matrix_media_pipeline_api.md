@@ -9,7 +9,7 @@
 > **Related:** `docs/matrix_images_mode.md` §Media pipeline orchestrator (ops),
 > `docs/matrix_comfyui_media_api.md` (low-level ComfyUI :8188 API),
 > `docs/matrix_validation_log.md` (2026-09-06 run — metering verification + calibration),
-> `media-mcp-client/README.md` (remote-side client + MCP tools).
+> `media-mcp-client/` (pointer to the `mcp_media` MCP server — `mcp/servers/media` in the homelab-ai-harness repo).
 
 The **media-pipeline** service (container `media_pipeline`, image
 `media-pipeline:latest`) is a thin FastAPI orchestrator on the GPU host with no
@@ -46,7 +46,7 @@ GET /jobs/{job_id}
 - **Identity:** every job POST accepts optional `user` and `client` fields
   (JSON body or Form fields). They are recorded on the job and in the metering
   output (§5). Omitted → `unknown`. The remote media-mcp server should forward
-  the caller's identity (see `media-mcp-client/`).
+  the caller's identity (see `media-mcp-client/` — `mcp/servers/media` in the homelab-ai-harness repo).
 - GPU flows are **serialized** by an internal GPU lock (`gpu_locked` in
   `/health`); the bounded queue (§3) serializes all flows.
 

@@ -54,4 +54,4 @@ security:
 notes:
   - "2026-08-27: containerized (was a host nohup process + staged systemd unit). Now built from media-pipeline/Dockerfile and managed via compose/comfyui.yml (profile image); starts/stops with ComfyUI. Rebuild: model-manager rebuild media-pipeline."
   - "Config source: /home/chuck/homelab/.env (MAX_CONCURRENT_JOBS, ...). Loaded at startup."
-  - "Remote media-mcp client reaches it at http://<gpu-host>:8189 (LAN). See media-mcp-client/."
+  - "Remote media-mcp client reaches it at http://<gpu-host>:8189 (LAN). See media-mcp-client/ (pointer to mcp/servers/media in the homelab-ai-harness repo)."

@@ -242,7 +242,7 @@ for Thor to scrape. No monitoring stack installed locally.
 | `media-pipeline` service | `media-pipeline/` (repo) | FastAPI orchestrator, port 8189; builds ComfyUI workflows programmatically (no JSON workflow files) |
 | `metering` (in media-pipeline) | `media-pipeline/metering.py` (repo) | Work-unit metering since 2026-09-06: `GET /metrics` (Prometheus `media_*`), `jobs.jsonl` durable log, `user`/`client` attribution, `timeout` status; contract `docs/matrix_media_pipeline_api.md` §5 |
 | `comfyui_backend` | `compose/comfyui.yml` (profile `image`) | ComfyUI + custom nodes (GGUF, SeedVR2, MMAudio, VideoHelperSuite, Manager) |
-| `media-mcp-client` | `media-mcp-client/` (repo) | Thin stdlib HTTP client + FastMCP tools for remote machines (forwards `user`/`client` identity for metering) |
+| `media-mcp-client` | `media-mcp-client/` (repo) | Pointer doc — the `mcp_media` MCP server (thin stdlib HTTP client + 22 FastMCP tools, forwards `user`/`client` identity for metering) lives in the homelab-ai-harness repo (`mcp/servers/media`) |
 | Model data | `/home/chuck/data/comfyui/basedir/models/` | ~77 GB after 2026-08-28 cleanup (was ~110 GB); total comfyui workspace 109 GB (was 152 GB) |
 
 **Cleanup 2026-08-28:** removed ~55 GB of obsolete models (SD1.5/SDXL/SVD checkpoints,
