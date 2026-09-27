@@ -38,11 +38,29 @@ load_manifest() {
   done
 }
 
+# Fail fast if any manifest file is unreadable to this user (e.g. a model-cache
+# file created 0600 by another uid — observed 2026-09-27 with an HF cache file
+# owned by the ComfyUI container uid). Without this, rsync dies mid-run with a
+# cryptic code 23 after partially writing the snapshot.
+check_readable() {
+  local unreadable broken
+  unreadable=$(find "${SOURCES[@]}" -type f ! -readable 2>/dev/null) || true
+  [[ -z "$unreadable" ]] || die "unreadable source files (rsync would fail with code 23) — fix perms (chmod a+r) or remove from manifest:
+$unreadable"
+  # Broken symlinks are fatal with -L ("symlink has no referent") — they were
+  # found in the models dir as stale .gitkeep links to /opt/storage (removed
+  # 2026-09-27); catch any that reappear.
+  broken=$(find "${SOURCES[@]}" -type l ! -exec test -e {} \; -print 2>/dev/null) || true
+  [[ -z "$broken" ]] || die "broken symlinks in manifest sources (rsync -L would fail) — remove or fix them:
+$broken"
+}
+
 main() {
   local today prev dest
   acquire_lock "$TRACK"
   check_setup
   load_manifest
+  check_readable
   ensure_mounted
   require_free_space "$BACKUP_ROOT" "$MODELS_MIN_FREE_GB" "$TRACK"
 

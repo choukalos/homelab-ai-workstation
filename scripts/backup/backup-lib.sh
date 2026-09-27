@@ -97,6 +97,12 @@ prev_snapshot() { # $1=snap_root $2=today
 #   -rt (NOT -a): the share can't represent real Unix modes (macOS SMB server
 #     reports 755 for everything), so -a would re-transfer every file on every
 #     run trying to fix permissions. Permissions are NOT preserved in backups.
+#   -L: dereference symlinks. The share can't store symlinks at all (ln -s
+#     fails with I/O error), and rsync 3.2.x SILENTLY SKIPS symlinks when
+#     neither -l nor -L is given ("skipping non-regular file"), which would
+#     drop the HF-hub snapshot views of the Qwen model (22 GB) from the
+#     backup. -L copies the resolved contents instead. (Discovered 2026-09-27:
+#     the first models backup had silently backed up blobs/ without snapshots/.)
 #   --modify-window=1: CIFS truncates mtime to 100ns; without this, rsync's
 #     nanosecond mtime comparison defeats --link-dest hardlinking.
 sync_source() { # $1=src $2=dest_root $3=prev_root_or_empty $4=dry_run
@@ -105,7 +111,7 @@ sync_source() { # $1=src $2=dest_root $3=prev_root_or_empty $4=dry_run
   local dest="$dest_root/$rel"
   local prevsub=""
   [[ -n "$prev" && -d "$prev/$rel" ]] && prevsub="$prev/$rel"
-  local args=(-rt --delete --modify-window=1 --timeout=60)
+  local args=(-rtL --delete --modify-window=1 --timeout=60)
   [[ -n "$prevsub" ]] && args+=(--link-dest="$prevsub")
   local drylabel=""
   [[ "$dry" == "1" ]] && { args+=(-n); drylabel=" (dry-run)"; }
@@ -128,13 +134,13 @@ prune_snapshots() { # $1=snap_root $2=keep
 
 # Post-run verify: a dry-run re-rsync must report 0 files that would change.
 # WARN rather than fail: CIFS mtime granularity can produce false positives.
-# Same flags as sync_source (-rt --modify-window=1) so the check is consistent.
+# Same flags as sync_source (-rtL --modify-window=1) so the check is consistent.
 verify_snapshot() { # $1=dest_root $2...=sources
   local dest_root="$1"; shift
   local src rel n total=0
   for src in "$@"; do
     rel="${src#"$DATA_ROOT"/}"
-    n=$(rsync -rtn --delete --modify-window=1 --timeout=60 "$src/" "$dest_root/$rel/" | wc -l)
+    n=$(rsync -rtnL --delete --modify-window=1 --timeout=60 "$src/" "$dest_root/$rel/" | wc -l)
     total=$((total + n))
   done
   if (( total == 0 )); then
