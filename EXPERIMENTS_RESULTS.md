@@ -139,9 +139,9 @@ The daily driver numbers come from the running `qwen36` container logs (post-war
 
 ---
 
-### ❌ Experiment 3: Qwen3-Next-80B Thinking FP8 MTP
+### ⏳ Experiment 3: Qwen3-Next-80B Thinking FP8 MTP
 
-**Not yet tested — config was broken. Fixed, ready to rerun.**
+**Dropped 2026-09-27** (old model; Flash-Next is the next candidate) — config + profile removed in the 2026-09-27 cleanup. Never tested — config was broken. Fixed, was ready to rerun.
 
 | Field | Detail |
 |---|---|
@@ -217,7 +217,7 @@ Remove:
 
 ## ⏳ Experiment 6: Nemotron-3-Puzzle-75B-A9B NVFP4
 
-**Not yet tested — config created, ready to launch.**
+**Dropped 2026-09-27** (old model; Flash-Next is the next candidate) — config + profile removed in the 2026-09-27 cleanup. Never tested — config created, was ready to launch.
 
 | Field | Detail |
 |---|---|
@@ -393,8 +393,10 @@ If it holds up, this is the strongest candidate to replace the 27B daily driver.
 ## Next Steps
 
 1. ~~Update daily driver with MTP~~ (applied 2026-08-14, superseded by the Qwen3.8 NVFP4 promotion on 2026-08-24)
-2. ~~Rerun experiments 3, 4, 5~~ (2026-08-28: **dropped 4 & 5** — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8; **3 kept at low priority** — Qwen3-Next-80B FP8, config tweaked but never run, may drop in the future)
-3. **Run experiment 6: Nemotron-3-Puzzle-75B NVFP4** (config + profile ready, ⚠️ pull latest vLLM first)
-4. Consider testing W8A16 + MTP as a potential quality upgrade over the current NVFP4 (4-bit) + MTP daily driver
+2. ~~Rerun experiments 3, 4, 5~~ (2026-08-28: **dropped 4 & 5** — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8; 2026-09-27: **dropped 3** — Qwen3-Next-80B FP8, old model)
+3. ~~Run experiment 6: Nemotron-3-Puzzle-75B NVFP4~~ (2026-09-27: **dropped** — old model; Flash-Next is the next candidate)
+4. ~~Consider testing W8A16 + MTP as a potential quality upgrade~~ (2026-09-27: **dropped** — the W8A16 experiments were Qwen3.6, superseded by Qwen3.8; MTP is already in production on the NVFP4 daily driver (2 tokens, tuned 2026-08-25); no Qwen3.8 8-bit candidate identified — revisit only if 4-bit quality issues surface)
 5. ~~Verify MTP (3 tokens) on the promoted NVFP4 model after the restart~~ (done 2026-08-25: MTP tuned to 2 tokens, benchmarked at 123.95 tok/s — see speed fix above)
-6. **Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)** — compose ready; 111 GB pre-download required (see Experiment 7 section)
+6. **Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)** — compose ready; 111 GB pre-download required (see Experiment 7 section). **Sole remaining candidate** (2026-09-27)
+
+> **2026-09-27 cleanup:** all artifacts for the done/superseded/dropped rounds were removed — 9 experiment compose files, 9 profiles, 7 stopped containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). This file is the permanent record of those results. Kept locally: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver).

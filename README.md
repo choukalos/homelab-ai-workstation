@@ -69,16 +69,16 @@ All ports are LAN-only. Never exposed publicly.
 ./scripts/model-manager experiment list
 
 # Start a named experiment (uses pre-configured profile)
-./scripts/model-manager experiment start --profile experiment-gemma4-31b
+./scripts/model-manager experiment start --profile <PROFILE>
 
 # Start an ad-hoc experiment with a model path
 ./scripts/model-manager experiment start <MODEL_PATH>
 
 # Switch between experiments (no rollback needed)
-./scripts/model-manager experiment switch experiment-nemotron-3-nano-30b
+./scripts/model-manager experiment switch <EXPERIMENT>
 
 # View experiment profile details
-./scripts/model-manager experiment show experiment-gemma4-31b
+./scripts/model-manager experiment show <PROFILE>
 
 # View experiment history log
 ./scripts/model-manager experiment archive
@@ -90,17 +90,11 @@ Named experiments are defined by a YAML profile and a Docker Compose file:
 
 | Profile | Model | VRAM | Notes |
 |---|---|---|---|
-| `experiment-gemma4-31b` | google/gemma-4-31b-it | ~35-45 GB | Dense 31B, FP8 runtime quantization, good for general tasks |
-| `experiment-qwen3-next-80b-thinking-fp8-mtp` | Qwen/Qwen3-Next-80B-A3B-Thinking-FP8 | ~55-62 GB | 80B MoE (3B active), FP8 + MTP, thinking mode, nightly vLLM |
-| `experiment-qwen36-27b-w8a16-128k-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~40-48 GB | W8A16 INT8, 128K ctx, 3 threads, MTP — best daily-coder candidate (Path A, superseded by Qwen3.8 NVFP4) |
-| `experiment-qwen36-int4-mtp` | Lorbus/Qwen3.6-27b-int4-AutoRound | ~48-52 GB | Same model as the old daily driver (Qwen3.6 INT4) + MTP — minimal-risk throughput upgrade (Path B) |
-| `experiment-qwen-long-w8a16-mtp` | 88plug/Qwen3.6-27B-W8A16 | ~35-42 GB | W8A16 INT8, 262K ctx, 4 threads, MTP — max long context |
-| `experiment-qwen38-27b-fp8` | Qwen/Qwen3.8-27B-FP8 | ~40-50 GB | Official FP8, 128K ctx, 3 threads, MTP, vision, tool calling |
-| `experiment-qwen38-27b-nvfp4` | unsloth/Qwen3.8-27B-NVFP4 | ~58 GB | NVFP4 4-bit, 196K ctx, 3 threads, vision, tool calling — **promoted to matrix-coder 2026-08-24** |
+| *(none — 2026-09-27 cleanup)* | — | — | Round-1 (2026-07-05) and Qwen3.8-round profiles removed; results archived in [EXPERIMENTS_RESULTS.md](EXPERIMENTS_RESULTS.md). Sole remaining candidate: **Experiment 7 — Qwen3.8-Flash-Next 125B MoE**, `compose/experiments/qwen38-flash-next-gguf.yml` (llama.cpp, 4-bit GGUF; strongest daily-driver candidate on paper) |
 
 > **Note:** The `--profile` flag lets you jump between experiments without rolling back to production. Use `mode rollback` to return to the previous production mode.
 
-> **Removed profiles:** Nemotron-3-Nano (Mamba-2/Transformer not vLLM-compatible) and Qwen3-Next NVFP4 (TensorRT-LLM-only format) were removed during compatibility research. See TODO.md for details.
+> **Removed profiles:** Nemotron-3-Nano (Mamba-2/Transformer not vLLM-compatible) and Qwen3-Next NVFP4 (TensorRT-LLM-only format) were removed during compatibility research. **2026-09-27:** all remaining round-1/Qwen3.8-round experiment profiles + compose files removed (results in EXPERIMENTS_RESULTS.md); experiments 3 & 6 dropped (old models — Flash-Next is the next candidate), 4 & 5 superseded by Qwen3.8.
 
 ## Directory Layout
 
@@ -113,16 +107,8 @@ home/
     experiment.yml      # vLLM template (copy & edit)
     comfyui.yml         # ComfyUI (Qwen-Image create + edit) + media-pipeline orchestrator
     metrics.yml         # node-exporter + dcgm-exporter
-    experiments/        # Named experiment compose files
-      gemma4-31b.yml
-      nemotron-puzzle-75b-nvfp4.yml
-      qwen3-next-80b-thinking-fp8-mtp.yml
-      qwen36-27b-w8a16-128k-mtp.yml
-      qwen36-int4-mtp.yml
-      qwen38-27b-fp8.yml
-      qwen38-27b-instruct-4bit.yml
-      qwen38-27b-nvfp4.yml
-      qwen-long-w8a16-mtp.yml
+    experiments/        # Named experiment compose files (2026-09-27: only Experiment 7 remains)
+      qwen38-flash-next-gguf.yml
     legacy/             # Archived pre-migration files
   models/profiles/      # Declarative model profiles
     experiment-*.yaml   # Experiment profile definitions

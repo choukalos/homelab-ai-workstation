@@ -86,10 +86,11 @@ Expected, not bloat.) Retention: keep last 2 model snapshots (rollback to the
 previous model set).
 
 **Explicitly OUT** (re-downloadable): the rest of `data/models/hub/`
-(experiment candidates: gemma-4-31b 59 GB, Qwen3.8-FP8 29 GB, Lorbus INT4
-18 GB, cyankiwi gemma-4-26B AWQ 17 GB — all re-pullable from HF),
+(non-manifest: Lorbus INT4 18 GB — live `qwen-long` mode; cyankiwi
+gemma-4-26B AWQ 17 GB — live Ollama light model; both re-pullable from HF),
 `data/ollama/` (~34 GB), `data/huggingface/` (~18 GB), `upscale_models`,
-`animatediff_*`, `controlnet`, etc. The Inferact NVFP4 duplicate (25 GB) was
+`animatediff_*`, `controlnet`, etc. The Inferact NVFP4 duplicate (25 GB) and
+the experiment weights gemma-4-31b-it (59 GB) + Qwen3.8-27B-FP8 (29 GB) were
 deleted 2026-09-27 (see Decisions).
 
 ## Verification
@@ -109,9 +110,10 @@ deleted 2026-09-27 (see Decisions).
 |---|---|---|
 | checkpoints (6 GB) | **INCLUDED** in the model manifest (safe-side; one manifest line to remove if not wanted) | 2026-09-26 |
 | encryption at rest | **DROPPED (accepted risk)**: LAN-only homelab NAS with credential-restricted access; plaintext keeps things simple. Revisit restic if Lego ever becomes reachable off-LAN | 2026-09-27 |
-| Inferact NVFP4 duplicate (25 GB) | **DELETED** — re-downloadable copy of the live unsloth model. Safety checks before delete: live model confirmed as the unsloth copy three ways (process args, `docker inspect`, vLLM API root field), no open fds, unsloth copy verified intact + vLLM healthy after. Note added to `models/profiles/experiment-qwen38-27b-nvfp4.yaml` | 2026-09-27 |
+| Inferact NVFP4 duplicate (25 GB) | **DELETED** — re-downloadable copy of the live unsloth model. Safety checks before delete: live model confirmed as the unsloth copy three ways (process args, `docker inspect`, vLLM API root field), no open fds, unsloth copy verified intact + vLLM healthy after. Note was added to `models/profiles/experiment-qwen38-27b-nvfp4.yaml` (removed in the 2026-09-27 cleanup; this doc is the record) | 2026-09-27 |
 | uid-1024 0600 files breaking the routine run | **Privileged rsync wrapper** (root rsync via scoped sudoers rule) + chown of the two files. The two files are the Qwen-Image-2512 infographic workflow — a media-pipeline reference intentionally kept during the 2026-08-28 legacy cleanup (`docs/matrix_comfyui_media_api.md`), so worth backing up | 2026-09-27 |
 | static `/etc/hosts` entry | Not needed — `lego.local` resolves via DNS | 2026-09-27 |
+| experiment cleanup | Dropped experiments 3 & 6 (old models; Flash-Next is the next candidate); removed round-1/Qwen3.8-round artifacts (9 compose files, 9 profiles, 7 containers) + ~88 GB re-downloadable weights (gemma-4-31b-it 59 GB, Qwen3.8-27B-FP8 29 GB, Qwen3-Next-80B 16 MB, 88plug W8A16 refs). Kept: Lorbus INT4 18 GB (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17 GB (live Ollama), unsloth NVFP4 22 GB (daily driver) | 2026-09-27 |
 
 ## History / incidents
 

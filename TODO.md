@@ -1,7 +1,7 @@
 # TODO
 
 Consolidated open work across the homelab repo. Sources are listed per item.
-Last consolidated: 2026-09-25.
+Last consolidated: 2026-09-27 (experiment cleanup).
 
 ## Active
 
@@ -14,9 +14,6 @@ Last consolidated: 2026-09-25.
   4. Smoke-test via LiteLLM (`matrix-coder`), then benchmark vs the 27B daily driver
   5. Restore `qwen-coder.yml` on port 8000 when done (or promote Flash-Next if it wins)
   Fallback if RAM-tight: `UD-IQ3_XXS` (82 GB, 85.4% retention). *(EXPERIMENTS_RESULTS.md, Experiment 7)*
-- [ ] **Run experiment 6: Nemotron-3-Puzzle-75B-A9B NVFP4** — config + profile ready. ⚠️ Pull latest `vllm/vllm-openai:latest` first (NVFP4 Marlin fallback needs v0.22.1+). *(EXPERIMENTS_RESULTS.md, Next Steps)*
-- [ ] **Qwen3-Next-80B FP8 experiment (low priority)** — config tweaked but never run; may drop in the future. *(EXPERIMENTS_RESULTS.md, Experiment 3)*
-- [ ] **Consider W8A16 + MTP** as a potential quality upgrade over the current NVFP4 (4-bit) + MTP daily driver. *(EXPERIMENTS_RESULTS.md, Next Steps)*
 - [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
 
 ### Media pipeline / MCP follow-ups (from 2026-09-25 verification)
@@ -33,15 +30,19 @@ Last consolidated: 2026-09-25.
 
 ### Housekeeping
 
-- [x] **Clean up stale containers** — `vllm-gemma`, `vllm-qwen`, `ollama-model-puller` no longer exist (removed earlier); `comfyui_backend` is a live service. Remaining 7 stopped experiment containers are optional cleanup, left in place for the pending experiment reruns. *(docs/matrix_manual_tasks.md, resolved 2026-08-28)*
+- [x] **Clean up stale containers** — `vllm-gemma`, `vllm-qwen`, `ollama-model-puller` no longer exist (removed earlier); `comfyui_backend` is a live service. The 7 remaining stopped experiment containers were removed 2026-09-27 (experiment cleanup). *(docs/matrix_manual_tasks.md, resolved 2026-08-28; containers resolved 2026-09-27)*
 - [x] **Set `HF_TOKEN` in `.env`** — verified set (2026-08-28). *(docs/matrix_manual_tasks.md, resolved 2026-08-28)*
 
-## Dropped (2026-08-28)
+## Dropped
 
-- ~~Rerun experiments 4 & 5~~ — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8 (current NVFP4 daily driver + Qwen3.8-Flash-Next candidate). *(EXPERIMENTS_RESULTS.md, Next Steps)*
+- ~~Rerun experiments 4 & 5~~ (2026-08-28) — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8 (current NVFP4 daily driver + Qwen3.8-Flash-Next candidate). *(EXPERIMENTS_RESULTS.md, Next Steps)*
+- ~~Run experiment 6: Nemotron-3-Puzzle-75B NVFP4~~ (2026-09-27) — old model; Experiment 7 (Qwen3.8-Flash-Next 125B) is a far better next candidate. *(EXPERIMENTS_RESULTS.md, Experiment 6)*
+- ~~Qwen3-Next-80B FP8 experiment~~ (2026-09-27) — old model, never run; Flash-Next supersedes it. *(EXPERIMENTS_RESULTS.md, Experiment 3)*
+- ~~Consider W8A16 + MTP as a quality upgrade~~ (2026-09-27) — the W8A16 experiments were Qwen3.6 (dropped 2026-08-28); MTP is already in production on the NVFP4 daily driver (2 tokens, tuned 2026-08-25); no Qwen3.8 8-bit candidate identified — revisit only if 4-bit quality issues surface. *(EXPERIMENTS_RESULTS.md, Next Steps)*
 
 ## Done (this consolidation)
 
+- [x] **Experiment cleanup (2026-09-27)** — dropped experiments 3 (Qwen3-Next-80B FP8) & 6 (Nemotron-3-Puzzle-75B NVFP4) as old models; Experiment 7 (Flash-Next 125B) is the next candidate. Removed: 9 experiment compose files + 9 profiles (round-1 + Qwen3.8-round), 7 stopped experiment containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). Kept: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver). Results archived in EXPERIMENTS_RESULTS.md.
 - [x] **Media MCP auth + `media_pull` path fix (thor, 2026-09-25)** — auth for the `mcp_media` tool updated (key = user, key passed to the pipeline); finished files exposed publicly via `siri.choukalos.com` / `choukalos.com/files`. `media_pull` now accepts `media_jobs/<job_id>/<file>` paths (verified: signed URL minted). `auth_todo.md` deleted post-completion. The 30 s MCP tool-call abort was fixed the same day (submit-and-poll on the `mcp_media` tool side — see Active).
 - [x] **Media MCP client + TTS voice library (matrix + thor, 2026-09-25)** — Qwen-Image-2.1 client defaults + `model`/`references` pass-through, voice library (`trailer`/`default`/`narrator_f`/`deep_m`), and the three voice MCP tools (`media_list_voices` / `media_add_voice` / `media_delete_voice`) deployed on the MCP host and verified end-to-end (15 checks: gen/edit/legacy/image-refs, TTS by name + by path + unknown-voice 400, add/delete round-trip, freeze/assemble smoke, pull/info). Evidence: `docs/matrix_validation_log.md` (Run 2026-09-25); contract: `docs/matrix_media_pipeline_api.md` + `media-mcp-client/HANDOFF.md`. Working docs `update_media_mcp_todo.md`, `voices_todo.md`, `voices_thor_handoff.md` deleted post-completion.
 - [x] **Experiment system: manual testing** — the system has been exercised end-to-end in production: MTP experiment (2026-07-05), Qwen3.8-27B NVFP4 candidate round (2026-08-14 → 2026-08-24), promotion to `matrix-coder`, MTP 3→2 tuning + speed fix (2026-08-25, 123.95 tok/s). *(TODO.md, originally "Manual Testing")*
