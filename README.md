@@ -176,6 +176,7 @@ Detailed design docs are in `docs/`:
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision
 - [Inventory](docs/matrix_inventory.md) — Append-only system snapshots
 - [Backup](docs/matrix_backup.md) — `/home/chuck/data` → Lego NAS: design, scope decisions, incident history (operations: `scripts/backup/README.md`)
+- [Backup Chain Plan](docs/backup_chain_plan.md) — Lego → Athena (Synology) + 3× USB drives: full inventory, Comcast cleanup, Hyper Backup pull design (pending Athena access)
 - [Manual Tasks](docs/matrix_manual_tasks.md) — Operator-approval tasks (resolved + open)
 - [Validation Log](docs/matrix_validation_log.md) — Post-change validation evidence
 - [TODO](TODO.md) — Consolidated open work
