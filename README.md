@@ -133,6 +133,7 @@ home/
     matrix_health.sh    # Quick health checks
     vllm_feature_eval.sh # vLLM feature testing
     comfyui_venv_deps.sh # Reinstall custom-node deps after a ComfyUI venv rebuild (numpy<2.5 pin)
+    backup/              # Lego NAS backup: rsync-over-CIFS snapshots (docs/matrix_backup.md + backup/README.md)
   docs/                 # Design docs & reference materials
   media-pipeline/       # Media orchestrator service (Docker build context: server.py, workflows.py, Dockerfile)
   media-mcp-client/     # Remote MCP client (thin HTTP client + FastMCP tools for the media pipeline)
@@ -188,6 +189,7 @@ Detailed design docs are in `docs/`:
 - [Benchmark Plan](docs/matrix_benchmark_plan.md) — Performance testing approach
 - [Embeddings Decision](docs/matrix_embeddings_decision.md) — Matrix vs. Thor placement decision
 - [Inventory](docs/matrix_inventory.md) — Append-only system snapshots
+- [Backup](docs/matrix_backup.md) — `/home/chuck/data` → Lego NAS: design, scope decisions, incident history (operations: `scripts/backup/README.md`)
 - [Manual Tasks](docs/matrix_manual_tasks.md) — Operator-approval tasks (resolved + open)
 - [Validation Log](docs/matrix_validation_log.md) — Post-change validation evidence
 - [TODO](TODO.md) — Consolidated open work

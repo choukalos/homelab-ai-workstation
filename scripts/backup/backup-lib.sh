@@ -2,7 +2,7 @@
 # backup-lib.sh — shared logic for the Lego backup scripts.
 # Sourced by backup-routine.sh / backup-models.sh / backup-restore.sh.
 #
-# Design (see backup_todo.md):
+# Design (see docs/matrix_backup.md):
 #   - rsync over a CIFS mount of the Lego NAS (fstab, systemd automount)
 #   - dated snapshots with --link-dest hardlink rotation (delta cost, full view)
 #   - prune by count, post-run dry-run verify, flock against overlap

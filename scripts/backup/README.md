@@ -1,7 +1,7 @@
 # Lego backup (matrix → 192.168.5.100)
 
-rsync-over-CIFS snapshots of `/home/chuck/data` onto the Lego NAS, per the
-design in [`../../backup_todo.md`](../../backup_todo.md).
+rsync-over-CIFS snapshots of `/home/chuck/data` onto the Lego NAS. Design,
+decisions, and incident history: [`../../docs/matrix_backup.md`](../../docs/matrix_backup.md).
 
 ## Layout
 

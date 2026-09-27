@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # backup-routine.sh — Track 1: routine data, weekly (cron, Sunday 03:00).
 #
-# Scope (per backup_todo.md):
+# Scope (per docs/matrix_backup.md):
 #   data/media/projects                          — finished deliverables
 #   data/comfyui/basedir/{input,output,user,config}
 # Excluded by construction: media_jobs (14-day retention, re-runnable),
