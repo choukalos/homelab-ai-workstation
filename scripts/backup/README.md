@@ -33,7 +33,8 @@ only the delta consumes space. Pruning is a plain `rm -rf` (hardlink-safe).
 | `backup-routine.sh` | Track 1: `media/projects` + comfyui `input/output/user/config` |
 | `backup-models.sh` | Track 2: manifest-driven production model set (~110 GB) |
 | `backup-restore.sh` | restore a snapshot (dry-run by default, `--apply` to execute) |
-| `backup-setup.sh` | **one-time root setup**: fstab + mount + capacity check |
+| `backup-setup.sh` | **one-time root setup**: fstab + mount + capacity check + wrapper install |
+| `lego-backup-rsync` | privileged rsync wrapper (installed to `/usr/local/sbin`, root-owned) |
 | `model_manifest.txt` | the production model list (edit when the set changes) |
 
 ## First-time setup (once, as root)
@@ -53,7 +54,9 @@ NAS can never wedge boot or other services.
 
 The setup script also installs a scoped sudoers rule
 (`/etc/sudoers.d/lego-backup`) so the backup user can `mount`/`umount -l`
-`/mnt/lego` without a password — needed for the self-heal below.
+`/mnt/lego` without a password — needed for the self-heal below — and a
+second one (`/etc/sudoers.d/lego-backup-rsync`) for the privileged rsync
+wrapper (below).
 
 ## Operations
 
@@ -73,6 +76,26 @@ The setup script also installs a scoped sudoers rule
 - Locking: `flock` prevents overlapping runs of the same track.
 - Restore is **additive** (no `--delete`): it never removes live files that
   are absent from the snapshot.
+
+### Privileged rsync (root, via wrapper)
+
+All backup/verify/restore rsyncs run **as root** through the
+`lego-backup-rsync` wrapper (source of truth in this directory; installed
+root-owned 755 at `/usr/local/sbin/lego-backup-rsync` by `backup-setup.sh`).
+Why: `/home/chuck/data` contains files owned by other uids with restrictive
+modes — the ComfyUI container runs as uid 1024 (in-container `comfy` user)
+and saves some files 0600, unreadable by chuck. On 2026-09-27 two such files
+broke the routine cron run (rsync code 23). A root rsync reads everything,
+so ownership/mode quirks can never break a run again.
+
+Security model: the sudoers rule grants **no arguments** and the wrapper is
+root-owned (the backup user cannot modify it), so the wrapper is the only
+enforcement — it validates src/dest roots (backup/verify:
+`/home/chuck/data` → `/mnt/lego`; restore: the reverse), rejects `..`
+components, resolves symlinks before the root check, and fixes the rsync
+flags (callers pass none). `check_setup` probes it with `sudo -n ... ping`
+each run. Side benefit: restore also runs as root, so root-owned local files
+(e.g. the HF model hub dirs) can be overwritten on restore.
 
 ## CIFS / macOS SMB quirks (measured 2026-09-26)
 
@@ -134,7 +157,9 @@ Mitigations baked into the scripts:
   `sync_source` (full-read cost on 110 GB).
 - **checkpoints (6 GB) are INCLUDED** in the model manifest (open item #2,
   resolved safe-side 2026-09-26). Remove its manifest line to exclude.
-- **Plaintext on a LAN-only NAS** (open item #3): if Lego ever becomes
-  reachable off-LAN, switch Track 2 to restic.
-- The Inferact NVFP4 duplicate (25 GB) is intentionally NOT backed up
-  (re-downloadable; deletion is a separate decision — open item #4).
+- **Plaintext on a LAN-only NAS** (open item #3, DROPPED 2026-09-27 —
+  accepted risk): if Lego ever becomes reachable off-LAN, switch Track 2 to
+  restic.
+- The Inferact NVFP4 duplicate (25 GB) was a re-downloadable copy of the live
+  unsloth model; it was **deleted 2026-09-27** (open item #4, resolved) and
+  is not in any model snapshot taken after that date.

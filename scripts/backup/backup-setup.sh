@@ -89,6 +89,20 @@ chmod 440 "$SUDOERS_FILE"
 visudo -c -f "$SUDOERS_FILE" >/dev/null 2>&1 || { rm -f "$SUDOERS_FILE"; fail "sudoers validation failed"; }
 echo "sudoers: $BACKUP_USER can mount/remount $MOUNT without password"
 
+# 4b2. privileged rsync wrapper + its own scoped sudoers file (kept separate
+#      from the mount rule above so a bad edit can't take the mount rule down).
+#      Root rsync reads everything under /home/chuck/data — ComfyUI runs as
+#      uid 1024 in-container and saves some files 0600, unreadable by the
+#      backup user (broke the 2026-09-27 routine run, rsync code 23). The
+#      wrapper (root-owned, fixed rsync flags, src/dest root validation) is
+#      the only enforcement; the sudoers rule grants no arguments.
+install -m 755 -o root -g root "$SCRIPT_DIR/lego-backup-rsync" /usr/local/sbin/lego-backup-rsync
+RSYNC_SUDOERS_FILE=/etc/sudoers.d/lego-backup-rsync
+printf '%s\n%s\n' "# lego-backup: privileged rsync wrapper (see /usr/local/sbin/lego-backup-rsync)" "$BACKUP_USER ALL=(root) NOPASSWD: /usr/local/sbin/lego-backup-rsync" > "$RSYNC_SUDOERS_FILE"
+chmod 440 "$RSYNC_SUDOERS_FILE"
+visudo -c -f "$RSYNC_SUDOERS_FILE" >/dev/null 2>&1 || { rm -f "$RSYNC_SUDOERS_FILE"; fail "sudoers validation failed (rsync wrapper)"; }
+echo "sudoers: $BACKUP_USER can run the privileged rsync wrapper without password"
+
 # 4c. systemd: re-run the fstab generator so the x-systemd.automount unit
 #     exists without a reboot (the generator normally runs at boot only).
 systemctl daemon-reload 2>/dev/null && echo "systemd: fstab units regenerated (lego.automount)" || echo "WARNING: systemctl daemon-reload failed (units appear after reboot)"

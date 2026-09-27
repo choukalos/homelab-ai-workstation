@@ -36,6 +36,10 @@ check_setup() {
   fi
   [[ "$LEGO_SHARE" != "CHANGE_ME" ]] || die "LEGO_SHARE in backup.conf is still CHANGE_ME — run: sudo $LIB_DIR/backup-setup.sh <share-name>"
   command -v mount.cifs >/dev/null || die "mount.cifs missing — install cifs-utils"
+  # privileged rsync wrapper + its sudoers rule (root reads everything under
+  # DATA_ROOT — see lego-backup-rsync for the why)
+  [[ -x "$RSYNC_PRIV" ]] || die "privileged rsync wrapper $RSYNC_PRIV missing — install it: sudo $LIB_DIR/backup-setup.sh $LEGO_SHARE"
+  sudo -n "$RSYNC_PRIV" ping >/dev/null 2>&1 || die "sudo -n $RSYNC_PRIV ping failed — the /etc/sudoers.d/lego-backup-rsync rule is missing or broken (re-run: sudo $LIB_DIR/backup-setup.sh $LEGO_SHARE)"
 }
 
 # ── mount handling ─────────────────────────────────────────────────────────
@@ -93,6 +97,11 @@ prev_snapshot() { # $1=snap_root $2=today
 # Rsync one source into the snapshot, mirroring its path under DATA_ROOT.
 # $4 = dry-run (0/1). With --link-dest, unchanged files become hardlinks to
 # the previous snapshot (zero extra disk); changed/new files take real space.
+# Runs as ROOT via $RSYNC_PRIV (lego-backup-rsync) so files owned by other
+# uids with restrictive modes (e.g. ComfyUI's uid-1024 0600 files) are
+# readable — 2026-09-27: two such files broke the routine cron run (rsync
+# code 23). The wrapper validates src/dest roots and fixes the flags:
+#   -rtL --delete --modify-window=1 --timeout=60 [--link-dest=prev] [-n]
 # Flags (tuned for this CIFS mount, verified 2026-09-26):
 #   -rt (NOT -a): the share can't represent real Unix modes (macOS SMB server
 #     reports 755 for everything), so -a would re-transfer every file on every
@@ -111,13 +120,11 @@ sync_source() { # $1=src $2=dest_root $3=prev_root_or_empty $4=dry_run
   local dest="$dest_root/$rel"
   local prevsub=""
   [[ -n "$prev" && -d "$prev/$rel" ]] && prevsub="$prev/$rel"
-  local args=(-rtL --delete --modify-window=1 --timeout=60)
-  [[ -n "$prevsub" ]] && args+=(--link-dest="$prevsub")
-  local drylabel=""
-  [[ "$dry" == "1" ]] && { args+=(-n); drylabel=" (dry-run)"; }
+  local drylabel="" dryarg=""
+  [[ "$dry" == "1" ]] && { drylabel=" (dry-run)"; dryarg="--dry-run"; }
   mkdir -p "$dest"
-  log "rsync $src -> $dest${prevsub:+ (link-dest $prevsub)}$drylabel"
-  rsync "${args[@]}" "$src/" "$dest/"
+  log "rsync $src -> $dest${prevsub:+ (link-dest $prevsub)}$drylabel (as root via $RSYNC_PRIV)"
+  sudo -n "$RSYNC_PRIV" backup "$src" "$dest" ${prevsub:+"$prevsub"} ${dryarg:+"$dryarg"}
 }
 
 prune_snapshots() { # $1=snap_root $2=keep
@@ -134,13 +141,14 @@ prune_snapshots() { # $1=snap_root $2=keep
 
 # Post-run verify: a dry-run re-rsync must report 0 files that would change.
 # WARN rather than fail: CIFS mtime granularity can produce false positives.
-# Same flags as sync_source (-rtL --modify-window=1) so the check is consistent.
+# Same flags as sync_source (-rtL --modify-window=1) so the check is
+# consistent; runs as root via $RSYNC_PRIV for the same reason.
 verify_snapshot() { # $1=dest_root $2...=sources
   local dest_root="$1"; shift
   local src rel n total=0
   for src in "$@"; do
     rel="${src#"$DATA_ROOT"/}"
-    n=$(rsync -rtnL --delete --modify-window=1 --timeout=60 "$src/" "$dest_root/$rel/" | wc -l)
+    n=$(sudo -n "$RSYNC_PRIV" verify "$src" "$dest_root/$rel" | wc -l)
     total=$((total + n))
   done
   if (( total == 0 )); then

@@ -51,7 +51,7 @@ main() {
 
   if [[ $APPLY -eq 0 ]]; then
     local n
-    n=$(rsync -rtn --modify-window=1 --timeout=60 "$src/" "$DATA_ROOT/" | wc -l)
+    n=$(sudo -n "$RSYNC_PRIV" restore "$src" "$DATA_ROOT" --dry-run | wc -l)
     log "dry-run: $n files would be copied/changed (no --delete: live files are never removed)"
     log "=== restore DRY-RUN done (nothing written) — re-run with --apply to execute ==="
     return 0
@@ -60,7 +60,9 @@ main() {
   # -rt (not -a): CIFS reports every file as mode 755, so -a would chmod
   # restored files to 755. New files get default umask perms (644); existing
   # local files are never chmod'd. Additive: no --delete, live files kept.
-  rsync -rt --modify-window=1 --timeout=60 "$src/" "$DATA_ROOT/"
+  # Runs as root via $RSYNC_PRIV so root-owned local files (e.g. the HF model
+  # hub dirs) can be overwritten by snapshot contents.
+  sudo -n "$RSYNC_PRIV" restore "$src" "$DATA_ROOT"
   log "=== restore done ==="
 }
 

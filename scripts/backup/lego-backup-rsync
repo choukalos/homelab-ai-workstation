@@ -1,0 +1,91 @@
+#!/bin/bash
+# lego-backup-rsync — privileged rsync for the Lego backup.
+# Runs as root via the scoped NOPASSWD sudoers rule in
+# /etc/sudoers.d/lego-backup-rsync (installed by backup-setup.sh; the copy
+# installed on the host lives at /usr/local/sbin/lego-backup-rsync).
+#
+# Why: /home/chuck/data contains files owned by other uids with restrictive
+# modes — the ComfyUI container runs as uid 1024 (in-container `comfy` user)
+# and saves some files 0600, unreadable by chuck. A root rsync reads
+# everything, so ownership/mode quirks can never break a backup run again
+# (2026-09-27: two 0600 workflow files broke the routine cron run, rsync
+# code 23).
+#
+# Contract (validated here — the sudoers rule grants no argument restrictions,
+# so this script is the only enforcement):
+#   lego-backup-rsync backup  <src> <dest> [prev] [--dry-run]
+#       src under /home/chuck/data, dest+prev under /mnt/lego
+#       -> rsync -rtL --delete --modify-window=1 --timeout=60 [--link-dest=prev]
+#   lego-backup-rsync verify  <src> <dest>
+#       -> same as backup with -n (dry-run); output line count = files that
+#          would still change (used by post-run verify)
+#   lego-backup-rsync restore <src> <dest> [--dry-run]
+#       src under /mnt/lego, dest under /home/chuck/data
+#       -> rsync -rt --modify-window=1 --timeout=60 (additive, no --delete)
+#   lego-backup-rsync ping
+#       -> exit 0 (health probe: root + sudoers rule work)
+#
+# rsync flags are fixed here — see sync_source() in backup-lib.sh for why
+# -rt (not -a) and -L on this CIFS mount.
+#
+# Source of truth: /home/chuck/homelab/scripts/backup/lego-backup-rsync
+# (keep in sync with the installed /usr/local/sbin copy).
+
+set -euo pipefail
+
+DATA_ROOT="/home/chuck/data"
+MNT="/mnt/lego"
+
+die() { echo "lego-backup-rsync: $*" >&2; exit 1; }
+
+[[ ${EUID} -eq 0 ]] || die "must run as root (via: sudo -n lego-backup-rsync ...)"
+
+# Resolve $1 (symlinks included, missing components OK) and require the
+# result to be inside $2.
+check_path() { # $1=path $2=allowed-root
+  local p="$1" root="$2" r
+  [[ "$p" == *".."* ]] && die "path contains '..': $p"
+  r=$(realpath -m -- "$p" 2>/dev/null) || die "cannot resolve path: $p"
+  [[ "$r" == "$root" || "$r" == "$root"/* ]] || die "path outside $root: $p (resolved: $r)"
+  printf '%s' "$r"
+}
+
+mode="${1:-}"
+[[ $# -gt 0 ]] && shift
+case "$mode" in
+  backup|verify)
+    [[ $# -ge 2 && $# -le 4 ]] || die "usage: $mode <src> <dest> [prev] [--dry-run]"
+    src=$(check_path "$1" "$DATA_ROOT")
+    dest=$(check_path "$2" "$MNT")
+    prev=""; dry=""
+    for a in "${@:3}"; do
+      case "$a" in
+        --dry-run) dry="-n" ;;
+        *) prev=$(check_path "$a" "$MNT") ;;
+      esac
+    done
+    args=(-r -t -L --modify-window=1 --timeout=60)
+    [[ -n "$dry" ]] && args+=(-n)
+    args+=(--delete)
+    [[ -n "$prev" ]] && args+=(--link-dest="$prev")
+    exec /usr/bin/rsync "${args[@]}" "$src/" "$dest/"
+    ;;
+  restore)
+    [[ $# -ge 2 && $# -le 3 ]] || die "usage: restore <src> <dest> [--dry-run]"
+    src=$(check_path "$1" "$MNT")
+    dest=$(check_path "$2" "$DATA_ROOT")
+    dry=""
+    [[ "${3:-}" == "--dry-run" ]] && dry="-n"
+    args=(-r -t --modify-window=1 --timeout=60)
+    [[ -n "$dry" ]] && args+=(-n)
+    exec /usr/bin/rsync "${args[@]}" "$src/" "$dest/"
+    ;;
+  ping)
+    # no-op health probe (used by check_setup): proves root + the sudoers
+    # rule work, exits 0.
+    exit 0
+    ;;
+  *)
+    die "unknown mode '$mode' (want backup|verify|restore|ping)"
+    ;;
+esac
