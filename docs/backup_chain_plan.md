@@ -9,11 +9,17 @@
 
 > **Design update 2026-09-27 (user requirements):** Athena must serve as a **failover** for
 > Lego (browsable, same directory structure, Infuse + SSH-as-chuck access), Athena has **less
-> space** than Lego, and the USB tier is **3 drives of varying sizes, manual ~monthly +
-> FireSafe 1–2×/year** (replacing the user's old rsync shell script). Consequence: the
-> recommended design is now **two copies on Athena** — a Hyper Backup *versioned store*
-> (safety net with history) **plus** an rsync *browsable mirror* (the failover/Infuse copy,
-> scoped to fit Athena's capacity) — with the USB tier handled by new scripts (Phase 3).
+> space** than Lego (~4–5 TB free vs ~19 TB used on Lego), and the USB tier is **3 drives of
+> varying sizes (~12 / 8 / 6 TB), manual ~monthly + FireSafe 1–2×/year** (replacing the
+> user's old rsync shell script — whose layout is being replaced by the Lego-mirroring
+> layout).
+>
+> **Final decision 2026-09-27 (user):** **Hyper Backup dropped** — no versioned store. The
+> design is a **plain rsync mirror** on Athena (`lego/` share, file-for-file, deletions
+> included) + **rsync copies of the mirror to the USB drives**. Mirror scope: everything
+> except `Multimedia/video` (15.1 TB — doesn't fit; lowest priority) and `chuck/#recycle`
+> (966 GB trash). Video goes to the USB drives (12 TB movies / 8 TB 4K split). 10%
+> free-space flag on Athena. See `nas_backup_plan.md`.
 
 ---
 
@@ -126,63 +132,66 @@ Sept 2025 dir is retained.)*
 | Fits Athena's existing USB chain | ✅ (USB tasks are almost certainly Hyper Backup too) | ⚠️ mirror folder would need adding to USB tasks | ⚠️ same |
 | Ongoing ops | DSM task, no scripts to babysit | new scripts + cron + mounts to maintain | rsyncd configs on both NASes |
 
-**Recommendation (updated 2026-09-27): Option A (Hyper Backup pull) *plus* an rsync
-browsable mirror on Athena.** The failover requirement (Infuse + SSH + "same structure" if
-Lego is down) cannot be served by a Hyper Backup version store — it needs a plain mirrored
-tree. So Athena holds (a) the Hyper Backup versioned store (history/safety net) and (b) a
-`lego/` mirror share filled by an rsync script (Phase 3), scoped to Athena's smaller
-capacity (§3 of `nas_backup_plan.md` has the sizing table). The mirror is the failover
-copy; if space is tight the mirror wins it and Hyper Backup covers a subset.
+**Final decision (2026-09-27, user): plain rsync mirror only — Hyper Backup dropped.**
+The failover requirement (Infuse + SSH + "same structure") needs a plain mirrored tree, and
+the user wants mirror semantics ("the files on Lego are on Athena, mirrored") without a
+versioned store. Implementation: **Athena pulls** (cifs mount of the in-scope Lego shares as
+the `backup` user + rsync `--delete` into `lego/<share>/`, daily cron, verify, logged —
+Phase 3 scripts). Scope: everything except `Multimedia/video` (15.1 TB — doesn't fit in
+~4–5 TB; lowest priority) and `chuck/#recycle` (trash). Trade-off accepted: no versioning —
+deletions on Lego propagate to Athena/USB on the next sync.
 
-Option B stays on the table for the subset of data that must be a **browsable mirror** (e.g. if
-Athena is ever used as a direct restore target for matrix/thor data) — but mirroring all 19 TB
-through matrix is not worth it.
+Option B (rsync through matrix) and Option C (rsyncd) remain rejected: the pull happens
+*on Athena* (single hop, matches the requested pull model, no matrix dependency).
 
-### 3.2 Option A design
+### 3.2 Mirror design (final)
 
-1. **Lego side (one-time, DSM):**
-   - Confirm the `backup` user is enabled for SMB and can read the shares to be backed up
-     (verified: all shares readable).
-   - (Optional, if DSM allows) pin the backup user to the shares that matter, to keep the
-     attack surface small.
-2. **Athena side (DSM):**
-   - **Hyper Backup → Create → File** (version: "File"), source: *Remote → SMB* →
-     `//lego.local` (or IP) with the `backup` user.
-   - One task per Lego share (or one task with multiple sources, depending on the DSM version):
-     `Multimedia`, `Store`, `homes`, `backup`, `Share`, `Web`, `Container`, `Public`.
-   - Destination: a dedicated folder on Athena, e.g. `Athena:/lego-backup/<share>/` (see §4
-     for the aligned layout).
-   - Schedule: **daily incremental** (Hyper Backup dedups + compresses between runs, so the
-     steady-state delta is small); the 15 TB `Multimedia/video` initial sync will take a while
-     at 1 GbE (~2 days one-way) — run the first sync overnight/weekend.
-   - Retention: keep ≥ 4 weekly + monthly versions (match the matrix→Lego retention philosophy).
-3. **Verify (first week):**
-   - Spot-check: pick 3–5 files across shares, `sha256sum` on Athena's store (via Hyper Backup
-     restore to a temp folder) against the Lego originals.
-   - Check the task history for clean runs and the dedup/compression stats.
+1. **Lego side (one-time):** the existing `backup` SMB user (verified: read access to all
+   shares). No changes needed.
+2. **Athena side:**
+   - `lego/` shared folder with one subfolder per in-scope Lego share, same names:
+     `Multimedia, Store, homes, backup, Container, Share, Web, Public` (no `video` inside
+     `Multimedia` — excluded by scope).
+   - `cifs-utils` package; the mirror script mounts `//192.168.5.100/<share>` per share
+     (SMB 2.1, `soft`, same flags that work from matrix — see §1.3 quirks).
+   - rsync per share: `-rt --delete --modify-window=1 --timeout=60` (+ `--exclude` for
+     `#recycle`, `@Recently-Snapshot`, `@Recycle`), incremental, daily cron.
+   - **10% free-space flag**: before/during a run, if the Athena volume is <10% free the
+     script logs a prominent warning and the health check surfaces it (drive-upgrade signal).
+3. **Verify:** post-run file counts + hash spot-checks per share (same discipline as the
+   matrix backup scripts); the mirror is only "good" after a verified run.
 
 ### 3.3 Updating the USB-drive backups
 
-Athena's existing 3× USB backups (the user's old rsync shell script — "doesn't work very
-well") will be **replaced by new scripts (Phase 3, `nas_backup_plan.md` §5)**: automatic
-drive detection (the 3 drives are of varying sizes), size-fit check, incremental rsync with
-post-run verify, logging, safe unmount; manual trigger ~monthly plus a separate FireSafe
-mode (1–2×/year). The offline copies cover Athena's data, which now includes the Lego pull.
+The user's old rsync shell script ("pretty nasty") is being **replaced wholesale (Phase 3,
+`nas_backup_plan.md` §6)** — including its layout: the drives will now **mirror Lego's
+structure** (user decision 2026-09-27). Drive map (sizes to confirm when powered up):
+
+| Drive | Scope |
+|---|---|
+| 12 TB | `Multimedia/video` — movies |
+| 8 TB | `Multimedia/video` — 4K movies (existing practice: 4K on a separate drive) |
+| ~6 TB | everything else (photo, music, homes, Store, backup, Container, Share, Web, Public ≈ 4 TB) |
+
+Script behavior: auto-detect attached drives (size + label — no hardcoded mountpoints),
+free-space check, incremental rsync, post-run verify, logging, safe unmount; manual trigger
+~monthly plus a separate FireSafe mode (1–2×/year).
 
 - **Cadence:** monthly (manual) + FireSafe 1–2×/year — USB drives are the offline tier.
-- **Verify:** after the first extended USB run, list the drive contents and confirm the
-  Athena tree is present; spot-check one file hash.
+- **Verify:** after the first run, list the drive contents and confirm the Lego-mirrored tree
+  is present; spot-check one file hash.
 
 ### 3.4 What happens to the chain
 
 ```
-matrix ─▶ Lego ─▶ Athena ─▶ 3× USB
-          (rsync, existing)   (Hyper Backup pull, new)   (Hyper Backup, updated)
+matrix ─▶ Lego ─▶ Athena ─▶ 3× USB + FireSafe
+          (rsync, existing)   (rsync mirror, new)   (rsync copy of the mirror, new)
 ```
 
-- Off-site depth: data now exists in 4 places (origin, Lego, Athena, USB×3).
-- The matrix→Lego `backup` share (205 GB of snapshots) is itself included in the Lego→Athena
-  pull, so the USB tier also carries an off-box copy of the matrix/thor snapshots.
+- Data now exists in 4 places (origin, Lego, Athena, USB×3) — with mirror semantics
+  (deletions propagate; no versioning — the accepted trade-off of dropping Hyper Backup).
+- The matrix→Lego `backup` share (205 GB of snapshots) is included in the mirror, so the USB
+  tier also carries an off-box copy of the matrix/thor snapshots.
 
 ---
 
@@ -205,32 +214,38 @@ Athena:
     └── Public/                  # ← Lego share "Public"
 ```
 
-- Hyper Backup's per-share tasks map 1:1 to these folders.
+- The mirror's per-share folders map 1:1 to these (the rsync script fills them).
 - If Athena has its own data (its own `homes`, media, etc.), it keeps those under its existing
   layout; the `lego/` root is the foreign-data namespace.
-- **Needs Athena's current layout to finalize** (open question §5) — e.g. if Athena already
-  has a `lego` folder or a different naming scheme, adopt whatever is closest and document it
-  here.
+- The USB drives use the **same structure** (per-drive scope subsets, §3.3) — so "where is X"
+  is the same question on Lego, Athena, and the drives.
 
 ---
 
 ## 5. Open questions (need user input)
 
-1. **Athena access:** IP/hostname, is it powered on / on which segment? DSM web UI + SSH
-   access (which account — admin, or a limited account with Hyper Backup + external-storage
-   rights)?
-2. **Athena capacity:** total + free space (Athena is *smaller* than Lego — the sizing table
-   in `nas_backup_plan.md` §3 decides the mirror/Hyper Backup scope; a full 19 TB mirror
-   needs ~20 TB+ free).
-3. **Athena USB backups:** the 3 drives' sizes (they vary), the old rsync shell script (paste
-   it — so the replacement keeps the layout/behavior), and what the FireSafe drive is (4th
-   external drive? separate device?).
-4. **Cleanup decisions (§2.2):** confirm keep/delete for `chuck/backup` (488 GB),
+Answered 2026-09-27: Athena IP **192.168.5.110** (powered off at the time); free capacity
+**~4–5 TB**; USB drives **~12 / 8 / ~6 TB** (exact sizes to confirm); TV/movies = lowest
+priority; USB layout = mirror Lego's structure (old script's layout abandoned); 10%
+free-space flag requested; Hyper Backup dropped.
+
+Still open:
+
+1. **Power on Athena** — so reachability, DSM version, and the current layout can be
+   verified; SSH access for the Phase 3 scripts.
+2. **USB drive sizes + identity** — confirm 12 / 8 / ~6 TB and which is which (labels?);
+   is FireSafe a 4th drive or one of the three? How are 4K movies organized inside
+   `Multimedia/video` (subfolder? naming?) — needed for the 12 TB vs 8 TB split rule.
+3. **Cleanup decisions (§2.2):** keep/delete for `chuck/backup` (488 GB),
    `iMac_Backup_Critical` (76 GB), `margarethe/Backup` (121 GB),
-   `Margarethe Backup May 2020` (5.8 GB); confirm emptying `chuck/#recycle` (966 GB).
-5. **Cleanup execution:** do the Comcast deletions via File Station yourself, or provide a DSM
-   account so I can script it (move-to-recycle → verify → purge)?
-6. **Scope:** include all 8 Lego shares in the Athena pull, or a subset (e.g. skip `Public`)?
+   `Margarethe Backup May 2020` (5.8 GB); empty `chuck/#recycle` (966 GB — excluded from the
+   mirror regardless)?
+4. **Cleanup execution:** File Station by hand, or a DSM account so I can script it
+   (move-to-recycle → verify → purge)? *(The Comcast deletions were done 2026-09-27 in
+   parallel.)*
+5. **Is Athena on 24/7?** — the daily mirror cron assumes yes; otherwise the sync moves to a
+   manual/weekly trigger or runs from matrix.
+6. **Scope edge cases:** include `Web`/`Public` in the mirror (tiny, default yes)?
 
 ---
 
@@ -238,12 +253,13 @@ Athena:
 
 | Phase | Work | Depends on |
 |---|---|---|
-| 0 | Answer §5 questions; finalize share list + layout | user |
-| 1 | **First Athena pull (pre-cleanup):** create the Hyper Backup task(s), run the initial sync (overnight/weekend for the 15 TB video share) | Phase 0 |
-| 2 | Verify the pull (spot-check hashes, task history) | Phase 1 |
-| 3 | **Cleanup on Lego** (Comcast dirs — done 2026-09-27 in parallel; approved candidates pending) — the remaining deletions happen once the off-box copy is verified | Phase 2 |
-| 4 | Update the USB-drive tasks to include `lego/`; first extended USB run; verify | Phase 3 |
-| 5 | Steady state: daily Athena pull (incremental), weekly USB; add to monitoring; document the final layout here and in the top-level README | Phase 4 |
+| 0 | Power on Athena; answer §5; confirm drive sizes + 4K split rule | user |
+| 1 | **Cleanup on Lego** (Comcast dirs — done 2026-09-27 in parallel; §2.2 decisions pending) — shrinks the mirror | Phase 0 |
+| 2 | **Athena setup** (user, 10 min): `lego/` share + 8 subfolders, cifs-utils, SSH, `chuck` user, static IP, Infuse library | Phase 0 |
+| 3 | **Mirror fill** (agent): mirror sync script, initial fill (~3–4 TB overnight), verify | Phases 1–2 |
+| 4 | **USB copy** (agent): drive-map script, first monthly run + verify | Phase 3 |
+| 5 | Steady state: daily mirror (incremental), monthly USB + FireSafe; health check with the 10% flag; failover runbook; document final layout here + README | Phase 4 |
 
-**Ordering note:** the Athena pull runs *before* the cleanup on purpose — deletions happen
-only once the off-box copy is verified.
+**Ordering note:** the mirror fill runs *after* the cleanup on purpose — deletions happen
+first so the mirror never has to un-copy them (rsync `--delete` would handle it, but there's
+no reason to copy 1.6 TB of trash and delete it a day later).
