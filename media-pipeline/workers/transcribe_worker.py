@@ -10,7 +10,8 @@ Stages (sequential, one process per job):
   2 notes     basic-pitch (ONNX): polyphonic events -> song.mid + notes.json
   3 chords    CQT chord-template matching (beat-aligned, anti-flap)
   4 sections  deterministic segmentation (onset/energy envelope)
-  5 lyrics    [stems] demucs htdemucs -> vocals.wav; faster-whisper (word ts, VAD)
+  5 lyrics    demucs htdemucs -> vocals.wav (default; --stems false = full mix);
+              faster-whisper on the stem (word ts, VAD, hallucination filter)
   6 mapping   deterministic guitar mapping (role + string/fret, standard tuning)
   7 polish    vLLM matrix-coder (validated; deterministic fallback on rejection)
 
@@ -383,7 +384,27 @@ def stage_sections(y, dur, min_section_s, chords=None):
 
 
 # ------------------------------------------------------------------ stage 5
+# ASR on the FULL MIX is the main failure mode for song lyrics. The Silero
+# VAD inside faster-whisper is a *speech* detector: on a full mix it
+# classifies vocal-dominated passages as "speech" and guitar-dominated
+# passages as "music". Measured on Riptide (2026-10-31): the VAD kept only
+# 7% of the full mix (the quiet, vocal-dominated verse) and dropped ~140 s
+# of the guitar-heavy chorus, while on the demucs vocal stem it kept 64% in
+# clean contiguous regions aligned to the sung sections. So the default is
+# demucs vocals -> VAD+ASR on the stem (4 garbled lines -> 55 clean lines
+# on the same track). no_speech_prob is deliberately NOT used as a filter:
+# sung vocals score 0.6-0.9 even on genuine lines, so filtering on it would
+# drop the verses.
+_COMP_MAX, _LOGP_MIN = 2.4, -1.0
+
+
+def _norm_text(s):
+    return re.sub(r"[\W_]+", " ", s.lower()).strip()
+
+
 def stage_lyrics(wav, out_dir, args):
+    """Returns (lines, stems_used, caveat|None)."""
+    caveat = None
     vocals = None
     if args.stems:
         log(f"stems: demucs {args.demucs_model} ...")
@@ -393,9 +414,15 @@ def stage_lyrics(wav, out_dir, args):
                            capture_output=True, text=True, timeout=3600)
         vocals = os.path.join(out_dir, "demucs", args.demucs_model, "audio", "vocals.wav")
         if r.returncode != 0 or not os.path.exists(vocals):
-            die(f"demucs failed: {r.stderr[-500:]}")
+            # lyrics are the valuable output — never fail the job over stems:
+            # fall back to full-mix ASR (degraded on dense mixes) + caveat
+            caveat = ("demucs failed — ASR ran on the full mix; expect garbled "
+                      "lines where the music dominates the vocals")
+            log(f"stems: demucs failed ({r.stderr[-200:]}) — falling back to full mix")
+            vocals = None
     asr_path = vocals if vocals else wav
-    log(f"asr: faster-whisper {args.whisper_model} ({args.whisper_device}) ...")
+    log(f"asr: faster-whisper {args.whisper_model} ({args.whisper_device}) on "
+        f"{'vocals stem' if vocals else 'full mix'} ...")
     from faster_whisper import WhisperModel
     t0 = time.time()
     try:
@@ -406,19 +433,43 @@ def stage_lyrics(wav, out_dir, args):
     segments, _info = model.transcribe(asr_path, word_timestamps=True,
                                        vad_filter=True, beam_size=5)
     lines = []
+    n_dropped = 0
     for seg in segments:
+        # hallucination backstop: instrumental sections misheard as words show
+        # up as high compression and/or collapsed logprob (standard whisper
+        # guards; sung lines measured <= 2.33 / >= -0.66 on the stem)
+        if seg.compression_ratio > _COMP_MAX or seg.avg_logprob < _LOGP_MIN:
+            n_dropped += 1
+            continue
         words = [{"start_s": round(w.start, 3), "end_s": round(w.end, 3),
                   "word": w.word} for w in (seg.words or [])]
         text = seg.text.strip()
         if text:
             lines.append({"start_s": round(seg.start, 3), "end_s": round(seg.end, 3),
                           "text": text, "words": words})
+    # merge consecutive identical lines (whisper repeats lines over
+    # instrumental breaks) into the first occurrence
+    deduped = []
+    for ln in lines:
+        if deduped and _norm_text(ln["text"]) == _norm_text(deduped[-1]["text"]) \
+                and ln["start_s"] - deduped[-1]["end_s"] <= 0.5:
+            deduped[-1]["end_s"] = max(deduped[-1]["end_s"], ln["end_s"])
+            if ln.get("words"):
+                deduped[-1].setdefault("words", []).extend(ln["words"])
+        else:
+            deduped.append(ln)
+    if len(deduped) != len(lines):
+        log(f"asr: merged {len(lines)-len(deduped)} duplicate line(s)")
+    if n_dropped:
+        log(f"asr: dropped {n_dropped} hallucinated segment(s) "
+            f"(compression>{_COMP_MAX} or logprob<{_LOGP_MIN})")
+    lines = deduped
     log(f"asr: {len(lines)} lines in {time.time()-t0:.0f}s")
-    return lines, bool(vocals)
+    return lines, bool(vocals), caveat
 
 
-def write_lyrics_txt(lines, out_dir, disabled=False):
-    with open(os.path.join(out_dir, "lyrics.txt"), "w") as f:
+def write_lyrics_txt(lines, out_dir, disabled=False, name="lyrics.txt"):
+    with open(os.path.join(out_dir, name), "w") as f:
         if disabled:
             f.write("# lyrics disabled\n")
             return
@@ -505,6 +556,15 @@ def stage_mapping(events, sections, max_fret):
 
 
 # ------------------------------------------------------------------ stage 7
+def _line_similarity(a, b):
+    """Case/punctuation-insensitive character similarity between a polished
+    line and the raw line it cleans (1.0 = identical, 0.0 = unrelated)."""
+    import difflib
+    a = re.sub(r"[^a-z0-9 ]+", " ", a.lower()).strip()
+    b = re.sub(r"[^a-z0-9 ]+", " ", b.lower()).strip()
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def _strip_accents(s):
     return re.sub(r"[\u0300-\u036f]", "", s)
 
@@ -538,8 +598,9 @@ def _llm_polish(analysis, sections, raw_lines, vllm_url, vllm_model):
         "Rules: sections must keep the exact count and order of the input (same "
         "index values). lyrics must be a CLEANING of the raw_lyrics lines for that "
         "section: each output line keeps the start_s of the raw line it cleans "
-        "(within 1.0 s), fixes ASR errors/punctuation/capitalization, and never "
-        "adds new words. Label sections using chord-loop similarity and lyrics "
+        "(within 1.0 s) and stays faithful to that line — fix ASR mishearings "
+        "(e.g. 'sistone' -> 'stoning'), punctuation and capitalization; never "
+        "invent lines or content that is not in the raw line. Label sections using chord-loop similarity and lyrics "
         "presence. confidence reflects how reliable the tab data looks (dense "
         "mixes = lower). No text outside the JSON."
     )
@@ -547,7 +608,7 @@ def _llm_polish(analysis, sections, raw_lines, vllm_url, vllm_model):
         "model": vllm_model,
         "messages": [{"role": "system", "content": sys},
                      {"role": "user", "content": json.dumps(compact)}],
-        "temperature": 0.2, "max_tokens": 6000,
+        "temperature": 0.2, "max_tokens": 16000,
         "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(vllm_url, data=body,
@@ -587,13 +648,20 @@ def _llm_polish(analysis, sections, raw_lines, vllm_url, vllm_model):
         for line in (ds.get("lyrics") or []):
             if not isinstance(line.get("start_s"), (int, float)):
                 return reject(f"section {sec['index']}: lyric line without numeric start_s")
-            match = next((l for l in sec["lyrics"]
-                          if abs(l["start_s"] - line["start_s"]) <= 1.0), None)
-            if match is None:
+            if not sec["lyrics"]:
+                return reject(f"section {sec['index']}: polished line but no raw lines")
+            # nearest raw line wins — raw lines can be <1.0 s apart ("Oh" /
+            # "Lady" interjections), so a first-match-in-window matcher
+            # mispairs them and rejects otherwise-clean output
+            match = min(sec["lyrics"], key=lambda l: abs(l["start_s"] - line["start_s"]))
+            if abs(match["start_s"] - line["start_s"]) > 1.0:
                 return reject(f"section {sec['index']}: lyric start_s {line['start_s']} matches no raw line within 1.0 s")
-            if not _words_of(line.get("text", "")) <= _words_of(match["text"]):
-                extra = sorted(_words_of(line.get("text", "")) - _words_of(match["text"]))[:8]
-                return reject(f"section {sec['index']}: new words added {extra}")
+            # the polished line must be a faithful cleaning of its raw line:
+            # ASR fixes (word substitutions) allowed, wholesale invention not.
+            # (A strict word-subset check would forbid fixing ANY mishearing —
+            # 'sistone' -> 'stoning' is a "new word" — so use text similarity.)
+            if _line_similarity(line.get("text", ""), match["text"]) < 0.5:
+                return reject(f"section {sec['index']}: polished line diverges from its raw line")
     if data.get("confidence") not in ("high", "medium", "low"):
         return reject(f"bad confidence {data.get('confidence')!r}")
     if not isinstance(data.get("caveats"), list) or \
@@ -632,8 +700,10 @@ def apply_polish(analysis, sections, polish):
             # words array so the tab's word timestamps survive the polish
             new_lines = []
             for l in ds["lyrics"]:
-                raw = next((r for r in sec["lyrics"]
-                            if abs(r["start_s"] - l["start_s"]) <= 1.0), None)
+                raw = (min(sec["lyrics"], key=lambda r: abs(r["start_s"] - l["start_s"]))
+                       if sec["lyrics"] else None)
+                if raw is not None and abs(raw["start_s"] - l["start_s"]) > 1.0:
+                    raw = None
                 nl = {"start_s": l["start_s"],
                       "end_s": l.get("end_s", l["start_s"]),
                       "text": l["text"]}
@@ -659,7 +729,7 @@ def render_tab_md(analysis, sections, full_notes):
     lines.append(f"Source: {analysis['source']}")
     lines.append(f"Confidence: {analysis['confidence']}"
                  + (f" — {'; '.join(analysis['caveats'])}" if analysis["caveats"] else ""))
-    lines.append("Raw data: analysis.json / song.mid (verify lines against these).\n")
+    lines.append("Raw data: analysis.json / song.mid / lyrics_raw.txt (verify lines against these).\n")
     sixteenth = 60.0 / analysis["bpm"] / 4.0
     for sec in sections:
         a, b = sec["start_s"], sec["end_s"]
@@ -714,7 +784,7 @@ def main():
     ap.add_argument("--instrument", default="guitar")
     ap.add_argument("--tuning", default="standard")
     ap.add_argument("--lyrics", default="true")
-    ap.add_argument("--stems", default="false")
+    ap.add_argument("--stems", default="true")
     ap.add_argument("--whisper-model", default=None)
     ap.add_argument("--whisper-device", default=None)
     ap.add_argument("--demucs-model", default=None)
@@ -775,13 +845,17 @@ def main():
     # 4. sections (quiet-runs, chord-change fallback, fixed division)
     sections = stage_sections(y, dur, min_section_s, chords)
 
-    # 5. lyrics
-    raw_lines, stems_used = ([], False)
+    # 5. lyrics (vocal stem by default — see stage 5 comment)
+    raw_lines, stems_used, asr_caveat = ([], False, None)
     if do_lyrics:
-        raw_lines, stems_used = stage_lyrics(wav, out_dir, argparse.Namespace(
+        raw_lines, stems_used, asr_caveat = stage_lyrics(wav, out_dir, argparse.Namespace(
             stems=do_stems, whisper_model=whisper_model, whisper_device=whisper_device,
             demucs_model=demucs_model))
-    write_lyrics_txt(raw_lines, out_dir, disabled=not do_lyrics)
+        # raw ASR output is kept separately (reproducible); lyrics.txt is
+        # rewritten with the final (polished) lines after stage 7
+        write_lyrics_txt(raw_lines, out_dir, name="lyrics_raw.txt")
+    else:
+        write_lyrics_txt([], out_dir, disabled=True)
 
     # whisper hallucination guard (spec §10): a section with >10 s without
     # onsets is instrumental — suppress its lines (known whisper failure mode)
@@ -855,6 +929,8 @@ def main():
     }
     if g["bpm_guard"]:
         analysis["caveats"].append(g["bpm_guard"])
+    if asr_caveat:
+        analysis["caveats"].append(asr_caveat)
     # heavy-distortion smear caveat
     if smear:
         analysis["caveats"].append(
@@ -871,6 +947,10 @@ def main():
         log(f"polish: accepted (usage={usage})")
     else:
         log("polish: fallback (deterministic output)")
+    # final user-facing lyrics (polished when the LLM step was accepted,
+    # deterministic raw lines otherwise)
+    if do_lyrics:
+        write_lyrics_txt([l for sec in sections for l in sec["lyrics"]], out_dir)
 
     with open(os.path.join(out_dir, "analysis.json"), "w") as f:
         json.dump(analysis, f, indent=2)

@@ -799,7 +799,7 @@ def flow_transcribe(payload: dict, jid: str):
             "--source-display", str(payload["path"]),
             "--instrument", instrument, "--tuning", tuning,
             "--lyrics", str(payload.get("lyrics", True)).lower(),
-            "--stems", str(payload.get("stems", False)).lower(),
+            "--stems", str(payload.get("stems", True)).lower(),
             "--full-notes", str(payload.get("full_notes", False)).lower(),
             "--whisper-model", str(payload.get("whisper_model")
                                     or os.environ.get("MEDIA_TRANSCRIBE_WHISPER_MODEL", "large-v3")),

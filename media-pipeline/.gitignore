@@ -6,3 +6,6 @@ __pycache__/
 # local runtime state / logs
 *.log
 nohup.out
+
+# lyrics-ASR diagnostic scratch (Riptide fix 2026-10-31)
+lyrics_exp/
