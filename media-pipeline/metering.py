@@ -165,12 +165,18 @@ def _mp(w: int, h: int) -> float:
 
 def _model_for(flow: str, payload: dict) -> str | None:
     """Model label for metering. images/images_edit depend on the selected
-    image model (per-request 'model' > MEDIA_IMAGE_MODEL env > qwen21)."""
+    image model (per-request 'model' > MEDIA_IMAGE_MODEL env > qwen21);
+    shots on the shot model (per-request 'model' > MEDIA_SHOT_MODEL env > ltxv2b)."""
     if flow in ("images", "images_edit"):
         m = str(payload.get("model") or os.environ.get("MEDIA_IMAGE_MODEL", "qwen21")).lower()
         if m == "legacy":
             return "qwen-image-2512" if flow == "images" else "qwen-image-edit-2511"
         return "qwen-image-2.1"
+    if flow == "shots":
+        m = str(payload.get("model") or os.environ.get("MEDIA_SHOT_MODEL", "ltxv2b")).lower()
+        if m == "wan14b":
+            return "wan2.2-14b-i2v-gguf-q5"
+        return "ltxv-2b-0.9.6-distilled"
     return MODEL_BY_FLOW.get(flow)
 
 

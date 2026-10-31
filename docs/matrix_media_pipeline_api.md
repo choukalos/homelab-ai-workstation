@@ -61,7 +61,7 @@ GET /jobs/{job_id}
 | POST | `/storyboard` | JSON `{brief, n_shots=5, aspect="16:9"}` | `{"storyboard":"<path>/storyboard.json","n_shots":N,"usage":{prompt_tokens,completion_tokens,total_tokens}}` |
 | POST | `/images` | JSON `{prompt, width=1280, height=720, seed=42, steps=25, model?="qwen21"\|"legacy", lora? (legacy only)}` | `{"image":"<path>.png","model":"<model>"}` |
 | POST | `/images/edit` | multipart `file, prompt, seed=42, steps=25, model?="qwen21"\|"legacy", references? (qwen21 only)` | `{"image":"<path>.png","model":"<model>","references":N}` |
-| POST | `/shots` | multipart `file(keyframe), prompt, width=768, height=512, frames=97, fps=24, steps=8, strength=0.7, seed=42` | `{"video":"<path>.mp4","frames":N,"fps":F}` |
+| POST | `/shots` | multipart `file(keyframe), prompt, model?="ltxv2b"\|"wan14b", width?, height?, frames?, fps?, steps=8, strength=0.7, seed=42` — omitted dims/frames/fps fall back to **per-model native defaults** (ltxv2b: 768×512/97f/25 fps; wan14b: 832×480/81f/16 fps); wan14b is **480p only** — any other dims → clean 400 | `{"video":"<path>.mp4","frames":N,"fps":F}` |
 | POST | `/tts` | JSON `{text, voice="trailer"}` — `voice` = library name (see `/voices`) **or** a reference wav path (host absolute under run/basedir, or run-dir-relative) | `{"audio":"<path>/vo.wav"}` |
 | GET | `/voices` | sync (not a job) — list the TTS voice library | `{"voices":[{name, description, gender, style, added, protected, ref_exists, sample}]}` |
 | POST | `/voices` | JSON `{name, source, description?, gender?, style?, sample_text?}` — register a new voice from a reference wav (3–15 s; QC'd, normalized to 16 kHz mono, sample generated on GPU) | `job_id` → `{"voice","ref","sample","ref_duration_s"}` |
@@ -120,7 +120,13 @@ Notes:
   `narrator_f` (female, ~212 Hz — pitch-shifted clone of the stock sample).
   All XTTS-v2 zero-shot clones of the same stock speaker; add a real recorded
   reference (3–15 s clean speech) via `POST /voices` for a truly new speaker.
-- `strength` for `/shots`: how strongly the keyframe anchors the clip
+- `model` for `/shots` (2026-10-31): `ltxv2b` (LTXV 2B, fast, ~15 s/clip, 768×512) or
+  `wan14b` (Wan 2.2 I2V A14B, quality, ~10–12 min/clip, **832×480 only** —
+  720p OOM'd the 14 GB media VRAM gate and is rejected with a clean 400).
+  Server default from `MEDIA_SHOT_MODEL` env (currently `wan14b` — quality
+  by default, user decision 2026-10-25); per-request `model` always wins.
+  `strength` is **ltxv2b-only** (wan14b ignores it).
+- `strength` for `/shots` (ltxv2b): how strongly the keyframe anchors the clip
   (default **0.7** — empirical warble knee; lower = less warble, less motion).
   Prompt visual **style**, not fast motion.
 - `upscale_each` for `/assemble`: B-upscale (SeedVR2) each shot before concat —
@@ -184,7 +190,7 @@ pull them out (e.g. via `media_pull` / `/dl/{token}`) or move them to
 | `storyboard` | Qwen3.8-27B via vLLM :8000 (strict JSON shot list) |
 | `images` | **Qwen-Image-2.1** (7B unified DiT, int8_convrot) + Qwen3-VL 8B int8 encoder + 64-ch RGBA VAE — 25 steps, cfg=1.0 (default since 2026-09-23; `model=legacy` → Qwen-Image-2512 Q4 GGUF + 4-step Lightning) |
 | `images/edit` | **same Qwen-Image-2.1 model** (unified T2I + edit; canvas follows the edited image; up to 10 images incl. references; `model=legacy` → Qwen-Image-Edit-2511 Q4 + 8-step Lightning) |
-| `shots` | LTXV 2B 0.9.6 distilled (8-step sigma schedule) + T5-XXL fp8 |
+| `shots` | **LTXV 2B 0.9.6** distilled (8-step sigma schedule) + T5-XXL fp8 — `model=ltxv2b` (fast path, ~15 s/clip) · **Wan 2.2 I2V A14B** Q5_K_M GGUF (dual HighNoise/LowNoise models, 40 steps) + UMT5-XXL fp8 + Wan 2.1 VAE — `model=wan14b` (quality, 480p only, ~10–12 min/clip; default since 2026-10-31 via `MEDIA_SHOT_MODEL`) |
 | `tts` | XTTS-v2 (separate venv, releases VRAM on exit) |
 | `music` | ACE-Step 1.5 (short-lived server per job) |
 | `sfx` | MMAudio large-44k-v2 (in ComfyUI) |
@@ -239,6 +245,7 @@ Free VRAM for media work: ~14 GB (72 GB − vLLM's ~56–66 GB). Per-flow peaks
 |---|---|---|
 | Qwen-Image-2512 gen/edit | ~12–14 GB | proven in production (GGUF Q4 + offload) |
 | LTXV 0.9.6 2B shot gen | ~10–12 GB | T5 fp8 encoder; distilled 8-step |
+| **Wan 2.2 I2V A14B shot gen** | **~14 GB** (measured 2026-10-31: +13.9 GB delta, 14.4 GB peak, 480p/81f) | 720p OOMs the gate (rejected, 400); ~10 GiB stays resident after the job |
 | ACE-Step music | ~6–8 GB | separate short-lived server |
 | TTS VO (XTTS-v2) | ~4–6 GB | separate venv, releases on exit |
 | MMAudio SFX | ~2–4 GB | in ComfyUI |
@@ -253,13 +260,25 @@ workers release VRAM on exit. Per-flow OOM fallbacks: offload text encoder to
 CPU → lower res/frames → (last resort, ask first) lower vLLM
 `gpu-memory-utilization`.
 
+**VRAM headroom guard (2026-10-31):** ComfyUI keeps its last-loaded model
+resident (a wan14b shot leaves ~10 GiB), which starves the out-of-ComfyUI GPU
+workers (ACE-Step music ~6.5 GiB, TTS): vLLM ~56 GiB + Wan 10 GiB + worker
+> 71.12 GiB → CUDA OOM (found in E2E 2026-10-31). `server.py` now measures
+free VRAM (`docker exec comfyui_backend nvidia-smi`) before `music` (≥8 GiB
+required) and `tts`/`voices-add` (≥2 GiB) and, if headroom is low and the
+ComfyUI queue is idle, **restarts `comfyui_backend`** (~40 s) to drop the
+resident model, then waits for it to come back. No-op when headroom is
+sufficient or unmeasurable. Sfx is a ComfyUI flow — ComfyUI's own
+OOM-offload handles it; LTXV shots are small enough not to trigger this.
+
 ## 7. End-to-end commercial recipe (what the LLM should call)
 
 1. `media_storyboard(brief, n_shots=6)` → shot list
 2. (consistency) `media_generate_image` character sheets → `media_edit_image`
    each keyframe from the sheet
 3. per shot: `media_generate_shot(keyframe, style_prompt)` (768×512, ~97 f) —
-   **style prompt, not fast motion**
+   **style prompt, not fast motion** — or `model="wan14b"` (832×480, 81 f,
+   ~10–12 min/clip) for higher quality (the server default since 2026-10-31)
 4. `media_text_to_speech(vo_script, voice="trailer")` → VO
 5. `media_generate_music(prompt, duration=total)` → music
 6. (optional) `media_sfx(video, description)` per shot
@@ -302,6 +321,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-10-31 | **Wan 2.2 I2V A14B shots** (plan `wan_shots_todo.md`, phases 1–3): `/shots` gains `model` (`ltxv2b`\|`wan14b`; per-request > `MEDIA_SHOT_MODEL` env > built-in default — env set to `wan14b`, quality by default); per-model native defaults (ltxv2b 768×512/97f/25 fps, wan14b 832×480/81f/16 fps; wan frames must be 4n+1); wan14b 480p-only gate (720p OOM'd the 14 GB gate → clean 400); `strength` ltxv2b-only; metering label `wan2.2-14b-i2v-gguf-q5`. E2E: storyboard → 2× qwen21 keyframes → 2× wan14b shots (625 s + 530 s) → TTS → music → assemble (SeedVR2 upscale_each + loudnorm) → 1920×1080/24 fps final. **VRAM headroom guard**: pre-flight free-VRAM check before `music` (≥8 GiB) / `tts`+`voices-add` (≥2 GiB); low headroom + idle ComfyUI queue → auto `docker restart comfyui_backend` (~40 s) to drop the resident model (fixes the post-wan-shot music/sfx OOM). Verified: no-op path (15.7 GiB free, no restart) and restart path (2.8 GiB free → restart → music OK → qwen21 image OK). |
 | 2026-09-25 | **TTS voice library** (plan `voices_todo.md`): `GET/POST/DELETE /voices` + manifest at `<basedir>/models/tts/voices/manifest.json` (auto-seeded; `trailer`/`default` protected); `/tts` `voice` now accepts a library name **or** a reference wav path (raw-path support fixed — the server previously never forwarded `--reference-audio`); unknown voice → clean 400 instead of a worker crash; `POST /voices` QC (3–15 s) + 16 kHz mono normalization + GPU sample generation; seeded `narrator_f` (female, ~212 Hz F0) + `deep_m` (~150 Hz) as pitch-shifted clones of the stock sample. Worker CLI unchanged; all logic in `server.py`. | **Qwen-Image-2.1 upgrade**: `/images` + `/images/edit` default to Qwen-Image-2.1 (ComfyUI v0.37.0 native nodes, int8_convrot weights, 25 steps, cfg=1.0); unified model for create + edit; `/images/edit` gains `references` (up to 9, 10 total) for cross-shot consistency; `model` field (`qwen21`\|`legacy`) + `MEDIA_IMAGE_MODEL` env on both image flows; legacy 2512/2511 GGUF+Lightning kept as fallback; qwen21 steps clamped [10,50]; metering model label + work units follow the selected model/effective steps. Runbook: `media_todo.md`. |
 | 2026-09-21 | **Job-dir retention** (`MEDIA_JOB_RETENTION_DAYS`, default 14 d): hourly background sweeper reclaims job dirs + stale `uploads/` files; `metrics/` (jobs.jsonl) and live jobs never touched; `/health` exposes sweep state. One-off: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs. |
 | 2026-09-07 | **Part-1 gap fill** (plan `media_pipeline_gaps.md`): `/trim`, `/freeze`, `/caption` job flows (ffmpeg, CPU); `/assemble` extensions — object shots `{path,in,out,duration}`, timestamped SFX list `[{path,at}]`, `vo_start`, `loudnorm` (backward compatible); sync endpoints `/info`, `/upload_local` (basedir-confined), `/download`, `/upload` (multipart, 500 MB cap), `/dl_token` + `GET /dl/{token}` (HMAC-signed, path-bound, time-limited pull URLs); ffmpeg flows metered at 0 work units (model `ffmpeg`). QA: `media-pipeline/qa_part1.py` 38/38. |

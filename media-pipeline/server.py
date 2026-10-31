@@ -427,6 +427,84 @@ def run_worker(worker: str, args: list[str], timeout: float = 3600) -> str:
     return r.stdout.strip()
 
 
+# ------------------------------------------------------------------ VRAM headroom
+# ComfyUI retains the last-loaded model resident — after a wan14b shot ~10 GiB
+# stays on the card. Out-of-ComfyUI GPU workers (ACE-Step music ~6.5 GiB, TTS)
+# then OOM: vLLM ~56 GiB + Wan 10 GiB + worker > 71.12 GiB (found in E2E
+# 2026-10-31: music job failed with 10 MiB free). ComfyUI only offloads when
+# *its own* allocation fails, which never happens for a foreign process — so
+# before such a flow, ensure free VRAM by restarting comfyui_backend when
+# headroom is low (only when its queue is idle; the restart costs ~40 s).
+VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0}
+
+
+def _gpu_free_gib() -> float | None:
+    """Free GPU memory in GiB, via comfyui_backend's nvidia-smi (the pipeline
+    container has the docker socket but no nvidia-smi itself). None =
+    unmeasurable — callers proceed as-is (never block a job on a probe)."""
+    try:
+        r = subprocess.run(["docker", "exec", CONTAINER, "nvidia-smi",
+                            "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30)
+        return float(r.stdout.strip().splitlines()[0]) / 1024.0
+    except Exception:
+        return None
+
+
+def _wait_comfyui_idle(timeout_s: float = 900) -> None:
+    """Wait until ComfyUI's queue is empty (never restart mid-job)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            with urllib.request.urlopen(cc.COMFY + "/queue", timeout=10) as r:
+                if not json.loads(r.read()).get("queue_running"):
+                    return
+        except Exception:
+            return  # ComfyUI down = nothing running
+        time.sleep(5)
+
+
+def _wait_comfyui_ready(timeout_s: float = 300) -> None:
+    """Wait until ComfyUI answers /queue again after a restart."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            with urllib.request.urlopen(cc.COMFY + "/queue", timeout=10) as r:
+                json.loads(r.read())
+            return
+        except Exception:
+            time.sleep(5)
+    raise RuntimeError(f"{CONTAINER} did not come back within {timeout_s:.0f}s")
+
+
+def _ensure_vram_headroom(flow: str, jid: str) -> None:
+    """Free ComfyUI's resident-model VRAM before a non-ComfyUI GPU worker.
+
+    No-op when headroom is already sufficient or unmeasurable. When low:
+    wait for an idle ComfyUI queue, re-check, then restart comfyui_backend
+    (frees its resident model) and wait for it to come back (~40 s)."""
+    min_gib = VRAM_HEADROOM_GIB.get(flow)
+    if min_gib is None:
+        return
+    free = _gpu_free_gib()
+    if free is None or free >= min_gib:
+        return
+    _wait_comfyui_idle()
+    free = _gpu_free_gib()
+    if free is None or free >= min_gib:
+        return
+    print(f"[{jid}] {flow}: VRAM headroom {free:.1f} GiB < {min_gib:.0f} GiB — "
+          f"restarting {CONTAINER} to free ComfyUI's resident model", flush=True)
+    subprocess.run(["docker", "restart", CONTAINER], capture_output=True, text=True,
+                   timeout=300)
+    _wait_comfyui_ready()
+    free2 = _gpu_free_gib()
+    if free2 is not None:
+        print(f"[{jid}] {flow}: {CONTAINER} back up (free {free2:.1f} GiB)", flush=True)
+    else:
+        print(f"[{jid}] {flow}: {CONTAINER} back up", flush=True)
+
+
 # ------------------------------------------------------------------ flows
 def flow_storyboard(payload: dict, jid: str):
     brief = payload["brief"]
@@ -542,18 +620,32 @@ def flow_images_edit(payload: dict, jid: str, image_name: str):
 
 def flow_shots(payload: dict, jid: str, keyframe_name: str):
     prefix = f"mp_{jid}"
+    model = wf.resolve_shot_model(payload)
+    d = wf.SHOT_MODEL_DEFAULTS[model]
     with GPU_LOCK:
-        res = cc.comfy_run(wf.ltxv_i2v(keyframe_name, payload["prompt"],
-                                       int(payload.get("width", 768)), int(payload.get("height", 512)),
-                                       int(payload.get("frames", 97)), float(payload.get("fps", 24.0)),
-                                       int(payload.get("seed", 42)),
-                                       prefix=prefix,
-                                       strength=float(payload.get("strength", 0.7))), timeout=7200)
+        if model == "wan14b":
+            res = cc.comfy_run(wf.wan22_i2v(keyframe_name, payload["prompt"],
+                                            int(payload.get("width") or d["width"]),
+                                            int(payload.get("height") or d["height"]),
+                                            int(payload.get("frames") or d["frames"]),
+                                            float(payload.get("fps") or d["fps"]),
+                                            int(payload.get("seed", 42)),
+                                            prefix=prefix), timeout=7200)
+        else:
+            res = cc.comfy_run(wf.ltxv_i2v(keyframe_name, payload["prompt"],
+                                           int(payload.get("width") or d["width"]),
+                                           int(payload.get("height") or d["height"]),
+                                           int(payload.get("frames") or d["frames"]),
+                                           float(payload.get("fps") or d["fps"]),
+                                           int(payload.get("seed", 42)),
+                                           prefix=prefix,
+                                           strength=float(payload.get("strength", 0.7))), timeout=7200)
     paths = copy_comfy_outputs(jid, res["outputs"], prefix)
     if not paths:
         raise RuntimeError("no video output found")
-    return {"video": paths[0], "frames": int(payload.get("frames", 97)),
-            "fps": float(payload.get("fps", 25.0))}
+    return {"video": paths[0], "model": model,
+            "frames": int(payload.get("frames") or d["frames"]),
+            "fps": float(payload.get("fps") or d["fps"])}
 
 
 # ------------------------------------------------------------------ TTS voices
@@ -684,6 +776,7 @@ def flow_tts(payload: dict, jid: str):
     else:
         args += ["--reference-audio", val]
     args += ["--out", out_container]
+    _ensure_vram_headroom("tts", jid)
     run_worker("tts_worker.py", args, timeout=1800)
     return {"audio": str(out_host)}
 
@@ -714,6 +807,7 @@ def flow_voices_add(payload: dict, jid: str):
     shutil.copy2(ref_job, ref_host)
     # Sample with the new voice (GPU) so it can be auditioned immediately.
     sample_text = str(payload.get("sample_text") or VOICES_SAMPLE_TEXT)
+    _ensure_vram_headroom("tts", jid)
     run_worker("tts_worker.py",
                ["--text", sample_text, "--reference-audio", to_container_any(ref_host),
                 "--out", f"{JOB_DIR_CONTAINER}/{jid}/sample.wav"],
@@ -741,6 +835,7 @@ def flow_music(payload: dict, jid: str):
     out_host = JOB_DIR / jid / "music.wav"
     out_container = f"{JOB_DIR_CONTAINER}/{jid}/music.wav"  # worker runs inside container
     with GPU_LOCK:
+        _ensure_vram_headroom("music", jid)
         run_worker("acestep_worker.py", ["--prompt", payload["prompt"],
                     "--lyrics", payload.get("lyrics", ""),
                     "--duration", str(int(payload.get("duration", 30))),
@@ -1356,17 +1451,34 @@ async def api_images_edit(file: UploadFile = File(...), prompt: str = Form(...),
 
 @app.post("/shots")
 async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
-                    width: int = Form(768), height: int = Form(512),
-                    frames: int = Form(97), fps: float = Form(25.0),
+                    width: int = Form(None), height: int = Form(None),
+                    frames: int = Form(None), fps: float = Form(None),
                     seed: int = Form(42), steps: int = Form(8),
-                    strength: float = Form(0.7), user: str = Form(None),
-                    client: str = Form(None)):
-    # strength: how strongly the keyframe anchors the clip. Lower = less
-    # deviation/warble (empirically 0.7 is the knee; 0.6 marginally smoother,
-    # 0.8+ adds motion but warble). Prompt for visual STYLE, not fast motion.
+                    strength: float = Form(0.7), model: str = Form(None),
+                    user: str = Form(None), client: str = Form(None)):
+    # model: 'ltxv2b' (fast, ~8 s) | 'wan14b' (Wan 2.2 14B quality, ~10 min,
+    # 480p only — 720p failed the VRAM gate). Validate up front so a bad name
+    # is a clean 400, not a job error. Omitted dims/frames/fps -> model-native
+    # defaults (ltxv2b: 768x512/97f/25fps; wan14b: 832x480/81f/16fps).
+    # steps/strength are LTXV-only (Wan sampling is fixed: 20+20 steps, cfg 5).
+    try:
+        m = wf.resolve_shot_model({"model": model})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    d = wf.SHOT_MODEL_DEFAULTS[m]
+    w = int(width) if width is not None else d["width"]
+    h = int(height) if height is not None else d["height"]
+    f = int(frames) if frames is not None else d["frames"]
+    r = float(fps) if fps is not None else d["fps"]
+    if m == "wan14b":
+        if (w, h) not in wf.WAN_RESOLUTIONS:
+            raise HTTPException(400, f"wan14b supports {sorted(wf.WAN_RESOLUTIONS)} "
+                                     f"only (720p failed the VRAM gate, 2026-10-25)")
+        if (f - 1) % 4 != 0:
+            raise HTTPException(400, "wan14b frames must be 4k+1 (e.g. 49, 81, 121)")
     with job_slot():
-        payload = {"prompt": prompt, "width": width, "height": height,
-                   "frames": frames, "fps": fps, "seed": seed,
+        payload = {"prompt": prompt, "model": m, "width": w, "height": h,
+                   "frames": f, "fps": r, "seed": seed,
                    "steps": steps, "strength": strength,
                    "user": user, "client": client}
         jid = new_job("shots", payload)

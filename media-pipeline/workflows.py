@@ -111,6 +111,90 @@ def ltxv_i2v(keyframe: str, prompt: str, width=768, height=512, frames=97,
     }
 
 
+# ---------------------------------------------------------------- Wan 2.2 14B I2V (2026-10-25)
+# Dual-expert MoE (high-noise + low-noise), GGUF Q5_K_M via ComfyUI-GGUF,
+# umt5-xxl fp8 text encoder on CPU (CLIPLoader device=cpu). Official
+# Comfy-Org base-mode graph: 20 steps per expert (split at step 10), cfg 5.0,
+# euler/simple, ModelSamplingSD3 shift 5.0. NO CLIP-ViT-H (latent image
+# conditioning only — verified against the official template). 480p ONLY
+# (832x480): 720p OOM'd the Phase 1 VRAM gate (2026-10-25, CUDA free 2.3 MiB).
+# Measured 2026-10-25: 832x480x81f ~10.3 min, peak delta ~13.9 GB
+# (~2.4 GB headroom vs vLLM's stable 56.2 GB on the 72 GB card).
+WAN_HIGHNOISE = "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
+WAN_LOWNOISE = "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
+WAN_CLIP = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+WAN_VAE = "wan_2.1_vae.safetensors"
+WAN_RESOLUTIONS = {(832, 480)}  # 720p (1280x720) rejected: OOM, Phase 1 gate
+SHOT_MODELS = ("ltxv2b", "wan14b")
+SHOT_MODEL_ENV = "MEDIA_SHOT_MODEL"
+SHOT_MODEL_DEFAULT = "ltxv2b"
+# Model-native defaults applied when the caller omits dims/frames/fps.
+# ltxv2b matches the historical /shots Form defaults exactly.
+SHOT_MODEL_DEFAULTS = {
+    "ltxv2b": {"width": 768, "height": 512, "frames": 97, "fps": 25.0},
+    "wan14b": {"width": 832, "height": 480, "frames": 81, "fps": 16.0},
+}
+
+
+def resolve_shot_model(payload: dict) -> str:
+    """'ltxv2b' (fast, ~8 s) or 'wan14b' (Wan 2.2 14B quality, ~10 min, 480p).
+    Per-request payload['model'] > MEDIA_SHOT_MODEL env > built-in 'ltxv2b'.
+    Unknown values raise ValueError (the /shots API validates up front so a
+    bad name is a clean 400, not a job error)."""
+    m = str(payload.get("model") or os.environ.get(SHOT_MODEL_ENV, SHOT_MODEL_DEFAULT)).lower()
+    if m not in SHOT_MODELS:
+        raise ValueError(f"unknown shot model {m!r}; options: {', '.join(SHOT_MODELS)}")
+    return m
+
+
+def wan22_i2v(keyframe: str, prompt: str, width=832, height=480, frames=81,
+              fps=16.0, seed=42, negative=NEG_VIDEO, prefix="shot"):
+    """Wan 2.2 I2V-A14B (dual-expert MoE, GGUF Q5_K_M) image-to-video.
+
+    `keyframe` = ComfyUI input filename. 480p only (832x480): 720p OOM'd the
+    Phase 1 VRAM gate (2026-10-25). frames: 81 @16fps ~= 5.1s (must be 4k+1).
+    Dual-expert sampling: high-noise expert steps 0-10 (add_noise), low-noise
+    expert steps 10-20 — 20 steps each, cfg 5.0, euler/simple, shift 5.0
+    (official Comfy-Org base-mode graph; no 4-step LoRA). umt5-xxl fp8 text
+    encoder runs on CPU. ~10 min per clip at 480p (vs ~8 s for ltxv2b).
+    """
+    assert (frames - 1) % 4 == 0, "frames must be 4k+1"
+    assert (width, height) in WAN_RESOLUTIONS, \
+        f"wan14b supports {sorted(WAN_RESOLUTIONS)} only (720p failed the VRAM gate)"
+    return {
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_HIGHNOISE}},
+        "2": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_LOWNOISE}},
+        "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": WAN_CLIP, "type": "wan", "device": "cpu"}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["3", 0]}},
+        "5": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 0]}},
+        "6": {"class_type": "VAELoader", "inputs": {"vae_name": WAN_VAE}},
+        "7": {"class_type": "LoadImage", "inputs": {"image": keyframe}},
+        "8": {"class_type": "WanImageToVideo", "inputs": {"positive": ["4", 0], "negative": ["5", 0],
+                                                          "vae": ["6", 0], "width": width, "height": height,
+                                                          "length": frames, "batch_size": 1,
+                                                          "start_image": ["7", 0]}},
+        "9": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": 5.0}},
+        "10": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["2", 0], "shift": 5.0}},
+        "11": {"class_type": "KSamplerAdvanced",
+               "inputs": {"model": ["9", 0], "add_noise": "enable", "noise_seed": seed,
+                          "steps": 20, "cfg": 5.0, "sampler_name": "euler",
+                          "scheduler": "simple", "positive": ["8", 0], "negative": ["8", 1],
+                          "latent_image": ["8", 2], "start_at_step": 0, "end_at_step": 10,
+                          "return_with_leftover_noise": "disable"}},
+        "12": {"class_type": "KSamplerAdvanced",
+               "inputs": {"model": ["10", 0], "add_noise": "disable", "noise_seed": seed,
+                          "steps": 20, "cfg": 5.0, "sampler_name": "euler",
+                          "scheduler": "simple", "positive": ["8", 0], "negative": ["8", 1],
+                          "latent_image": ["11", 0], "start_at_step": 10, "end_at_step": 20,
+                          "return_with_leftover_noise": "disable"}},
+        "13": {"class_type": "VAEDecode", "inputs": {"samples": ["12", 0], "vae": ["6", 0]}},
+        "14": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["13", 0], "frame_rate": fps,
+                                                            "filename_prefix": prefix, "format": "video/h264-mp4",
+                                                            "pix_fmt": "yuv420p", "crf": 19, "save_metadata": False,
+                                                            "save_output": True, "pingpong": False, "loop_count": 0}},
+    }
+
+
 def upscale_seedvr2(video_path_host: str, resolution=1080, noise_scale=0.0,
                     batch_size=5, fps=24, seed=42, prefix="upscale_b"):
     """Pipeline B: SeedVR2 3B fp8 video upscaling (temporally consistent, ~2min/5s@1080p).

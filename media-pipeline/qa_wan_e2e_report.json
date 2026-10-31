@@ -1,0 +1,28 @@
+{
+  "ltxv_regression": {
+    "video": "/home/chuck/data/comfyui/run/media_jobs/3cb221e6ec32/mp_3cb221e6ec32_00001.mp4",
+    "model": "ltxv2b",
+    "frames": 97,
+    "fps": 24.0,
+    "wall_s": 15
+  },
+  "wan_shots": [
+    "/home/chuck/data/comfyui/run/media_jobs/b466f6b4c638/mp_b466f6b4c638_00001.mp4",
+    "/home/chuck/data/comfyui/run/media_jobs/fe0918e32794/mp_fe0918e32794_00001.mp4"
+  ],
+  "vo": "/home/chuck/data/comfyui/run/media_jobs/6011d5082018/vo.wav",
+  "music": "/home/chuck/data/comfyui/run/media_jobs/55bdadb8f9b5/music.wav",
+  "final": "/home/chuck/data/comfyui/run/media_jobs/e8197fbef6a4/final.mp4",
+  "final_info": {
+    "duration_s": 10.083,
+    "width": 1920,
+    "height": 1080,
+    "fps": 24.0,
+    "video_codec": "h264",
+    "audio_codecs": [
+      "aac"
+    ],
+    "size_bytes": 13536385,
+    "bitrate_bps": 10739611
+  }
+}

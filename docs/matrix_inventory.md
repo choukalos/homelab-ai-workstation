@@ -209,7 +209,7 @@ for Thor to scrape. No monitoring stack installed locally.
 |---|---|---|---|---|
 | `qwen38` | vllm/vllm-openai:latest | 8000 | Primary inference (Qwen3.8-27B NVFP4) | Running |
 | `ollama` | ollama/ollama:latest | 11434 | Light inference + embeddings | Running |
-| `comfyui_backend` | mmartial/comfyui-nvidia-docker:latest | 8188 | Image/video generation (Qwen-Image, LTXV, SeedVR2, MMAudio, ACE-Step, XTTS) | Running |
+| `comfyui_backend` | mmartial/comfyui-nvidia-docker:latest | 8188 | Image/video generation (Qwen-Image, LTXV, **Wan 2.2 I2V A14B**, SeedVR2, MMAudio, ACE-Step, XTTS) | Running |
 | `media_pipeline` | media-pipeline:latest | 8189 | Media orchestrator API (storyboard→shots→assemble) | Running |
 | `node-exporter` | prom/node-exporter:latest | 9100 | Metrics | Running |
 | `dcgm-exporter` | nvidia/dcgm-exporter:latest | 9400 | GPU metrics | Running |
@@ -262,7 +262,7 @@ pipeline models verified intact. See `docs/matrix_comfyui_media_api.md` changelo
 |---|---|---|
 | `/home/chuck/data/models/hub/` | 168 GB | HuggingFace cache (vLLM model weights incl. Qwen3.8 NVFP4 + experiment candidates) |
 | `/home/chuck/data/ollama/` | 34 GB | Ollama models (gemma4 + qwen3.6 + embeddings) |
-| `/home/chuck/data/comfyui/` | ~109 GB | ComfyUI workspace (models ~77 GB + run/ venvs + media_jobs) |
+| `/home/chuck/data/comfyui/` | ~156 GB | ComfyUI workspace (models ~118 GB — incl. Wan 2.2 I2V A14B Q5_K_M 2×10.8 GB + UMT5-XXL fp8 + Wan 2.1 VAE, 2026-10-31 — + run/ venvs + media_jobs) |
 
 ## Discrepancies / Notes (2026-08-28)
 
@@ -271,6 +271,7 @@ pipeline models verified intact. See `docs/matrix_comfyui_media_api.md` changelo
 3. **ComfyUI venv/uv_cache live in `run/` (bind-mounted)** — the container entrypoint self-heals and rebuilds the venv on restart (verified 2026-08-28: restart repopulated venv + uv_cache in ~15 min). **After any venv rebuild**, run `scripts/comfyui_venv_deps.sh restart` — the fresh venv lacks custom-node deps (numba/librosa/gguf/imageio-ffmpeg) and resolves numpy 2.5, which breaks numba (comfyui-mmaudio import failure).
 4. **`state/current_mode` = `qwen-coder`** (since 2026-08-23 experiment → qwen-coder switch).
 5. **Metering live (2026-09-06)**: `media_pipeline` exposes `:8189/metrics` (Thor Prometheus scrape target) + `jobs.jsonl` at `/home/chuck/data/comfyui/run/media_jobs/metrics/`. Calibrated rates in `.env`: `MEDIA_PRICE_MPPIX_STEP_USD=0.000053`, `MEDIA_PRICE_MPPIX_FRAME_USD=0.0000058`, `MEDIA_PRICE_AUDIO_SEC_USD=0.000031`; storyboard at live matrix-coder rate ($0.75/M in / $4.50/M out). Kill switch `MEDIA_METRICS_ENABLED` (currently `true`). DCGM still frozen on driver 595.71.05 — power sampling uses `docker exec comfyui_backend nvidia-smi`.
+6. **Wan 2.2 I2V A14B (2026-10-31)**: `Wan2.2-I2V-A14B-{HighNoise,LowNoise}-Q5_K_M.gguf` (2×10.8 GB) + `umt5_xxl_fp8_e4m3fn_scaled.safetensors` + `wan_2.1_vae.safetensors` added (+28.6 GB). `/shots model=wan14b`, 480p only (720p OOMs the 14 GB media gate), ~10–12 min/clip; server default via `MEDIA_SHOT_MODEL=wan14b` in `.env`. VRAM headroom guard in `server.py` auto-restarts `comfyui_backend` before music/tts when free VRAM < 8/2 GiB (post-wan-shot resident model). Docs: `docs/matrix_media_pipeline_api.md` §2/§4/§6/§9.
 
 ## Addendum (2026-09-07) — media-pipeline Part 1 build
 
