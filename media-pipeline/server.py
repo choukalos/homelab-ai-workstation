@@ -802,6 +802,9 @@ def flow_transcribe(payload: dict, jid: str):
     easy_chords = payload.get("easy_chords", False)
     if not isinstance(easy_chords, bool):
         raise ValueError("easy_chords must be a boolean")
+    capo = payload.get("capo", False)
+    if not isinstance(capo, bool):
+        raise ValueError("capo must be a boolean")
     src = _resolve_src(payload["path"])  # media_jobs-relative or absolute host path
     out_host = JOB_DIR / jid
     out_container = f"{JOB_DIR_CONTAINER}/{jid}"
@@ -814,6 +817,7 @@ def flow_transcribe(payload: dict, jid: str):
             "--transpose", str(transpose),
             "--target-key", target_key,
             "--easy-chords", str(easy_chords).lower(),
+            "--capo", str(capo).lower(),
             "--whisper-model", str(payload.get("whisper_model")
                                     or os.environ.get("MEDIA_TRANSCRIBE_WHISPER_MODEL", "large-v3")),
             "--whisper-device", os.environ.get("MEDIA_TRANSCRIBE_WHISPER_DEVICE", "cuda"),
@@ -1578,6 +1582,8 @@ async def api_transcribe(payload: dict):
         raise HTTPException(400, "target_key must be a tonic like 'E', 'Bb', 'F#m'")
     if not isinstance(payload.get("easy_chords", False), bool):
         raise HTTPException(400, "easy_chords must be a boolean")
+    if not isinstance(payload.get("capo", False), bool):
+        raise HTTPException(400, "capo must be a boolean")
     with job_slot():
         jid = new_job("transcribe", payload)
         enqueue_job(jid, "transcribe", payload, {})

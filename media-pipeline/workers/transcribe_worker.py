@@ -14,7 +14,8 @@ Stages (sequential, one process per job):
               faster-whisper on the stem (word ts, VAD, hallucination filter)
   6 mapping   deterministic guitar mapping (role + string/fret, standard tuning)
               (on transposed note events when --transpose/--target-key given)
-  6.5 chords  [easy-chords] 7th/9th/6th -> triads + capo suggestion (finger shapes)
+  6.5 chords  [easy-chords] 7th/9th/6th -> triads; [capo] capo suggestion
+              (chords shown as finger shapes, like a capo tab site)
   7 polish    vLLM matrix-coder (validated; deterministic fallback on rejection)
 
 Design principle (binding): tab DATA (string/fret per note, chords, sections,
@@ -484,10 +485,11 @@ def write_lyrics_txt(lines, out_dir, disabled=False, name="lyrics.txt"):
 # Key transpose + beginner-friendly chords (deterministic post-processing —
 # the LLM never sees or touches this). Transpose shifts note events, chord
 # symbols and the key label by a fixed semitone offset; lyrics, BPM and
-# section boundaries are time-based and unchanged. Easy-chords mode
-# simplifies 7th/9th/6th chords to triads and, when the (transposed) key has
-# no open shapes, suggests the smallest capo (0-5) that lands the key on a
-# friendly open-shape key — chords are then shown as the finger shapes
+# section boundaries are time-based and unchanged. `easy_chords` simplifies
+# 7th/9th/6th chords to triads (chords stay in the actual key). `capo`
+# (independent of easy_chords) suggests, when the (transposed) key has no
+# open shapes, the smallest capo (0-5) that lands the key on a friendly
+# open-shape key — chords are then shown as the finger shapes
 # (shifted down by the capo), like a capo tab site.
 FRIENDLY_KEYS = {  # (pc, minor) -> name: open-shape friendly for beginners
     (7, False): "G", (0, False): "C", (2, False): "D", (9, False): "A",
@@ -893,6 +895,7 @@ def main():
     ap.add_argument("--target-key", default="",
                     help="target tonic e.g. 'E', 'Bb', 'F#m' (offset from detected key)")
     ap.add_argument("--easy-chords", default="false")
+    ap.add_argument("--capo", default="false")
     ap.add_argument("--whisper-model", default=None)
     ap.add_argument("--whisper-device", default=None)
     ap.add_argument("--demucs-model", default=None)
@@ -1003,6 +1006,7 @@ def main():
     if not (-12 <= transpose <= 12):
         die(f"--transpose {transpose} out of range (-12..12)")
     easy_chords = a.easy_chords.strip().lower() in ("1", "true", "yes")
+    use_capo = a.capo.strip().lower() in ("1", "true", "yes")
     capo, finger_key = 0, None
     orig_key = g["key"]
     if transpose:
@@ -1021,12 +1025,13 @@ def main():
     if easy_chords:
         chords = [{"time_s": c["time_s"], "symbol": simplify_chord(c["symbol"]),
                    "confidence": c["confidence"]} for c in chords]
+    if use_capo:
         capo, finger_key = suggest_capo(g["key"])
         if capo > 0:
             chords = [{"time_s": c["time_s"],
                        "symbol": shift_chord_symbol(c["symbol"], -capo),
                        "confidence": c["confidence"]} for c in chords]
-            log(f"easy-chords: capo {capo} — chords shown as {finger_key} finger shapes")
+            log(f"capo: {capo} — chords shown as {finger_key} finger shapes")
 
     # 6. mapping
     mapped = stage_mapping(events, sections, max_fret)
@@ -1074,6 +1079,7 @@ def main():
         "stems_used": stems_used,
         "transpose_semitones": transpose,
         "easy_chords": easy_chords,
+        "capo": use_capo,
         "capo_suggestion": ({"capo": capo, "finger_key": finger_key}
                             if capo > 0 else None),
         "polish_fallback": False,
