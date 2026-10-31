@@ -792,6 +792,16 @@ def flow_transcribe(payload: dict, jid: str):
     tuning = str(payload.get("tuning", "standard")).strip()
     if tuning != "standard":
         raise ValueError("v1 supports tuning=standard only")
+    transpose = payload.get("transpose_semitones", 0)
+    if isinstance(transpose, bool) or not isinstance(transpose, int) \
+            or not (-12 <= transpose <= 12):
+        raise ValueError("transpose_semitones must be an integer in -12..12")
+    target_key = str(payload.get("target_key") or "").strip()
+    if target_key and not re.match(r"^[A-G][#b]?m?$", target_key):
+        raise ValueError("target_key must be a tonic like 'E', 'Bb', 'F#m'")
+    easy_chords = payload.get("easy_chords", False)
+    if not isinstance(easy_chords, bool):
+        raise ValueError("easy_chords must be a boolean")
     src = _resolve_src(payload["path"])  # media_jobs-relative or absolute host path
     out_host = JOB_DIR / jid
     out_container = f"{JOB_DIR_CONTAINER}/{jid}"
@@ -801,6 +811,9 @@ def flow_transcribe(payload: dict, jid: str):
             "--lyrics", str(payload.get("lyrics", True)).lower(),
             "--stems", str(payload.get("stems", True)).lower(),
             "--full-notes", str(payload.get("full_notes", False)).lower(),
+            "--transpose", str(transpose),
+            "--target-key", target_key,
+            "--easy-chords", str(easy_chords).lower(),
             "--whisper-model", str(payload.get("whisper_model")
                                     or os.environ.get("MEDIA_TRANSCRIBE_WHISPER_MODEL", "large-v3")),
             "--whisper-device", os.environ.get("MEDIA_TRANSCRIBE_WHISPER_DEVICE", "cuda"),
@@ -1556,6 +1569,15 @@ async def api_transcribe(payload: dict):
         raise HTTPException(400, "v1 supports tuning=standard only")
     if not str(payload.get("path", "")).strip():
         raise HTTPException(400, "path (media_jobs file) is required")
+    transpose = payload.get("transpose_semitones", 0)
+    if isinstance(transpose, bool) or not isinstance(transpose, int) \
+            or not (-12 <= transpose <= 12):
+        raise HTTPException(400, "transpose_semitones must be an integer in -12..12")
+    target_key = str(payload.get("target_key") or "").strip()
+    if target_key and not re.match(r"^[A-G][#b]?m?$", target_key):
+        raise HTTPException(400, "target_key must be a tonic like 'E', 'Bb', 'F#m'")
+    if not isinstance(payload.get("easy_chords", False), bool):
+        raise HTTPException(400, "easy_chords must be a boolean")
     with job_slot():
         jid = new_job("transcribe", payload)
         enqueue_job(jid, "transcribe", payload, {})

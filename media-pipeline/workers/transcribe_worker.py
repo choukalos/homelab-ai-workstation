@@ -13,6 +13,8 @@ Stages (sequential, one process per job):
   5 lyrics    demucs htdemucs -> vocals.wav (default; --stems false = full mix);
               faster-whisper on the stem (word ts, VAD, hallucination filter)
   6 mapping   deterministic guitar mapping (role + string/fret, standard tuning)
+              (on transposed note events when --transpose/--target-key given)
+  6.5 chords  [easy-chords] 7th/9th/6th -> triads + capo suggestion (finger shapes)
   7 polish    vLLM matrix-coder (validated; deterministic fallback on rejection)
 
 Design principle (binding): tab DATA (string/fret per note, chords, sections,
@@ -225,7 +227,7 @@ def stage_notes(wav, out_dir):
     midi_data.write(os.path.join(out_dir, "song.mid"))
     with open(os.path.join(out_dir, "notes.json"), "w") as f:
         json.dump(events, f)
-    return events
+    return events, midi_data
 
 
 # ------------------------------------------------------------------ stage 3
@@ -478,6 +480,94 @@ def write_lyrics_txt(lines, out_dir, disabled=False, name="lyrics.txt"):
             f.write(f"[{int(m):02d}:{s:04.1f}] {ln['text']}\n")
 
 
+# ------------------------------------------------------------------ stage 5.5
+# Key transpose + beginner-friendly chords (deterministic post-processing —
+# the LLM never sees or touches this). Transpose shifts note events, chord
+# symbols and the key label by a fixed semitone offset; lyrics, BPM and
+# section boundaries are time-based and unchanged. Easy-chords mode
+# simplifies 7th/9th/6th chords to triads and, when the (transposed) key has
+# no open shapes, suggests the smallest capo (0-5) that lands the key on a
+# friendly open-shape key — chords are then shown as the finger shapes
+# (shifted down by the capo), like a capo tab site.
+FRIENDLY_KEYS = {  # (pc, minor) -> name: open-shape friendly for beginners
+    (7, False): "G", (0, False): "C", (2, False): "D", (9, False): "A",
+    (4, False): "E", (11, True): "Bm", (2, True): "Em", (9, True): "Am",
+}
+
+
+def _tonic_pc(name):
+    """'C', 'C#', 'Db' -> pitch class (0-11); None if unparseable."""
+    if not name or name[0] not in "CDEFGAB":
+        return None
+    if name.endswith("#"):
+        return NOTE_NAMES.index(name)
+    if name.endswith("b"):
+        return (NOTE_NAMES.index(name[0]) - 1) % 12
+    return NOTE_NAMES.index(name[0])
+
+
+def shift_key(key, n):
+    m = re.match(r"([A-G][#b]?)( major| minor)", key)
+    if not m:
+        return key
+    pc, minor = _tonic_pc(m.group(1)), m.group(2).strip() == "minor"
+    return f"{NOTE_NAMES[(pc + n) % 12]}{' minor' if minor else ' major'}"
+
+
+def shift_chord_symbol(symbol, n):
+    """'Dmaj7' + 2 -> 'Emaj7' (root shifted, quality preserved)."""
+    i = 0
+    while i < len(symbol) and symbol[i] in "CDEFGAB":
+        i += 1
+    if i == 0:
+        return symbol
+    root, rest = symbol[:i], symbol[i:]
+    if rest[:1] in ("#", "b"):  # accidental belongs to the root (C#maj7)
+        root += rest[0]
+        rest = rest[1:]
+    pc = _tonic_pc(root)
+    if pc is None:
+        return symbol
+    return NOTE_NAMES[(pc + n) % 12] + rest
+
+
+def simplify_chord(symbol):
+    """Beginner-friendly: 7th/6th -> triad (Dmaj7->D, Bm7->Bm, G6->G)."""
+    m = re.match(r"^([A-G][#]?)(min|m|maj7|m7|7|dim|aug|sus2|sus4|6)$", symbol)
+    if not m:
+        return symbol
+    root, q = m.group(1), m.group(2)
+    if q in ("maj7", "7", "6"):
+        return root
+    if q == "m7":
+        return root + "m"
+    return symbol
+
+
+def suggest_capo(key):
+    """Smallest capo (0-5) landing the key on a friendly open-shape key.
+    Returns (capo, finger_key); (0, None) when already friendly or no
+    friendly capo within 5 frets."""
+    m = re.match(r"([A-G][#b]?)( major| minor)", key)
+    if not m:
+        return 0, None
+    pc, minor = _tonic_pc(m.group(1)), m.group(2).strip() == "minor"
+    for c in range(0, 6):
+        for (fpc, fminor), name in FRIENDLY_KEYS.items():
+            if fminor == minor and (pc - c) % 12 == fpc:
+                return c, name
+    return 0, None
+
+
+def _shift_midi(midi_data, n, path):
+    """Shift every note in the full basic-pitch performance by n semitones and
+    rewrite song.mid (so the MIDI matches the transposed analysis)."""
+    for inst in midi_data.instruments:
+        for note in inst.notes:
+            note.pitch = max(0, min(127, note.pitch + n))
+    midi_data.write(path)
+
+
 # ------------------------------------------------------------------ stage 6
 def stage_mapping(events, sections, max_fret):
     """Role classification + string/fret assignment (deterministic)."""
@@ -578,6 +668,13 @@ def _llm_polish(analysis, sections, raw_lines, vllm_url, vllm_model):
     (None, None) on any failure — the caller ships the deterministic fallback."""
     compact = {"title": None, "key": analysis["key"], "bpm": analysis["bpm"],
                "sections": []}
+    if analysis.get("capo_suggestion"):
+        cs = analysis["capo_suggestion"]
+        compact["capo"] = cs["capo"]
+        compact["capo_note"] = (f"chords are shown as {cs['finger_key']} finger shapes "
+                                f"to play with capo {cs['capo']}; they are intentionally "
+                                f"NOT in the sounding key — never flag this as an "
+                                f"inconsistency")
     for sec in sections:
         lead = [e for e in sec["notes"] if e["role"] == "lead"][:24]
         compact["sections"].append({
@@ -602,7 +699,8 @@ def _llm_polish(analysis, sections, raw_lines, vllm_url, vllm_model):
         "(e.g. 'sistone' -> 'stoning'), punctuation and capitalization; never "
         "invent lines or content that is not in the raw line. Label sections using chord-loop similarity and lyrics "
         "presence. confidence reflects how reliable the tab data looks (dense "
-        "mixes = lower). No text outside the JSON."
+        "mixes = lower). If a capo_note is present, the chords are capo-adjusted "
+        "finger shapes — do not flag the key/chord mismatch. No text outside the JSON."
     )
     body = json.dumps({
         "model": vllm_model,
@@ -726,6 +824,12 @@ def render_tab_md(analysis, sections, full_notes):
     lines.append(f"# {title} — guitar tab\n")
     lines.append(f"Artist: {artist} | Key: {analysis['key']} | BPM: {analysis['bpm']} | "
                  f"Tuning: Standard (EADGBE)")
+    if analysis.get("capo_suggestion"):
+        cs = analysis["capo_suggestion"]
+        lines.append(f"Capo: {cs['capo']} — chords shown as {cs['finger_key']} finger shapes "
+                     f"(sounding key {analysis['key']})")
+    if analysis.get("transpose_semitones"):
+        lines.append(f"Transposed {analysis['transpose_semitones']:+d} semitones from the source recording")
     lines.append(f"Source: {analysis['source']}")
     lines.append(f"Confidence: {analysis['confidence']}"
                  + (f" — {'; '.join(analysis['caveats'])}" if analysis["caveats"] else ""))
@@ -785,6 +889,10 @@ def main():
     ap.add_argument("--tuning", default="standard")
     ap.add_argument("--lyrics", default="true")
     ap.add_argument("--stems", default="true")
+    ap.add_argument("--transpose", default="0", help="semitone offset (-12..12)")
+    ap.add_argument("--target-key", default="",
+                    help="target tonic e.g. 'E', 'Bb', 'F#m' (offset from detected key)")
+    ap.add_argument("--easy-chords", default="false")
     ap.add_argument("--whisper-model", default=None)
     ap.add_argument("--whisper-device", default=None)
     ap.add_argument("--demucs-model", default=None)
@@ -830,7 +938,7 @@ def main():
 
     # 2. notes (basic-pitch) — computed before the key so chord roots are
     # available for the tonic tiebreak
-    events = stage_notes(wav, out_dir)
+    events, midi_data = stage_notes(wav, out_dir)
 
     # 1. bpm (beat grid for chords)
     g_bpm = stage_bpm(y)
@@ -877,6 +985,49 @@ def main():
                 sec["lyrics_suppressed"] = True
                 log(f"sections: {sec['index']} has >10s without onsets — suppressing lyrics")
 
+    # 5.5 transpose + easy chords (deterministic — see stage 5.5 comment)
+    transpose = 0
+    try:
+        transpose = int(a.transpose)
+    except ValueError:
+        die(f"invalid --transpose {a.transpose!r} (expected an integer)")
+    if a.target_key.strip():
+        m = re.match(r"^([A-G][#b]?)(m?)$", a.target_key.strip())
+        if not m:
+            die(f"invalid --target-key {a.target_key!r} (expected e.g. 'E', 'Bb', 'F#m')")
+        det = re.match(r"([A-G][#b]?)", g["key"])
+        if not det:
+            die(f"cannot parse detected key {g['key']!r} for --target-key")
+        n = (_tonic_pc(m.group(1)) - _tonic_pc(det.group(1))) % 12
+        transpose = n - 12 if n > 6 else n  # shortest direction
+    if not (-12 <= transpose <= 12):
+        die(f"--transpose {transpose} out of range (-12..12)")
+    easy_chords = a.easy_chords.strip().lower() in ("1", "true", "yes")
+    capo, finger_key = 0, None
+    orig_key = g["key"]
+    if transpose:
+        for ev in events:
+            ev["midi"] = max(0, min(127, ev["midi"] + transpose))
+            ev["freq_hz"] = round(440.0 * 2 ** ((ev["midi"] - 69) / 12.0), 1)
+        chords = [{"time_s": c["time_s"],
+                   "symbol": shift_chord_symbol(c["symbol"], transpose),
+                   "confidence": c["confidence"]} for c in chords]
+        g["key"] = shift_key(g["key"], transpose)
+        # keep notes.json + song.mid consistent with the transposed events
+        with open(os.path.join(out_dir, "notes.json"), "w") as f:
+            json.dump(events, f)
+        _shift_midi(midi_data, transpose, os.path.join(out_dir, "song.mid"))
+        log(f"transpose: {transpose:+d} semitones ({orig_key} -> {g['key']})")
+    if easy_chords:
+        chords = [{"time_s": c["time_s"], "symbol": simplify_chord(c["symbol"]),
+                   "confidence": c["confidence"]} for c in chords]
+        capo, finger_key = suggest_capo(g["key"])
+        if capo > 0:
+            chords = [{"time_s": c["time_s"],
+                       "symbol": shift_chord_symbol(c["symbol"], -capo),
+                       "confidence": c["confidence"]} for c in chords]
+            log(f"easy-chords: capo {capo} — chords shown as {finger_key} finger shapes")
+
     # 6. mapping
     mapped = stage_mapping(events, sections, max_fret)
     for sec in sections:
@@ -921,6 +1072,10 @@ def main():
         "key": g["key"],
         "bpm": g["bpm"],
         "stems_used": stems_used,
+        "transpose_semitones": transpose,
+        "easy_chords": easy_chords,
+        "capo_suggestion": ({"capo": capo, "finger_key": finger_key}
+                            if capo > 0 else None),
         "polish_fallback": False,
         "confidence": confidence,
         "caveats": [],
@@ -931,6 +1086,15 @@ def main():
         analysis["caveats"].append(g["bpm_guard"])
     if asr_caveat:
         analysis["caveats"].append(asr_caveat)
+    if transpose:
+        analysis["caveats"].append(
+                f"transposed {transpose:+d} semitones (detected {orig_key} -> {g['key']})")
+    if capo > 0:
+        analysis["caveats"].append(
+                f"capo {capo} — chords shown as {finger_key} finger shapes "
+                f"(sounding key {g['key']})")
+    elif easy_chords:
+        analysis["caveats"].append("chords simplified to triads (easy-chords mode)")
     # heavy-distortion smear caveat
     if smear:
         analysis["caveats"].append(
