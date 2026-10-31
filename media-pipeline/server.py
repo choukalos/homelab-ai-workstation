@@ -71,6 +71,7 @@ WORKERS = "/comfy/mnt/media_workers"
 WORKER_PY = {
     "tts_worker.py": "/comfy/mnt/venvs/venv-tts/bin/python",
     "acestep_worker.py": "/comfy/mnt/ACE-Step-1.5/.venv/bin/python",
+    "transcribe_worker.py": "/comfy/mnt/venvs/venv-transcribe/bin/python",
 }
 FFMPEG = "ffmpeg"
 logger = logging.getLogger("media-pipeline")
@@ -435,7 +436,7 @@ def run_worker(worker: str, args: list[str], timeout: float = 3600) -> str:
 # *its own* allocation fails, which never happens for a foreign process — so
 # before such a flow, ensure free VRAM by restarting comfyui_backend when
 # headroom is low (only when its queue is idle; the restart costs ~40 s).
-VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0}
+VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0, "transcribe": 4.0}
 
 
 def _gpu_free_gib() -> float | None:
@@ -779,6 +780,46 @@ def flow_tts(payload: dict, jid: str):
     _ensure_vram_headroom("tts", jid)
     run_worker("tts_worker.py", args, timeout=1800)
     return {"audio": str(out_host)}
+
+
+def flow_transcribe(payload: dict, jid: str):
+    """Song -> guitar tab + timestamped lyrics (spec: song_transcribe_matrix_handoff.md).
+    Tab data is deterministic from the audio; the LLM only labels/cleans/annotates
+    (validated, with a deterministic fallback) — the job is never blocked on it."""
+    instrument = str(payload.get("instrument", "guitar")).strip()
+    if instrument != "guitar":
+        raise ValueError("v1 supports instrument=guitar only")
+    tuning = str(payload.get("tuning", "standard")).strip()
+    if tuning != "standard":
+        raise ValueError("v1 supports tuning=standard only")
+    src = _resolve_src(payload["path"])  # media_jobs-relative or absolute host path
+    out_host = JOB_DIR / jid
+    out_container = f"{JOB_DIR_CONTAINER}/{jid}"
+    args = ["--path", to_container(src), "--out-dir", out_container,
+            "--source-display", str(payload["path"]),
+            "--instrument", instrument, "--tuning", tuning,
+            "--lyrics", str(payload.get("lyrics", True)).lower(),
+            "--stems", str(payload.get("stems", False)).lower(),
+            "--full-notes", str(payload.get("full_notes", False)).lower(),
+            "--whisper-model", str(payload.get("whisper_model")
+                                    or os.environ.get("MEDIA_TRANSCRIBE_WHISPER_MODEL", "large-v3")),
+            "--whisper-device", os.environ.get("MEDIA_TRANSCRIBE_WHISPER_DEVICE", "cuda"),
+            "--demucs-model", os.environ.get("MEDIA_TRANSCRIBE_DEMUCS_MODEL", "htdemucs"),
+            "--max-fret", os.environ.get("MEDIA_TRANSCRIBE_MAX_FRET", "15"),
+            "--min-section-s", os.environ.get("MEDIA_TRANSCRIBE_MIN_SECTION_S", "4"),
+            # vLLM is reached via the host LAN IP from inside the comfyui container
+            # (the pipeline container itself is host-net; the worker is not).
+            "--vllm-url", os.environ.get("MEDIA_TRANSCRIBE_VLLM_URL",
+                                         "http://192.168.4.55:8000/v1/chat/completions"),
+            "--vllm-model", os.environ.get("MEDIA_TRANSCRIBE_VLLM_MODEL", VLLM_MODEL)]
+    _ensure_vram_headroom("transcribe", jid)
+    timeout = int(os.environ.get("MEDIA_TRANSCRIBE_TIMEOUT_S", "1800"))
+    run_worker("transcribe_worker.py", args, timeout=timeout)
+    return {"analysis": str(out_host / "analysis.json"),
+            "tab": str(out_host / "tab.md"),
+            "lyrics": str(out_host / "lyrics.txt"),
+            "midi": str(out_host / "song.mid"),
+            "audio": str(out_host / "audio.wav")}
 
 
 def flow_voices_add(payload: dict, jid: str):
@@ -1354,6 +1395,7 @@ FLOW_MAP = {
     "trim": flow_trim,
     "freeze": flow_freeze,
     "caption": flow_caption,
+    "transcribe": flow_transcribe,
 }
 
 
@@ -1499,6 +1541,24 @@ async def api_tts(payload: dict):
     with job_slot():
         jid = new_job("tts", payload)
         enqueue_job(jid, "tts", payload, {})
+    return {"job_id": jid}
+
+
+@app.post("/transcribe")
+async def api_transcribe(payload: dict):
+    """Song -> guitar tab + timestamped lyrics (job flow; spec:
+    song_transcribe_matrix_handoff.md). v1: instrument=guitar, tuning=standard."""
+    instrument = str(payload.get("instrument", "guitar")).strip()
+    if instrument != "guitar":
+        raise HTTPException(400, "v1 supports instrument=guitar only")
+    tuning = str(payload.get("tuning", "standard")).strip()
+    if tuning != "standard":
+        raise HTTPException(400, "v1 supports tuning=standard only")
+    if not str(payload.get("path", "")).strip():
+        raise HTTPException(400, "path (media_jobs file) is required")
+    with job_slot():
+        jid = new_job("transcribe", payload)
+        enqueue_job(jid, "transcribe", payload, {})
     return {"job_id": jid}
 
 

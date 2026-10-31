@@ -46,6 +46,9 @@ ENABLED = _env_bool("MEDIA_METRICS_ENABLED", True)
 PRICE_MPPIX_STEP = _env_f("MEDIA_PRICE_MPPIX_STEP_USD", 0.001)
 PRICE_MPPIX_FRAME = _env_f("MEDIA_PRICE_MPPIX_FRAME_USD", 0.001)
 PRICE_AUDIO_SEC = _env_f("MEDIA_PRICE_AUDIO_SEC_USD", 0.0005)
+# transcribe: placeholder rate (spec §8) — same order as the audio rate; calibrate
+# after the first real runs (energy-based) and report back to Thor.
+PRICE_TRANSCRIBE_SEC = _env_f("MEDIA_PRICE_TRANSCRIBE_SEC_USD", 3.1e-5)
 CODER_IN = _env_f("MEDIA_MATRIX_CODER_IN_USD", 0.00000075)
 CODER_OUT = _env_f("MEDIA_MATRIX_CODER_OUT_USD", 0.0000045)
 
@@ -70,11 +73,13 @@ MODEL_BY_FLOW = {
     "trim": "ffmpeg",
     "freeze": "ffmpeg",
     "caption": "ffmpeg",
+    "transcribe": "basic-pitch+whisper-large-v3",
 }
 KIND_RATE = {
     "mpix_steps": PRICE_MPPIX_STEP,
     "mpix_frames": PRICE_MPPIX_FRAME,
     "audio_seconds": PRICE_AUDIO_SEC,
+    "transcribe": PRICE_TRANSCRIBE_SEC,
 }
 
 # ------------------------------------------------------------------ metrics
@@ -210,6 +215,11 @@ def _work_units(jid: str, flow: str, payload: dict, output: dict):
             if not m["duration"]:
                 raise ValueError("no audio duration")
             return m["duration"], "audio_seconds"
+        if flow == "transcribe":
+            m = _ffprobe_media(output["audio"])
+            if not m["duration"]:
+                raise ValueError("no audio duration")
+            return m["duration"], "transcribe"
         if flow == "assemble" and payload.get("upscale_each"):
             # GPU work = the per-shot SeedVR2 upscases; sum frames×MP over them.
             total = 0.0

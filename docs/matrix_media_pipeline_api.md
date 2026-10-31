@@ -73,6 +73,7 @@ GET /jobs/{job_id}
 | POST | `/trim` | JSON `{source, start=0.0, end \| duration, fps?, width?, height?}` — exactly one of `end` (absolute seconds) / `duration` (length) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
 | POST | `/freeze` | JSON `{source, duration=2.0, frame?=0, fps=24, width=1280, height=720}` — still image, or a video + `frame` (frame index) | `{"video":"<path>/mp_<jid>_00001.mp4"}` |
 | POST | `/caption` | JSON `{source, text, start?, end?, position="bottom", font_size?, color="white", outline?=3}` (drawtext; multiline via `textfile`) | `{"video":"<path>/mp_<jid>_00001.mp4","caption":"<path>/caption.txt"}` |
+| POST | `/transcribe` | JSON `{path, instrument="guitar", tuning="standard", lyrics=true, stems=false, full_notes=false, whisper_model?}` — `path` = media file under `media_jobs` (audio **or** video; the audio track is extracted). v1: `instrument=guitar` + `tuning=standard` only (anything else → 400 at submit). Song → guitar tab (6-string, standard tuning) + timestamped lyrics; ~3–8 min for a 5-min song | `{"analysis":"<path>/analysis.json","tab":"<path>/tab.md","lyrics":"<path>/lyrics.txt","midi":"<path>/song.mid","audio":"<path>/audio.wav"}` |
 | GET | `/info?path=` | sync (not a job) — ffprobe metadata for any media file | `{duration_s, width, height, fps, video_codec, audio_codecs, size_bytes, bitrate_bps}` (404 missing, 400 unprobeable) |
 | POST | `/upload_local` | JSON `{source, subdirectory?}` — sync bridge of a **basedir/** host file into `media_jobs/uploads/` (source confined to the ComfyUI basedir; 400 otherwise) | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
 | POST | `/download` | JSON `{url, subdirectory?}` — sync ingest of an http(s) URL into `media_jobs/uploads/` | `{"path":"<media_jobs>/uploads/<ts>_<name>"}` |
@@ -120,6 +121,36 @@ Notes:
   `narrator_f` (female, ~212 Hz — pitch-shifted clone of the stock sample).
   All XTTS-v2 zero-shot clones of the same stock speaker; add a real recorded
   reference (3–15 s clean speech) via `POST /voices` for a truly new speaker.
+- **`/transcribe`** (2026-10-31, spec `song_transcribe_matrix_handoff.md`):
+  song → deterministic guitar tab + timestamped lyrics. Stages (one worker
+  process, `venv-transcribe`): ffmpeg ingest → basic-pitch (ONNX) note events
+  → beat tracking (60–180 half/double-time guard) → CQT chord-template
+  matching (2-beat window; a chord is only *reliable* when it beats the
+  runner-up by ≥1.5 pts, and a change commits on ≥3 pts for 2 consecutive
+  beats — this suppresses the random flapping CQT matching produces on
+  sparse/dense mixes) → key (multi-signal: chord-root tonic when chords are
+  plentiful, else the strongest bass-root pitch class when the runner-up is a
+  perfect 5th above (dominant-confirmed), else Krumhansl–Schmuckler; mode from
+  tonic chord qualities, else the 3rd decision — major-3rd vs minor-3rd CQT
+  energy) → deterministic section segmentation (quiet-runs, then chord-change
+  boundaries, then fixed ~20 s division for continuous music) → [demucs
+  htdemucs vocals] → faster-whisper (word timestamps, VAD) → deterministic
+  string/fret mapping → matrix-coder polish (section labels, lyrics cleanup,
+  confidence notes — may only *lower* confidence).
+  **Design principle (binding):** the tab *data* is computed deterministically
+  from the audio (reproducible, verifiable against `analysis.json`/
+  `song.mid`); the LLM only labels/cleans/annotates, is diff-checked against
+  the deterministic output, and a failed LLM step falls back to the
+  deterministic rendering (`polish_fallback: true`) — the job is never
+  blocked on the LLM. `lyrics=false` skips ASR (`lyrics.txt` carries a
+  `# lyrics disabled` header); `stems=true` runs demucs first (cleaner lyrics
+  on dense mixes, +1–2 min). Distinct job errors: no decodable audio track,
+  `audio too short` (<10 s), whisper model missing. Job budget 30 min
+  (`MEDIA_TRANSCRIBE_TIMEOUT_S`). VRAM headroom gate 4 GiB (demucs peak).
+  Config envs: `MEDIA_TRANSCRIBE_WHISPER_MODEL` (default `large-v3`),
+  `MEDIA_TRANSCRIBE_WHISPER_DEVICE` (`cuda`|`cpu`), `MEDIA_TRANSCRIBE_MAX_FRET`
+  (15), `MEDIA_TRANSCRIBE_MIN_SECTION_S` (4), `MEDIA_TRANSCRIBE_DEMUCS_MODEL`
+  (`htdemucs`).
 - `model` for `/shots` (2026-10-31): `ltxv2b` (LTXV 2B, fast, ~15 s/clip, 768×512) or
   `wan14b` (Wan 2.2 I2V A14B, quality, ~10–12 min/clip, **832×480 only** —
   720p OOM'd the 14 GB media VRAM gate and is rejected with a clean 400).
@@ -193,6 +224,7 @@ pull them out (e.g. via `media_pull` / `/dl/{token}`) or move them to
 | `shots` | **LTXV 2B 0.9.6** distilled (8-step sigma schedule) + T5-XXL fp8 — `model=ltxv2b` (fast path, ~15 s/clip) · **Wan 2.2 I2V A14B** Q5_K_M GGUF (dual HighNoise/LowNoise models, 40 steps) + UMT5-XXL fp8 + Wan 2.1 VAE — `model=wan14b` (quality, 480p only, ~10–12 min/clip; default since 2026-10-31 via `MEDIA_SHOT_MODEL`) |
 | `tts` | XTTS-v2 (separate venv, releases VRAM on exit) |
 | `music` | ACE-Step 1.5 (short-lived server per job) |
+| `transcribe` | basic-pitch (ONNX, ~1 GB CPU) + faster-whisper `large-v3` (~3 GB, `venv-transcribe`) + matrix-coder polish (existing vLLM) — deterministic tab data; the LLM only labels/cleans/annotates (validated, deterministic fallback) |
 | `sfx` | MMAudio large-44k-v2 (in ComfyUI) |
 | `upscale` | SeedVR2 3B FP8 (`b`) / 4xUltrasharp (`a2`) |
 | `assemble` | ffmpeg (in-container, CPU) |
@@ -221,15 +253,20 @@ The pipeline attributes each job to its `user`/`client` and measures the work:
   requested 4/8);
   `shots`/`upscale`/`assemble`-with-`upscale_each` = frames × output MP
   (`mpix_frames`); `tts`/`music`/`sfx` = output audio seconds via ffprobe
-  (`audio_seconds`); `storyboard` = real vLLM prompt/completion tokens;
+  (`audio_seconds`); `transcribe` = input audio seconds via ffprobe
+  (`transcribe` kind, placeholder rate $3.1e-5/s — spec §8); `storyboard` = real vLLM prompt/completion tokens;
   `assemble` (no upscale) = 0; `trim`/`freeze`/`caption` = 0 (CPU-only
   ffmpeg, model label `ffmpeg`).
 - **Rates** (full-cost: electricity + GPU amortization; calibrated 2026-09-06
   against 1 Hz `nvidia-smi power.draw`, baseline-subtracted):
   `$0.000053`/mpix_step, `$0.0000058`/mpix_frame, `$0.000031`/audio_s;
+  `transcribe` = `$0.000031`/s placeholder (spec §8 — calibrate after the
+  first real runs, energy-based, report back to Thor);
   storyboard priced at the live `matrix-coder` LiteLLM rate
   ($0.75/M in / $4.50/M out). Env vars: `MEDIA_PRICE_*`,
   `MEDIA_MATRIX_CODER_*_USD` in `/home/chuck/homelab/.env`.
+  The `transcribe` LLM polish call is **not** metered in media $ (counted in
+  LLM $ on the Thor side — no double counting, permanent rule).
 - **`jobs.jsonl`** — durable per-job record at
   `/home/chuck/data/comfyui/run/media_jobs/metrics/jobs.jsonl` (10 MB cap,
   keep-newest rotation). One line per completed job:
@@ -248,6 +285,7 @@ Free VRAM for media work: ~14 GB (72 GB − vLLM's ~56–66 GB). Per-flow peaks
 | **Wan 2.2 I2V A14B shot gen** | **~14 GB** (measured 2026-10-31: +13.9 GB delta, 14.4 GB peak, 480p/81f) | 720p OOMs the gate (rejected, 400); ~10 GiB stays resident after the job |
 | ACE-Step music | ~6–8 GB | separate short-lived server |
 | TTS VO (XTTS-v2) | ~4–6 GB | separate venv, releases on exit |
+| Transcribe (demucs + whisper) | ~4–5 GB | separate venv (`venv-transcribe`); peak = demucs htdemucs; basic-pitch ONNX runs on CPU |
 | MMAudio SFX | ~2–4 GB | in ComfyUI |
 | SeedVR2 upscale (b) | ~10.4 GB | measured |
 | A2 upscale (4xUltrasharp) | ~8.4 GB | measured |
@@ -265,7 +303,8 @@ resident (a wan14b shot leaves ~10 GiB), which starves the out-of-ComfyUI GPU
 workers (ACE-Step music ~6.5 GiB, TTS): vLLM ~56 GiB + Wan 10 GiB + worker
 > 71.12 GiB → CUDA OOM (found in E2E 2026-10-31). `server.py` now measures
 free VRAM (`docker exec comfyui_backend nvidia-smi`) before `music` (≥8 GiB
-required) and `tts`/`voices-add` (≥2 GiB) and, if headroom is low and the
+required) and `tts`/`voices-add` (≥2 GiB) and `transcribe` (≥4 GiB — demucs
+peak), and, if headroom is low and the
 ComfyUI queue is idle, **restarts `comfyui_backend`** (~40 s) to drop the
 resident model, then waits for it to come back. No-op when headroom is
 sufficient or unmeasurable. Sfx is a ComfyUI flow — ComfyUI's own
@@ -321,6 +360,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-10-31 | **`/transcribe` — song → guitar tab + lyrics** (spec `song_transcribe_matrix_handoff.md`): new job flow + worker (`workers/transcribe_worker.py`, separate venv `venv-transcribe`: librosa, basic-pitch ONNX, faster-whisper large-v3, demucs, pretty_midi). Stages: ffmpeg ingest → basic-pitch note events (`song.mid` + `notes.json`) → beat tracking (60–180 half/double-time guard) → CQT chord-template matching (2-beat window; reliable = beats runner-up ≥1.5 pts; change commits ≥3 pts for 2 consecutive beats) → multi-signal key (chord-root tonic → dominant-confirmed bass-root → Krumhansl–Schmuckler; mode from chord qualities → 3rd decision) → deterministic section segmentation (quiet-runs → chord-changes → fixed ~20 s division) → [demucs htdemucs vocals] → faster-whisper (word timestamps, VAD, beam 5) → deterministic guitar mapping (role + string/fret, invariant-asserted) → matrix-coder polish (thinking OFF). **Binding design principle:** tab data is deterministic from the audio; the LLM only labels sections / cleans ASR lyrics / writes confidence notes (may only lower confidence) — its output is diff-checked (section count/order, lyric word-subset, ±1 s timestamps) with a deterministic fallback (`polish_fallback: true`); the job is never blocked on the LLM. Outputs: `analysis.json` (v1 schema), `tab.md` (deterministic 16th-note grid), `lyrics.txt`, `song.mid`, `audio.wav`. Whisper-hallucination guard (sections with >10 s without onsets lose their lines). Config: `MEDIA_TRANSCRIBE_WHISPER_MODEL/DEVICE`, `MEDIA_TRANSCRIBE_MAX_FRET`, `MEDIA_TRANSCRIBE_MIN_SECTION_S`, `MEDIA_TRANSCRIBE_DEMUCS_MODEL`, `MEDIA_TRANSCRIBE_VLLM_URL/MODEL`, `MEDIA_TRANSCRIBE_TIMEOUT_S` (1800). Metering: new `transcribe` work-unit kind (input audio seconds, placeholder rate $3.1e-5/s); LLM polish not metered in media $ (LLM $ on Thor side — no double counting). VRAM headroom gate 4 GiB. v1: `instrument=guitar` + `tuning=standard` only (else clean 400 at submit). QA: `media-pipeline/transcribe_qa_check.py` (schema checker, spec §9.3) — all 9 spec §9 items verified (happy path, fallback, `lyrics=false`, error cases, metering). |
 | 2026-10-31 | **Wan 2.2 I2V A14B shots** (plan `wan_shots_todo.md`, phases 1–3): `/shots` gains `model` (`ltxv2b`\|`wan14b`; per-request > `MEDIA_SHOT_MODEL` env > built-in default — env set to `wan14b`, quality by default); per-model native defaults (ltxv2b 768×512/97f/25 fps, wan14b 832×480/81f/16 fps; wan frames must be 4n+1); wan14b 480p-only gate (720p OOM'd the 14 GB gate → clean 400); `strength` ltxv2b-only; metering label `wan2.2-14b-i2v-gguf-q5`. E2E: storyboard → 2× qwen21 keyframes → 2× wan14b shots (625 s + 530 s) → TTS → music → assemble (SeedVR2 upscale_each + loudnorm) → 1920×1080/24 fps final. **VRAM headroom guard**: pre-flight free-VRAM check before `music` (≥8 GiB) / `tts`+`voices-add` (≥2 GiB); low headroom + idle ComfyUI queue → auto `docker restart comfyui_backend` (~40 s) to drop the resident model (fixes the post-wan-shot music/sfx OOM). Verified: no-op path (15.7 GiB free, no restart) and restart path (2.8 GiB free → restart → music OK → qwen21 image OK). |
 | 2026-09-25 | **TTS voice library** (plan `voices_todo.md`): `GET/POST/DELETE /voices` + manifest at `<basedir>/models/tts/voices/manifest.json` (auto-seeded; `trailer`/`default` protected); `/tts` `voice` now accepts a library name **or** a reference wav path (raw-path support fixed — the server previously never forwarded `--reference-audio`); unknown voice → clean 400 instead of a worker crash; `POST /voices` QC (3–15 s) + 16 kHz mono normalization + GPU sample generation; seeded `narrator_f` (female, ~212 Hz F0) + `deep_m` (~150 Hz) as pitch-shifted clones of the stock sample. Worker CLI unchanged; all logic in `server.py`. | **Qwen-Image-2.1 upgrade**: `/images` + `/images/edit` default to Qwen-Image-2.1 (ComfyUI v0.37.0 native nodes, int8_convrot weights, 25 steps, cfg=1.0); unified model for create + edit; `/images/edit` gains `references` (up to 9, 10 total) for cross-shot consistency; `model` field (`qwen21`\|`legacy`) + `MEDIA_IMAGE_MODEL` env on both image flows; legacy 2512/2511 GGUF+Lightning kept as fallback; qwen21 steps clamped [10,50]; metering model label + work units follow the selected model/effective steps. Runbook: `media_todo.md`. |
 | 2026-09-21 | **Job-dir retention** (`MEDIA_JOB_RETENTION_DAYS`, default 14 d): hourly background sweeper reclaims job dirs + stale `uploads/` files; `metrics/` (jobs.jsonl) and live jobs never touched; `/health` exposes sweep state. One-off: removed `acestep_test/`/`ltxv_test/`/`tts_test/` scratch dirs. |
