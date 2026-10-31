@@ -94,7 +94,12 @@ def stage_bpm(y):
     import librosa
     tempo, beats = librosa.beat.beat_track(y=y, sr=SR)
     tempo = float(np.atleast_1d(tempo)[0])
-    beats = [float(b) for b in np.atleast_1d(beats)]
+    # beat_track returns beat FRAMES on the hop grid, not seconds. The
+    # conversion is mandatory: with raw frames, stage_chords' `b >= dur`
+    # break kills the loop on the first beat and every window clamps to the
+    # final frame — chord detection comes out empty.
+    beats = [float(t) for t in librosa.frames_to_time(
+        np.atleast_1d(beats), sr=SR, hop_length=HOP)]
     guard_note = None
     if tempo < 60:
         tempo *= 2.0
@@ -150,8 +155,15 @@ def stage_key(cqt, bin_pc, chords, note_events):
         if r is not None:
             roots[r] = roots.get(r, 0) + 1
     if len(chords) >= 10 and roots:
-        tonic_pc = max(roots, key=roots.get)
-        method = "chord-root tonic"
+        top = max(roots.values())
+        tied = [r for r, n in roots.items() if n == top]
+        if len(tied) == 1:
+            tonic_pc, method = tied[0], "chord-root tonic"
+        else:
+            # tie (typical I-V-vi-iii loop): K-S correlation breaks it
+            tonic_pc = max(tied, key=lambda r: max(scores[(r, False)],
+                                                   scores[(r, True)]))
+            method = "chord-root tonic (K-S tiebreak)"
     else:
         # bass-root tonic: strongest low-register note event pitch class,
         # confirmed when the runner-up is a perfect 5th above (the dominant)
@@ -230,29 +242,37 @@ def _chord_templates():
 
 def stage_chords(cqt, bin_pc, beats, dur):
     """Beat-aligned chord-template matching with anti-flap.
-    Scores are normalized (template energy / window energy) so the margin is
-    scale-invariant. A chord is only *reliable* when it beats the runner-up by
-    >= GAP (clear winner); a change commits when the reliable new chord beats
-    the incumbent by >= MARGIN for PERSIST consecutive beats. Unreliable
-    windows (no clear winner) keep the incumbent — this suppresses the random
-    flapping that CQT template matching produces on sparse/dense mixes."""
+
+    One-beat window per beat. Scores are normalized (template energy /
+    window energy), so they are comparable only *within* a window: the
+    incumbent is re-scored in the current window, never compared against
+    its score from the window it was committed in (a stale-window compare
+    made changes impossible after a high-scoring first chord).
+
+    A chord is *reliable* when it beats the best template of any OTHER root
+    by >= GAP (same-root quality variants like Dmaj7 vs D7 are near-ties by
+    construction — the 7th/9th is CQT-ambiguous — so they must not block a
+    clear root). A change commits when the reliable new root beats the
+    incumbent's own template in the same window by >= MARGIN for PERSIST
+    consecutive beats. Unreliable windows keep the incumbent — this
+    suppresses the one-beat flapping that CQT template matching produces on
+    sparse/dense mixes."""
     templates = _chord_templates()
+    tpl_root = {f"{NOTE_NAMES[r]}{s}": r for r, s, _ in templates}
     bin_pc_sets = {p: (bin_pc == p) for p in range(12)}
     n_frames = cqt.shape[1]
     mag = np.abs(cqt)
     GAP, MARGIN, PERSIST = 0.015, 0.03, 2
-    WIN_BEATS = 2  # 2-beat window for stability
 
     changes = []  # (time_s, symbol, confidence)
     incumbent = None
-    incumbent_score = 0.0
     pending = None
     for i, b in enumerate(beats):
         if b >= dur:
             break
         f0 = int(b * SR / HOP)
-        w_end = beats[i + WIN_BEATS] if i + WIN_BEATS < len(beats) else min(b + WIN_BEATS * 0.5, dur)
-        f1 = int(w_end * SR / HOP)
+        f1 = int(beats[i + 1] * SR / HOP) if i + 1 < len(beats) \
+            else min(f0 + int(0.5 * SR / HOP), n_frames)
         f0, f1 = max(0, min(f0, n_frames - 1)), max(f0 + 1, min(f1, n_frames))
         if f1 <= f0:
             continue
@@ -260,29 +280,28 @@ def stage_chords(cqt, bin_pc, beats, dur):
         total = float(window.sum())
         if total <= 1e-9:
             continue
-        best_score, second_score, best_sym = -1.0, -1.0, None
+        scores = {}
         for root, suffix, pcs in templates:
             score = 0.0
             for p, w in pcs:
                 score += w * float(window[bin_pc_sets[p]].sum())
-            if score > best_score:
-                second_score, best_score = best_score, score
-                best_sym = f"{NOTE_NAMES[root]}{suffix}"
-            elif score > second_score:
-                second_score = score
-        best_norm, second_norm = best_score / total, second_score / total
-        reliable = (best_norm - second_norm) >= GAP
+            scores[f"{NOTE_NAMES[root]}{suffix}"] = score
+        best_sym = max(scores, key=scores.get)
+        best_s = scores[best_sym]
+        best_other = max((s for sym, s in scores.items()
+                          if tpl_root[sym] != tpl_root[best_sym]), default=0.0)
+        reliable = (best_s - best_other) / total >= GAP
         if incumbent is None:
-            incumbent, incumbent_score = best_sym, best_norm
-            changes.append((round(b, 3), best_sym, round(best_norm, 4)))
+            incumbent = best_sym
+            changes.append((round(b, 3), best_sym, round(best_s / total, 4)))
             pending = None
-        elif not reliable or best_sym == incumbent:
-            pending = None
-        elif best_norm > incumbent_score + MARGIN:
+        elif tpl_root[incumbent] == tpl_root[best_sym]:
+            pending = None  # same root: keep incumbent symbol (no quality flap)
+        elif reliable and (best_s - scores[incumbent]) / total >= MARGIN:
             if pending == best_sym:
-                # PERSIST consecutive reliable beats favor the new chord
-                incumbent, incumbent_score = best_sym, best_norm
-                changes.append((round(b, 3), best_sym, round(best_norm, 4)))
+                # PERSIST consecutive reliable beats favor the new root
+                incumbent = best_sym
+                changes.append((round(b, 3), best_sym, round(best_s / total, 4)))
                 pending = None
             else:
                 pending = best_sym
