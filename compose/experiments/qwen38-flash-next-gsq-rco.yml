@@ -1,0 +1,79 @@
+# Experiment 8b (fallback): Qwen3.8-Flash-Next — Swift 1.5 IQ3_S GSQ-RCO GGUF (UkisAI)
+# Use if IQ4_XS (qwen38-flash-next-gguf.yml) is too tight on RAM or we want more headroom.
+#
+# Quant: IQ3_S GSQ-RCO — 83.74 GB, 2 shards (mixed-precision 2-3 bit, ISTA GSQ+RCO
+#   allocation + Swift-specific refinement)
+#   - dev KLD 0.1447 @512 — on par with ISTA's own GSQ-RCO IQ3_S (0.1467), and
+#     better than the standard-repo IQ3_M (0.2005 @512, 93.2 GB) at ~10 GB smaller
+#     (note: cross-repo KLDs use slightly different harnesses; treat as indicative)
+#
+# Memory budget (matrix: 72 GB VRAM, 62 GB RAM):
+#   Weights 83.7 GB -> ~63.5 GB GPU + ~20 GB RAM
+#   KV 2 x 262144 k8v4 ~= 6 GB; RAM total ~= 30 GB (comfortable)
+#
+# ⚠️ Pre-download (~84.7 GB):
+#   huggingface-cli download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
+#     --include "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-*" \
+#     --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
+#     --local-dir /home/chuck/data/models/gguf
+#
+# Concurrent budget (2026-10-31): this is the tier that runs 2 x 256K alongside
+#   the ~14 GB media pipeline on current 62 GB RAM (IQ4_XS is at the wall there).
+#   4 x 256K = 12 GB KV -> ~76 GB VRAM with media pipe -> does NOT fit the 72 GB
+#   card; without media pipe it fits VRAM and ~44 GB RAM (fits on 62 GB).
+#   See qwen38-flash-next-gguf.yml header for the full budget + tok/s estimates.
+#
+# ⚠️ Same launch preconditions as qwen38-flash-next-gguf.yml (stop daily driver,
+#    ollama idle-unload). Only ONE of the two experiment files should run at a time.
+
+services:
+  qwen38-flash-next:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: qwen38-flash-next
+    restart: "no"
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8080"
+    volumes:
+      - /home/chuck/data/models:/data/models:ro
+    command:
+      - --model
+      - /data/models/gguf/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+      - --alias
+      - qwen38-27b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "999"
+      - --ctx-size
+      - "262144"
+      - --parallel
+      - "2"
+      - --cont-batching
+      - --jinja
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q4_0
+      - --mmproj
+      - /data/models/gguf/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf
+      - --temp
+      - "1.0"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "20"
+      - --n-predict
+      - "-1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,34 +1,73 @@
-# Experiment 7: Qwen3.8-Flash-Next 125B MoE (Qwen4-arch preview) — 4-bit GGUF via llama.cpp
+# Experiment 8: Qwen3.8-Flash-Next — Swift 1.5 IQ4_XS GGUF (UkisAI) via llama.cpp
+# (supersedes Experiment 7: base-model UD-Q4_K_XL 111.3 GB — never downloaded/launched)
 #
-# Model: Qwen/Qwen3.8-Flash-Next (released 2026-08-26)
-#   125B main (6B active/token) + 51B n-gram embedding (PLE) + 4B MTP
-#   262K native context, GDN+QSA hybrid attention (KV cache is cheap), multimodal
-# Quant: unsloth UD-Q4_K_XL GGUF — 111.3 GB, 92.3% top-1 accuracy retention
+# Model: ukisai/Swift-1.5-Qwen3.8-Flash-Next — reasoning-efficient derivative of
+#   Qwen/Qwen3.8-Flash-Next (125B main, 6B active/token + 51B n-gram embedding PLE + 4B MTP)
+#   - 63.4% fewer thinking tokens, ~1.8x faster, <1% accuracy loss vs base at xhigh
+#   - 262,144 native context; 48 layers = 12 x (3 GDN + 1 QSA)
+#   - Only the 12 QSA layers carry per-token KV (2 KV heads x 256 dim + 128-dim MQA
+#     indexer); 36 GDN layers use fixed-size recurrent state (~54 MB total, ctx-independent)
+# Quant: IQ4_XS — 97.7 GB, 3 shards; KLD @32k 0.0929, top-p @32k 88.91% (vs Swift BF16)
+# KV: k8v4 (--cache-type-k q8_0 --cache-type-v q4_0) ~11.5 KB/token vs ~27 KB f16
 #
-# Why llama.cpp and NOT vLLM:
-#   - Official FP8 checkpoint = 172.78 GiB. vLLM's PLE CPU offload
-#     (VLLM_PLE_CPU_OFFLOAD=1) moves the 51B table to host RAM but still
-#     leaves ~122 GiB on GPU — >2x our 72 GiB VRAM. vLLM INT4 for the new
-#     qwen4_exp arch is unverified (recipe requires vLLM 0.29.0+).
-#   - llama.cpp has day-0 support (text + vision) and degrades gracefully
-#     when -ngl 999 doesn't fit: offloads what fits to GPU, rest to RAM.
+# Memory budget (matrix: RTX PRO 5000 72 GB VRAM, 62 GB RAM):
+#   Weights 97.7 GB -> ~63.5 GB GPU + ~34 GB RAM (mmap, page-cache backed)
+#   KV 2 slots x 262144 k8v4 ~= 6 GB (GPU); GDN state ~0.05 GB; mmproj ~0.9 GB
+#   RAM: ~34 GB weights + ~10 GB OS/containers ~= 44 GB < 62 GB  (OK, ~18 GB headroom)
+#   Anchor: coworker runs this exact tier (IQ4_XS) on 128 GB RAM + 24 GB GPU at
+#   2 x 256K ctx ~70 tok/s with ~75% of weights RAM-resident. We keep ~2x more of
+#   the model on a much faster GPU -> expect at least his speed.
 #
-# Memory budget:
-#   Weights 111.3 GB → ~64 GB GPU + ~47 GB RAM (mmap, page-cache backed)
-#   RAM 62 GiB: ~47 GB weights + OS + ollama → tight but OK
-#   Fallback if OOM: UD-IQ3_XXS (82 GB, 85.4% retention) or smaller --ctx-size
+# Concurrency & throughput budget (2026-10-31 analysis; KV ~= 3 GB per 256K
+# session @ k8v4; GDN state is fixed-size so context is cheap beyond QSA KV):
+#   Media pipeline holds ~14 GB VRAM (ComfyUI Qwen-Image + media-pipeline python).
 #
-# ⚠️ Pre-download (111 GB, ~4 shards):
-#   huggingface-cli download unsloth/Qwen3.8-Flash-Next-GGUF \
-#     --include "UD-Q4_K_XL/*" --local-dir /home/chuck/data/models/gguf
-#   (llama-server loads the split GGUF via the first shard)
+#   Current 62 GB RAM:
+#     + media pipe: VRAM for llama.cpp ~= 56 GB -> KV budget ~6 GB -> 2 x 256K
+#       is the ceiling. IQ4_XS at 2x256K: RAM ~62/62 GB = AT THE WALL (not
+#       viable); IQ3_S GSQ-RCO (see -gsq-rco.yml): RAM ~46/62 GB -> viable today.
+#     - media pipe: 4 x 256K = 12 GB KV -> fits VRAM (~57.5 GB weights on GPU,
+#       ~40 GB RAM-resident, ~50 GB total RAM — fits even on 62 GB) but with
+#       ~zero VRAM headroom: drop --mmproj or use 196608 ctx for margin.
+#     4 x 256K + media pipe: ~76 GB VRAM -> does NOT fit the 72 GB card.
 #
-# ⚠️ Before launching: stop the qwen-coder daily driver (port 8000 + GPU)
-#    and let ollama release the GPU (keep_alive 5m idle timeout).
+#   128 GB RAM upgrade (constraint flips RAM -> VRAM):
+#     + media pipe: IQ4_XS 2x256K becomes viable (RAM ~62/128 GB); VRAM still
+#       caps at 2 x 256K (KV budget ~6 GB). 4 x 256K + media pipe still does
+#       NOT fit (~76 GB VRAM) — a RAM upgrade cannot fix a VRAM-bound case.
+#     - media pipe: 6-8 x 256K feasible (KV 18-24 GB, RAM-resident 46-52 GB);
+#       6 x 256K ~= 73 GB VRAM is the practical card ceiling.
+#
+#   Expected decode (MoE: per-step weight reads scale ~flat with batch size —
+#   dense/attention reads shared across the batch, MoE expert union across 4
+#   tokens ~= 40/44 slots, so aggregate throughput ~scales with sessions while
+#   per-session speed holds near the 2-session case):
+#     2 x 256K: ~60-75 tok/s per session (~130-150 aggregate)
+#     4 x 256K: ~50-65 tok/s per session (~200-260 aggregate)
+#   Prefill: N concurrent long prefills serialize (chunked prefill) — TTFT
+#   degrades with N even though decode interleaves well.
+#   Session shape: 8 x 32K sessions ~= KV of 1 x 256K (4 x 32K ~= half of one)
+#   -> 8+ short-context agent sessions fit easily in the same budget.
+#   Caveat: estimates assume llama.cpp implements QSA sparse attention
+#   (2048-token budget). If it falls back to dense 256K attention, KV reads
+#   dominate and numbers collapse — verify with the first benchmark.
+#
+# Fallback if RAM is tighter than expected: qwen38-flash-next-gsq-rco.yml
+#   (IQ3_S GSQ-RCO, 83.7 GB -> ~20 GB RAM; KLD on par with/better than std IQ3_M)
+#
+# ⚠️ Pre-download (~98.6 GB):
+#   huggingface-cli download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GGUF \
+#     --include "IQ4_XS/*" \
+#     --include "mmproj-Swift-1.5-Qwen3.8-Flash-Next-BF16.gguf" \
+#     --local-dir /home/chuck/data/models/gguf
+#
+# ⚠️ Before launching: stop the qwen-coder daily driver (port 8000 + ~56 GB VRAM):
+#     docker compose -f compose/qwen-coder.yml down
+#   and let ollama release the GPU (keep_alive 5m idle timeout).
 #
 # Usage:
 #   docker compose -f compose/experiments/qwen38-flash-next-gguf.yml up -d
-#   When done, restore qwen-coder.yml on port 8000.
+#   When done: docker compose -f compose/qwen-coder.yml up -d
 
 services:
   qwen38-flash-next:
@@ -43,9 +82,10 @@ services:
       - /home/chuck/data/models:/data/models:ro
     command:
       - --model
-      - /data/models/gguf/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+      - /data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
+      # matrix-coder contract: Thor LiteLLM always requests model id qwen38-27b on :8000
       - --alias
-      - qwen38-flash-next
+      - qwen38-27b
       - --host
       - 0.0.0.0
       - --port
@@ -53,27 +93,29 @@ services:
       - --n-gpu-layers
       - "999"
       - --ctx-size
-      - "32768"
+      - "262144"
       - --parallel
       - "2"
       - --cont-batching
       - --jinja
-      - --n-predict
-      - "-1"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q4_0
+      - --mmproj
+      - /data/models/gguf/mmproj-Swift-1.5-Qwen3.8-Flash-Next-BF16.gguf
+      # thinking-mode sampling per Qwen model card (Swift 1.5 is a reasoning model)
       - --temp
-      - "0.7"
+      - "1.0"
       - --top-p
       - "0.95"
       - --top-k
       - "20"
-      - --cache-type-k
-      - q8_0
-      - --cache-type-v
-      - q8_0
-      # optional: enable vision (907 MB mmproj, loads vision tower):
-      #   - --mmproj
-      #   - /data/models/gguf/mmproj-BF16.gguf
-      # tuning: offload N MoE experts/layer to CPU instead of whole layers:
+      - --n-predict
+      - "-1"
+      # tuning: offload N MoE experts/layer to CPU instead of whole layers
       #   - --n-cpu-moe
       #   - "400"
     deploy:
