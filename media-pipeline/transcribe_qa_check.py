@@ -19,11 +19,13 @@ import sys
 
 OPEN = {6: 40, 5: 45, 4: 50, 3: 55, 2: 59, 1: 64}
 REQ_TOP = ["version", "source", "instrument", "tuning", "duration_s", "key",
-           "bpm", "stems_used", "polish_fallback", "confidence", "caveats",
+           "bpm", "stems_used", "transpose_semitones", "chord_style", "capo",
+           "shape_hints", "polish_fallback", "confidence", "caveats",
            "sections", "chord_progression"]
 REQ_SEC = ["index", "label", "start_s", "end_s", "chords", "notes", "lyrics"]
 ROLE_SET = {"lead", "accompaniment", "bass"}
 LABEL_SET = {"intro", "verse", "chorus", "bridge", "outro", "solo"}
+SHAPE_TYPES = {"open", "barre", "power"}
 
 
 def main():
@@ -62,6 +64,13 @@ def main():
                 errs.append(f"{tag}: chord time {c.get('time_s')} outside section")
             if not (0 <= c.get("confidence", -1) <= 1):
                 errs.append(f"{tag}: chord confidence out of range")
+            sh = c.get("shape")
+            if d.get("shape_hints") and sh is not None:
+                if not isinstance(sh, dict) or sh.get("type") not in SHAPE_TYPES:
+                    errs.append(f"{tag}: bad chord shape {sh!r}")
+                elif sh.get("type") != "open":
+                    if sh.get("base") not in ("E", "A") or not (0 <= sh.get("fret", -1) <= 12):
+                        errs.append(f"{tag}: bad chord shape {sh!r}")
         for n in sec.get("notes", []):
             m, tab, role = n.get("midi"), n.get("tab"), n.get("role")
             if role not in ROLE_SET:

@@ -799,9 +799,11 @@ def flow_transcribe(payload: dict, jid: str):
     target_key = str(payload.get("target_key") or "").strip()
     if target_key and not re.match(r"^[A-G][#b]?m?$", target_key):
         raise ValueError("target_key must be a tonic like 'E', 'Bb', 'F#m'")
-    easy_chords = payload.get("easy_chords", False)
-    if not isinstance(easy_chords, bool):
-        raise ValueError("easy_chords must be a boolean")
+    chord_style = str(payload.get("chord_style", "as_detected")).strip().lower()
+    if chord_style not in ("as_detected", "triads", "power"):
+        raise ValueError("chord_style must be as_detected|triads|power")
+    if not isinstance(payload.get("shape_hints", True), bool):
+        raise ValueError("shape_hints must be a boolean")
     capo = payload.get("capo", False)
     if not isinstance(capo, bool):
         raise ValueError("capo must be a boolean")
@@ -816,7 +818,8 @@ def flow_transcribe(payload: dict, jid: str):
             "--full-notes", str(payload.get("full_notes", False)).lower(),
             "--transpose", str(transpose),
             "--target-key", target_key,
-            "--easy-chords", str(easy_chords).lower(),
+            "--chord-style", chord_style,
+            "--shape-hints", str(payload.get("shape_hints", True)).lower(),
             "--capo", str(capo).lower(),
             "--whisper-model", str(payload.get("whisper_model")
                                     or os.environ.get("MEDIA_TRANSCRIBE_WHISPER_MODEL", "large-v3")),
@@ -1580,8 +1583,11 @@ async def api_transcribe(payload: dict):
     target_key = str(payload.get("target_key") or "").strip()
     if target_key and not re.match(r"^[A-G][#b]?m?$", target_key):
         raise HTTPException(400, "target_key must be a tonic like 'E', 'Bb', 'F#m'")
-    if not isinstance(payload.get("easy_chords", False), bool):
-        raise HTTPException(400, "easy_chords must be a boolean")
+    if str(payload.get("chord_style", "as_detected")).strip().lower() \
+            not in ("as_detected", "triads", "power"):
+        raise HTTPException(400, "chord_style must be as_detected|triads|power")
+    if not isinstance(payload.get("shape_hints", True), bool):
+        raise HTTPException(400, "shape_hints must be a boolean")
     if not isinstance(payload.get("capo", False), bool):
         raise HTTPException(400, "capo must be a boolean")
     with job_slot():

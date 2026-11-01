@@ -14,8 +14,8 @@ Stages (sequential, one process per job):
               faster-whisper on the stem (word ts, VAD, hallucination filter)
   6 mapping   deterministic guitar mapping (role + string/fret, standard tuning)
               (on transposed note events when --transpose/--target-key given)
-  6.5 chords  [easy-chords] 7th/9th/6th -> triads; [capo] capo suggestion
-              (chords shown as finger shapes, like a capo tab site)
+  6.5 chords  [chord_style] as_detected|triads|power; [capo] capo suggestion;
+              [shape_hints] per-chord fingering hints (open/E-barre/A-barre/power)
   7 polish    vLLM matrix-coder (validated; deterministic fallback on rejection)
 
 Design principle (binding): tab DATA (string/fret per note, chords, sections,
@@ -485,12 +485,14 @@ def write_lyrics_txt(lines, out_dir, disabled=False, name="lyrics.txt"):
 # Key transpose + beginner-friendly chords (deterministic post-processing —
 # the LLM never sees or touches this). Transpose shifts note events, chord
 # symbols and the key label by a fixed semitone offset; lyrics, BPM and
-# section boundaries are time-based and unchanged. `easy_chords` simplifies
-# 7th/9th/6th chords to triads (chords stay in the actual key). `capo`
-# (independent of easy_chords) suggests, when the (transposed) key has no
-# open shapes, the smallest capo (0-5) that lands the key on a friendly
-# open-shape key — chords are then shown as the finger shapes
-# (shifted down by the capo), like a capo tab site.
+# section boundaries are time-based and unchanged. `chord_style` transforms
+# the chord symbols (triads: 7th/9th/6th -> triads; power: everything ->
+# root+5th, mode-agnostic). `capo` (independent of chord_style) suggests,
+# when the (transposed) key has no open shapes, the smallest capo (0-5) that
+# lands the key on a friendly open-shape key — chords are then shown as the
+# finger shapes (shifted down by the capo), like a capo tab site.
+# `shape_hints` annotates every chord with its easiest fingering (open /
+# E-shape barre / A-shape barre / power + fret) on the final finger chord.
 FRIENDLY_KEYS = {  # (pc, minor) -> name: open-shape friendly for beginners
     (7, False): "G", (0, False): "C", (2, False): "D", (9, False): "A",
     (4, False): "E", (11, True): "Bm", (2, True): "Em", (9, True): "Am",
@@ -544,6 +546,58 @@ def simplify_chord(symbol):
     if q == "m7":
         return root + "m"
     return symbol
+
+
+def power_chord(symbol):
+    """Metal-friendly: any chord -> power chord (root + 5th): 'Dmaj7'->'D5',
+    'A#m7'->'A#5'. Mode-agnostic (no 3rd) — also corrects the arbitrary
+    major/minor guess the CQT detector makes on recorded power chords."""
+    i = 0
+    while i < len(symbol) and symbol[i] in "CDEFGAB":
+        i += 1
+    if i == 0:
+        return symbol
+    root = symbol[:i]
+    if symbol[i:i + 1] in ("#", "b"):
+        root += symbol[i]
+    return root + "5"
+
+
+# Fingering shape hints (deterministic — spec: docs/transcribe_thor_spec.md).
+# The hint names the basic shape family + position; the chord symbol carries
+# the mode (minor symbol + "E-shape barre @ 4" = minor E-shape barre — sus/
+# dim chords use the major-form basic shape). Open-shape set: roots with a
+# standard nut shape (both major & minor).
+OPEN_SHAPE_PCS = {0, 2, 4, 5, 7, 9, 11}  # C D E F G A B
+
+
+def shape_hint(pc, style):
+    """Easiest shape for a finger-chord root (pc) given chord_style.
+    Returns {type, base, fret}: open | barre (E/A shape) | power (E/A shape)."""
+    if style == "power":
+        e_fret = (pc - 4) % 12   # root on 6th string (open E)
+        a_fret = (pc - 9) % 12   # root on 5th string (open A)
+        base, fret = ("E", e_fret) if e_fret <= a_fret else ("A", a_fret)
+        return {"type": "power", "base": base, "fret": fret}
+    if pc in OPEN_SHAPE_PCS:
+        return {"type": "open", "base": None, "fret": None}
+    e_fret = (pc - 4) % 12
+    a_fret = (pc - 9) % 12
+    base, fret = ("E", e_fret) if e_fret <= a_fret else ("A", a_fret)
+    return {"type": "barre", "base": base, "fret": fret}
+
+
+def render_shape(shape):
+    """Human-readable shape hint for tab.md."""
+    if shape is None:
+        return ""
+    if shape["type"] == "open":
+        return "open"
+    if shape["type"] == "power":
+        if shape["fret"] == 0:
+            return f"open {shape['base']}5"
+        return f"power @ {shape['fret']} ({shape['base']}-shape)"
+    return f"{shape['base']}-shape barre @ {shape['fret']}"
 
 
 def suggest_capo(key):
@@ -832,6 +886,10 @@ def render_tab_md(analysis, sections, full_notes):
                      f"(sounding key {analysis['key']})")
     if analysis.get("transpose_semitones"):
         lines.append(f"Transposed {analysis['transpose_semitones']:+d} semitones from the source recording")
+    if analysis.get("chord_style") == "power":
+        lines.append("Chords shown as power chords (root + 5th)")
+    elif analysis.get("chord_style") == "triads":
+        lines.append("Chords simplified to triads")
     lines.append(f"Source: {analysis['source']}")
     lines.append(f"Confidence: {analysis['confidence']}"
                  + (f" — {'; '.join(analysis['caveats'])}" if analysis["caveats"] else ""))
@@ -841,7 +899,9 @@ def render_tab_md(analysis, sections, full_notes):
         a, b = sec["start_s"], sec["end_s"]
         lines.append(f"## [{sec['label']}] ({_fmt_ts(a)}–{_fmt_ts(b)})\n")
         if sec["chords"]:
-            lines.append("Chords: " + " | ".join(c["symbol"] for c in sec["chords"]))
+            lines.append("Chords: " + " | ".join(
+                c["symbol"] + (f" [{render_shape(c['shape'])}]" if c.get("shape") else "")
+                for c in sec["chords"]))
         # 16th-note grid, one block per 16 sixteenths (a 4/4 bar)
         cols_total = max(1, int(round((b - a) / sixteenth)))
         chord_at = {}
@@ -894,7 +954,9 @@ def main():
     ap.add_argument("--transpose", default="0", help="semitone offset (-12..12)")
     ap.add_argument("--target-key", default="",
                     help="target tonic e.g. 'E', 'Bb', 'F#m' (offset from detected key)")
-    ap.add_argument("--easy-chords", default="false")
+    ap.add_argument("--chord-style", default="as_detected",
+                    help="as_detected|triads|power")
+    ap.add_argument("--shape-hints", default="true")
     ap.add_argument("--capo", default="false")
     ap.add_argument("--whisper-model", default=None)
     ap.add_argument("--whisper-device", default=None)
@@ -988,7 +1050,7 @@ def main():
                 sec["lyrics_suppressed"] = True
                 log(f"sections: {sec['index']} has >10s without onsets — suppressing lyrics")
 
-    # 5.5 transpose + easy chords (deterministic — see stage 5.5 comment)
+    # 5.5 transpose + chord style + capo + shape hints (deterministic — see stage 5.5 comment)
     transpose = 0
     try:
         transpose = int(a.transpose)
@@ -1005,8 +1067,12 @@ def main():
         transpose = n - 12 if n > 6 else n  # shortest direction
     if not (-12 <= transpose <= 12):
         die(f"--transpose {transpose} out of range (-12..12)")
-    easy_chords = a.easy_chords.strip().lower() in ("1", "true", "yes")
+    chord_style = a.chord_style.strip().lower()
+    if chord_style not in ("as_detected", "triads", "power"):
+        die(f"invalid --chord-style {chord_style!r} "
+            f"(expected as_detected|triads|power)")
     use_capo = a.capo.strip().lower() in ("1", "true", "yes")
+    do_shapes = a.shape_hints.strip().lower() in ("1", "true", "yes")
     capo, finger_key = 0, None
     orig_key = g["key"]
     if transpose:
@@ -1022,8 +1088,11 @@ def main():
             json.dump(events, f)
         _shift_midi(midi_data, transpose, os.path.join(out_dir, "song.mid"))
         log(f"transpose: {transpose:+d} semitones ({orig_key} -> {g['key']})")
-    if easy_chords:
+    if chord_style == "triads":
         chords = [{"time_s": c["time_s"], "symbol": simplify_chord(c["symbol"]),
+                   "confidence": c["confidence"]} for c in chords]
+    elif chord_style == "power":
+        chords = [{"time_s": c["time_s"], "symbol": power_chord(c["symbol"]),
                    "confidence": c["confidence"]} for c in chords]
     if use_capo:
         capo, finger_key = suggest_capo(g["key"])
@@ -1032,6 +1101,14 @@ def main():
                        "symbol": shift_chord_symbol(c["symbol"], -capo),
                        "confidence": c["confidence"]} for c in chords]
             log(f"capo: {capo} — chords shown as {finger_key} finger shapes")
+    if do_shapes:
+        for c in chords:
+            m = re.match(r"^([A-G][#b]?)", c["symbol"])
+            pc = _tonic_pc(m.group(1)) if m else None
+            c["shape"] = (shape_hint(pc, "power" if chord_style == "power" else "triad")
+                          if pc is not None else None)
+        n_open = sum(1 for c in chords if c["shape"] and c["shape"]["type"] == "open")
+        log(f"shape hints: {len(chords)} chords ({n_open} open)")
 
     # 6. mapping
     mapped = stage_mapping(events, sections, max_fret)
@@ -1078,8 +1155,9 @@ def main():
         "bpm": g["bpm"],
         "stems_used": stems_used,
         "transpose_semitones": transpose,
-        "easy_chords": easy_chords,
+        "chord_style": chord_style,
         "capo": use_capo,
+        "shape_hints": do_shapes,
         "capo_suggestion": ({"capo": capo, "finger_key": finger_key}
                             if capo > 0 else None),
         "polish_fallback": False,
@@ -1099,8 +1177,13 @@ def main():
         analysis["caveats"].append(
                 f"capo {capo} — chords shown as {finger_key} finger shapes "
                 f"(sounding key {g['key']})")
-    elif easy_chords:
-        analysis["caveats"].append("chords simplified to triads (easy-chords mode)")
+    if chord_style == "power":
+        analysis["caveats"].append(
+                "chords shown as power chords (root + 5th) — idiomatic for "
+                "metal/hard rock; mode (major/minor) of the detection is not "
+                "reliable on power-chord material")
+    elif chord_style == "triads":
+        analysis["caveats"].append("chords simplified to triads (chord_style=triads)")
     # heavy-distortion smear caveat
     if smear:
         analysis["caveats"].append(
