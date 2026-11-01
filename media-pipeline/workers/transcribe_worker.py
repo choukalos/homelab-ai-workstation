@@ -2,7 +2,8 @@
 """Song transcription worker: audio/video -> guitar tab + timestamped lyrics.
 
 Runs inside the comfyui container (venv-transcribe python). Spec:
-song_transcribe_matrix_handoff.md (2026-10-31).
+docs/transcribe_pipeline_spec.md (2026-10-31); chord/key/fingering surface:
+docs/transcribe_thor_spec.md.
 
 Stages (sequential, one process per job):
   0 ingest    ffmpeg -> audio.wav (44.1 kHz stereo s16)

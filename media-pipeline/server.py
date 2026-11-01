@@ -783,7 +783,7 @@ def flow_tts(payload: dict, jid: str):
 
 
 def flow_transcribe(payload: dict, jid: str):
-    """Song -> guitar tab + timestamped lyrics (spec: song_transcribe_matrix_handoff.md).
+    """Song -> guitar tab + timestamped lyrics (spec: docs/transcribe_pipeline_spec.md).
     Tab data is deterministic from the audio; the LLM only labels/cleans/annotates
     (validated, with a deterministic fallback) — the job is never blocked on it."""
     instrument = str(payload.get("instrument", "guitar")).strip()
@@ -1567,7 +1567,7 @@ async def api_tts(payload: dict):
 @app.post("/transcribe")
 async def api_transcribe(payload: dict):
     """Song -> guitar tab + timestamped lyrics (job flow; spec:
-    song_transcribe_matrix_handoff.md). v1: instrument=guitar, tuning=standard."""
+    docs/transcribe_pipeline_spec.md). v1: instrument=guitar, tuning=standard."""
     instrument = str(payload.get("instrument", "guitar")).strip()
     if instrument != "guitar":
         raise HTTPException(400, "v1 supports instrument=guitar only")
