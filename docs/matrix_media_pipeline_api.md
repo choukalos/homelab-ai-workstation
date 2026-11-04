@@ -47,6 +47,12 @@ GET /jobs/{job_id}
   (JSON body or Form fields). They are recorded on the job and in the metering
   output (§5). Omitted → `unknown`. The remote media-mcp server should forward
   the caller's identity (see `media-mcp-client/` — `mcp/servers/media` in the homelab-ai-harness repo).
+- **Job visibility:** `GET /jobs/{id}` covers the live registry (this process's
+  lifetime; unknown/expired IDs → structured 404 with a hint). `GET /jobs` (§2)
+  lists jobs **across restarts**: the durable `jobs.jsonl` ledger (§5) merged
+  with the live registry, filterable by `client`/`user`/`flow`/`status`/`since`.
+  If a caller loses a `job_id`, list recent jobs and match by client/time —
+  job IDs are also logged to `docker logs media_pipeline` on submit + finish.
 - GPU flows are **serialized** by an internal GPU lock (`gpu_locked` in
   `/health`); the bounded queue (§3) serializes all flows.
 
@@ -55,7 +61,8 @@ GET /jobs/{job_id}
 | Method | Path | Inputs | `output` on done |
 |---|---|---|---|
 | GET | `/health` | — | `{ok, gpu_locked, jobs, max_concurrent, max_queue_depth, max_pending, pending, running, queued, queue_depth}` |
-| GET | `/jobs/{id}` | — | job status (above; `queue_position` while queued) |
+| GET | `/jobs/{id}` | — | job status (above; `queue_position` while queued). Unknown/expired ID → 404 `{detail:{error:"unknown_job", message, hint}}` (hint points at `GET /jobs`) |
+| GET | `/jobs` | query: `status?` (comma-separated subset of `queued,running,done,error,timeout`, or `all`), `client?`, `user?`, `flow?` (exact match), `since?` (ISO-8601), `limit?` (1..200, default 50) | `{count, jobs:[{job_id, flow, status, client, user, created, done, queue_position?, model, duration_s, cost_usd, error, output, outputs}]}` — newest first. Merges the durable `jobs.jsonl` ledger (finished jobs, **survives restarts**) with the live registry (in-flight + this process's `output`). Ledger `created` ≈ `done − queue_wait − duration` (approximate). `output` = result dict (this process only); `outputs` = run-dir-relative files read from disk (null when the job dir was retention-swept) |
 | GET | `/files/{name:path}` | — | file bytes (download; name = path relative to the run dir) |
 | GET | `/metrics` | — | Prometheus text format (metering; 404 when disabled — §5) |
 | POST | `/storyboard` | JSON `{brief, n_shots=5, aspect="16:9"}` | `{"storyboard":"<path>/storyboard.json","n_shots":N,"usage":{prompt_tokens,completion_tokens,total_tokens}}` |
@@ -87,6 +94,14 @@ Notes:
   `tts`/`music` accept **JSON** with host paths (or paths relative to the run
   dir). All 12 job routes accept optional `user` + `client` (JSON field or Form
   field).
+- **`/assemble` timing (2026-11-04):** `text_overlays[].start`/`.end` and
+  `sfx[].at` are **absolute seconds on the final cut's timeline** (the video
+  starts at 0; `vo_start` delays only the VO, not the video). Compute them
+  from per-shot durations: `start_of_shot_N = Σ duration(shot_0..N−1)`, where
+  each shot's duration = its `duration` override, `out − in`, or `GET /info`
+  `duration_s` (a still image's `duration` counts in full). Worked example
+  (19-shot cut, uniform 5.0625 s shots): overlay at shot 12 →
+  `11 × 5.0625 = 55.7 s`; end card at `18 × 5.0625 + 4.5 = 95.6 s`.
 - `model` for `/images` + `/images/edit` (2026-09-23): `qwen21` (default,
   Qwen-Image-2.1) or `legacy` (Qwen-Image-2512/2511 GGUF + Lightning). Server
   default follows `MEDIA_IMAGE_MODEL` in `.env` (unset → `qwen21`). qwen21
@@ -379,6 +394,28 @@ Post tools (2026-09-07): `media_trim` (cut a clip to a time range),
 
 Result: sharp 1080p, multi-shot, 24–40 s, readable text, minimal warble.
 
+### 7.1 Polling & timeouts (client guidance — read before orchestrating)
+
+- **The MCP gateway has a 60 s hard timeout** (litellm-proxy → mcp_media hop).
+  `media_job_result` polls block up to `wait_seconds` (max 25). Transient
+  `MCP request timed out after 60000ms` errors are **expected** on long
+  orchestrations — retry the call (the job is unaffected; it keeps running on
+  the GPU host). Wrap every MCP call in retry logic (≥3 attempts).
+- **Queue back-pressure:** when 1 running + 5 queued is full, submits return
+  HTTP 503 + `retry_after_seconds`. Stop submitting and poll instead of
+  spinning; keep ≤5 in-flight submissions per client.
+- **Lost job IDs are recoverable:** (a) `GET /health` lists `running` +
+  `queued` job IDs live; (b) `GET /jobs?client=<your client>&since=<iso>`
+  (or the `media_list_jobs` MCP tool, pending — see
+  `docs/thor_media_mcp_handoff.md`) lists finished jobs from the durable
+  ledger; (c) `docker logs media_pipeline` logs `job submitted:` / `job
+  finished:` lines with IDs. Orphaned duplicate resubmits are harmless
+  (14-day retention).
+- **Client state:** long orchestrations must persist their job registry to a
+  file on the caller's side after every submit (see
+  `docs/media_film_skill_spec.md` — the `media-film` skill encodes the full
+  pattern). In-memory-only state is lost when the orchestrating script dies.
+
 ## 8. Deployment (GPU host)
 
 Docker container (`media_pipeline`, image `media-pipeline:latest`) in
@@ -404,6 +441,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-11-04 | **Job visibility** (follow-up to the 2026-11-02 film-run incident — lost job IDs were unrecoverable): new `GET /jobs` (sync, LAN-only): merges the durable `jobs.jsonl` ledger (finished jobs — **survives restarts**, 10 MB cap) with the live in-memory registry (in-flight + this process's `output`); filters `status`/`client`/`user`/`flow`/`since`/`limit` (1..200); per-job `outputs` read from disk (null when retention-swept). `GET /jobs/{id}` unknown/expired → structured 404 (`unknown_job` + hint pointing at `GET /jobs`). Job IDs now logged to `docker logs media_pipeline` (`job submitted: <id> flow=... client=... user=...` on submit, `job finished: <id> status=...` on terminal). Docs: `/assemble` overlay/SFX absolute-timing math (§2 note), MCP 60 s timeout + retry + queue-back-pressure + lost-ID recovery guidance (§7.1). Companion docs: `docs/thor_media_mcp_handoff.md` (mcp_media additions: `media_list_jobs`, SUBMIT/DONE log lines, timeout docs, `media_fetch` collision fix, mcp_vision fix) and `docs/media_film_skill_spec.md` (client-side orchestration skill). SQLite job registry evaluated and **deferred** — the existing `jobs.jsonl` ledger + `GET /jobs` covers the incident's recovery needs at current volume. |
 | 2026-10-31 | **`/transcribe` key transpose + chord styles + shape hints** (deterministic post-processing, stage 5.5 — the LLM never touches it; full contract: `docs/transcribe_thor_spec.md`; payload: `transpose_semitones` (int −12..12, default 0), `target_key` (tonic like `"E"`/`"Bb"`/`"F#m"`, offset from detected key via shortest direction, takes precedence), `chord_style` (enum `as_detected`|`triads`|`power`, default `as_detected` — replaced the earlier `easy_chords` bool), `capo` (bool, default false — independent of chord_style: a capo is a player preference, not a fact about the song), `shape_hints` (bool, default true); invalid values → clean 400 at submit). **Transpose** shifts note events, chord symbols (root shifted, quality preserved) and the key label; `notes.json` + `song.mid` are rewritten so the MIDI matches the transposed analysis, and the string/fret mapping runs on the transposed events — the tab is in the new key with natural fingerings. **Chord styles**: `triads` simplifies 7th/9th/6th to triads (Dmaj7→D, Bm7→Bm, G6→G; dim/aug/sus kept); `power` collapses everything to `X5` (root+5th, mode-agnostic) — idiomatic for metal and a *correction* there: a recorded power chord has no 3rd, so the CQT detector's major/minor guess is arbitrary (root stays solid). **Capo**: when the (transposed) key has no open shapes, suggests the smallest capo (0–5) landing on a friendly open-shape key (G/C/D/A/E/Bm/Em/Am) — chords shown as finger shapes (shifted down by the capo); `capo_suggestion: {capo, finger_key}` in analysis.json + `Capo: n — …` header line. **Shape hints**: every chord annotated with its easiest fingering on the final finger chord — open-shape set = roots with a standard nut shape (C D E F G A B, major & minor); sharp roots (C# D# F# G# A#) → E-shape or A-shape barre at the lower of (pc−4) mod 12 / (pc−9) mod 12 (tie → E); power style uses the same fret math on power shapes (fret 0 = open E5/A5). Shape object per chord event `{type: open|barre|power, base: E|A|null, fret: 0-12|null}`; the chord symbol carries the mode (sus/dim → major-form basic shape); `tab.md` renders e.g. `A#m7 [A-shape barre @ 1]`, `A#5 [power @ 1 (A-shape)]`, `A5 [open A5]`. The polish prompt is told about the capo (a `capo_note` in the compact input) so the LLM doesn't flag the key/chord mismatch. Verified on Riptide (detected C# major, chords A#m7–G#maj7–C#maj7–F#maj7): `target_key: "E"` → +3 → E major, all 537 MIDI notes exactly +3; `transpose_semitones: -3` → A# major; `target_key: "Gb"` → +5 → F# major (enharmonic); `chord_style: power` → A#5/G#5/C#5/F#5 with shapes A@1/E@4/A@4/E@2; `power` + capo 1 → A5 open, G5 E@3, C5 A@3, F5 E@1; `triads` → A#m/G#/C#/F# barres; `shape_hints: false` omits the field cleanly; QA checker now validates the new top-level fields + shape objects. `transcribe_qa_check.py` PASS in every mode; unit tests: shape hints for all 12 pcs × both styles (fret-math sanity), power_chord, simplify_chord, shift round-trip identity, suggest_capo across all 24 keys. |
 | 2026-10-31 | **`/transcribe` lyrics fix** (Riptide QA: 4 lines total for a 3:24 song — first 2 correct, rest garbled; defect in the VAD/ASR stage, not the LLM): root cause — ASR ran on the **full mix** (`stems` defaulted `false`). The Silero VAD inside faster-whisper is a *speech* detector: on a full mix it classifies vocal-dominated passages as speech and guitar-dominated ones as music — measured: VAD kept 7% of the full mix (the quiet, vocal-dominated verse) and dropped ~140 s of the guitar-heavy chorus, while on the demucs vocal stem it kept 64% in clean contiguous regions. Fixes: (1) **`stems` now defaults `true`** (worker + server payload; `stems=false` remains an explicit opt-out) — demucs htdemucs vocals → VAD+ASR on the stem; demucs failure falls back to full-mix ASR + caveat (the job is never blocked on stems). (2) Hallucination backstop: segments with `compression_ratio > 2.4` or `avg_logprob < -1.0` are dropped (`no_speech_prob` deliberately *not* used — sung vocals score 0.6–0.9 even on genuine lines, so it would nuke verses). (3) Consecutive identical lines merged (whisper repeats lines over instrumental breaks). (4) Polish validation: the word-subset check (which forbade fixing *any* mishearing — “sistone” → “stoning” was a “new word”) replaced by a text-similarity ≥ 0.5 check vs the raw line, plus **nearest-raw-line matching** (the first-match-in-window matcher mispairs lines <1 s apart — “Oh”/“Lady” — and rejected an otherwise-perfect polish); the prompt now explicitly allows ASR-mishearing fixes. (5) `lyrics.txt` now carries the **final polished** lines (matching `tab.md`); the raw ASR is preserved in `lyrics_raw.txt` (reproducible). Verified on Riptide m4a via the API (no explicit `stems`): 41 clean lines across the full track (was 4), “sistone” → “stoning” corrected, sections labeled intro/verse/chorus/bridge/outro, `stems_used: true`, `polish_fallback: false`, `transcribe_qa_check.py` PASS. |
 | 2026-10-31 | **`/transcribe` chord detection fix** (QA found 0 chord changes on the 40 s test track, 1 on the 204 s track — "chord data is empty for all sections"): three defects in `workers/transcribe_worker.py`. (1) `stage_bpm`: `librosa.beat.beat_track` returns beat **frames** (hop grid), not seconds — the old code treated them as seconds, so `stage_chords`' `b >= dur` break fired on beat 0 and the loop never ran (0 chords). Now converted via `frames_to_time`. (2) `stage_chords`: the new chord was compared against the incumbent's score from the window it was *committed in* (stale, non-comparable) — after a high-scoring first chord nothing could beat `incumbent + MARGIN`, so even with correct beats only 1 change committed. Now the incumbent's own template is re-scored in the **same** window (normalized scores are only comparable within a window; matches spec §5.3), 1-beat windows (the old 2-beat window straddled chord changes), and reliability = margin vs the best template of a **different root** (same-root quality variants like Dmaj7 vs D7 are near-ties by construction and were blocking every commit). (3) `stage_key`: K-S correlation tiebreak when chord-root counts tie (typical I–V–vi–iii loops). Verified on the QA inputs: 40 s track → 20 changes (Dmaj7–Amaj7–Bm7–Gmaj7 loop ×5, conf 0.86–0.94, key D major); 204 s track → 19 changes, all diatonic to C# major, key C# major. `transcribe_qa_check.py` PASS on both; deterministic fields byte-identical across runs and across the API path. |

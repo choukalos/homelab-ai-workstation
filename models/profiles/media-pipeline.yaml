@@ -52,6 +52,7 @@ security:
   - Mounts /var/run/docker.sock — needed for docker exec/cp into comfyui_backend (trusted host)
 
 notes:
+  - "2026-11-04: job visibility — `GET /jobs` (durable jobs.jsonl ledger + live registry; filters status/client/user/flow/since/limit), job IDs logged to container log on submit/finish, structured 404 on unknown job. Contract: docs/matrix_media_pipeline_api.md. Thor-side MCP additions spec: docs/thor_media_mcp_handoff.md; client orchestration skill spec: docs/media_film_skill_spec.md."
   - "2026-08-27: containerized (was a host nohup process + staged systemd unit). Now built from media-pipeline/Dockerfile and managed via compose/comfyui.yml (profile image); starts/stops with ComfyUI. Rebuild: model-manager rebuild media-pipeline."
   - "Config source: /home/chuck/homelab/.env (MAX_CONCURRENT_JOBS, ...). Loaded at startup."
   - "Remote media-mcp client reaches it at http://<gpu-host>:8189 (LAN). See media-mcp-client/ (pointer to mcp/servers/media in the homelab-ai-harness repo)."

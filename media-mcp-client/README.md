@@ -26,8 +26,21 @@ metering.
 Full tool table, endpoints, and history:
 [`mcp/servers/media/README.md`](https://github.com/choukalos/homelab-ai-harness/blob/main/mcp/servers/media/README.md).
 
-Key points (2026-09-25 state, verified):
+Key points (2026-11-04 state):
 
+- **Job visibility (2026-11-04):** the pipeline now exposes `GET /jobs`
+  (durable job listing — finished jobs from the `jobs.jsonl` ledger survive
+  pipeline restarts; filters `status`/`client`/`user`/`flow`/`since`/`limit`) +
+  job IDs in `docker logs media_pipeline`. The `media_list_jobs` MCP tool +
+  `client` passthrough are **pending on thor** — spec:
+  [`docs/thor_media_mcp_handoff.md`](../docs/thor_media_mcp_handoff.md).
+- **MCP 60 s timeout (2026-11-04):** the litellm-proxy → mcp_media hop aborts
+  tool calls after 60 s. Transient "MCP request timed out" errors are expected
+  on long orchestrations — **retry the call** (the job is unaffected). Wrap
+  all calls in retry logic; on queue-full 503, stop submitting and poll. Full
+  client guidance: [`docs/matrix_media_pipeline_api.md`](../docs/matrix_media_pipeline_api.md)
+  §7.1. Client-side orchestration pattern (state file, resume protocol, QC
+  gates): [`docs/media_film_skill_spec.md`](../docs/media_film_skill_spec.md).
 - **22 tools** — 13 job flows (`media_storyboard`, `media_generate_image`
   [Qwen-Image-2.1 default; `model`: `qwen21`|`legacy`], `media_edit_image`
   [+`references`, up to 9], `media_generate_shot`, `media_text_to_speech`
@@ -50,5 +63,7 @@ Key points (2026-09-25 state, verified):
 ## Matrix-side references (this repo)
 
 - Pipeline HTTP API contract: [`docs/matrix_media_pipeline_api.md`](../docs/matrix_media_pipeline_api.md)
+- Thor handoff (mcp_media additions, 2026-11-04): [`docs/thor_media_mcp_handoff.md`](../docs/thor_media_mcp_handoff.md)
+- Client orchestration skill spec (`media-film`): [`docs/media_film_skill_spec.md`](../docs/media_film_skill_spec.md)
 - Verification evidence: [`docs/matrix_validation_log.md`](../docs/matrix_validation_log.md)
 - Service code: [`media-pipeline/`](../media-pipeline/)
