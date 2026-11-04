@@ -3,7 +3,9 @@
 > **Audience:** media-mcp developers, integrators, and anyone calling the
 > media-pipeline service.
 > **Status:** verified live 2026-09-07 (all 12 job flows + 6 sync endpoints +
-> metering; QA suite `media-pipeline/qa_part1.py`, 38/38).
+> metering; QA suite `media-pipeline/qa_part1.py`, 38/38); job visibility
+> (`GET /jobs` + job-ID logging) verified live 2026-11-04 (run in
+> `docs/matrix_validation_log.md`).
 > **Supersedes:** the API contract section of the old `workspace/media-todo.md`
 > (deleted 2026-09-06 — project complete).
 > **Related:** `docs/matrix_images_mode.md` §Media pipeline orchestrator (ops),

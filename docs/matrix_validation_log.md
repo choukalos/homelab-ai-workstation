@@ -193,3 +193,40 @@ pipeline since the MCP client aborts long tool calls (see Findings).
 3. Working docs `update_media_mcp_todo.md`, `voices_todo.md`, `voices_thor_handoff.md`
    deleted post-completion (repo convention: completed working docs removed, evidence kept
    here + in `docs/matrix_media_pipeline_api.md` changelog).
+
+# Run: 2026-11-04 — job visibility (`GET /jobs` + job-ID logging + structured 404)
+
+> Post-incident hardening after the 2026-11-02 "A Peanut Risky Business" film
+> run (4 client-side orchestration crashes, 9 lost job IDs, ~1 h GPU + ~1 h
+> recovery). Context: `docs/media_film_skill_spec.md` §1; contract:
+> `docs/matrix_media_pipeline_api.md` (changelog 2026-11-04).
+
+## Results — all checks passing (live, container `media_pipeline` rebuilt via `model-manager rebuild media-pipeline`)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `GET /jobs?limit=3` after a fresh container restart (in-memory registry empty, `health.jobs=0`) | ✅ 3 finished jobs returned from the durable `jobs.jsonl` ledger with `created` (≈ `done − queue_wait − duration`), `done`, `model`, `duration_s`, `cost_usd`, `outputs` (run-dir-relative files from disk) |
+| 2 | `GET /jobs?flow=shots&status=done&limit=2` | ✅ 2 rows, both `wan2.2-14b-i2v-gguf-q5`, durations 626.6 s / 546.41 s |
+| 3 | `GET /jobs?client=pi&limit=200` / `?since=2026-11-03T00:00:00Z&limit=200` | ✅ 200 rows (cap) / 51 rows, oldest `2026-11-03T13:35:41Z` |
+| 4 | `GET /jobs?status=running,queued` with no in-flight jobs | ✅ `{count: 0, jobs: []}` |
+| 5 | `GET /jobs/badbadbadbad` (unknown ID) | ✅ HTTP 404 `{detail:{error:"unknown_job", message, hint}}` — hint points at `GET /jobs?since=…` |
+| 6 | `GET /jobs?status=bogus` / `?since=notadate` | ✅ clean HTTP 400 with usage text |
+| 7 | Full lifecycle: TTS job `5477b654a523` (`client=qa_jobs_ep`) — submit → `running` visible in `GET /jobs?client=qa_jobs_ep` → `done` with `output` (host path) + `outputs` (`5477b654a523/vo.wav`) + ledger row (`tts done qa_jobs_ep 15.26 s`) | ✅ all three sources agree |
+| 8 | Container log lines | ✅ `job submitted: 5477b654a523 flow=tts client=qa_jobs_ep user=chuck` (01:36:21) + `job finished: 5477b654a523 status=done error=-` (01:36:36) in `docker logs media_pipeline` |
+| 9 | **Restart durability:** `docker restart media_pipeline` → job `5477b654a523` still returned by `GET /jobs?client=qa_jobs_ep` with `status=done` + `outputs` from disk (`output` null — in-memory registry wiped, ledger + disk intact) | ✅ |
+
+## Decisions
+
+- **SQLite job registry deferred** — the existing `jobs.jsonl` ledger (10 MB cap,
+  keep-newest rotation, never retention-swept) + `GET /jobs` covers the
+  incident's recovery needs at current volume (~615 jobs / 400 KB since
+  2026-09-06). Revisit only for submit-time persistence (in-flight jobs after
+  a pipeline restart) or >10 MB history.
+- **`GET /jobs` stays LAN-only** — the Mac reaches it via the thor MCP proxy;
+  public `/dl/{token}` remains the off-LAN artifact path. No auth change on
+  :8189 (LAN trust, consistent with the rest of the API).
+- Thor-side MCP additions (`media_list_jobs`, SUBMIT/DONE log lines, 60 s
+  timeout docs, `media_fetch` collision fix, mcp_vision fix) are **pending on
+  thor** — spec: `docs/thor_media_mcp_handoff.md`. Client-side orchestration
+  skill (state file, retry wrapper, resume protocol) is **pending on the
+  Mac** — spec: `docs/media_film_skill_spec.md`.

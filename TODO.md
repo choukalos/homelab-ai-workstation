@@ -33,6 +33,17 @@ Detailed reference: `docs/backup_chain_plan.md`.
 - [x] **`media_pull` rejects `media_jobs/<job_id>/<file>` paths (404)** — **FIXED (thor `mcp_media` tool, 2026-09-25):** `media_pull` now accepts `media_jobs/<job_id>/<file>` paths (verified: signed URL minted for `media_jobs/8fb134a2ea1b/mp_8fb134a2ea1b_00001_.png`). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
 - [ ] **Pipeline is a single-worker queue** — jobs run strictly serially (a CPU ffmpeg freeze queued behind a GPU image edit). Fine for now; revisit if throughput matters (per-flow worker pools). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
 
+### Media pipeline / MCP follow-ups (2026-11-02 incident)
+
+Context: 2026-11-02 film run — 4 client-side orchestration crashes lost 9 job
+IDs (unrecoverable: in-memory registry only, no log lines, no listing). Matrix
+side fixed 2026-11-04; thor + Mac sides pending. Incident context + environment
+map: `docs/media_film_skill_spec.md` §1–2.
+
+- [x] **Matrix: lost job IDs unrecoverable** — **FIXED 2026-11-04 (matrix `media-pipeline`):** `GET /jobs` (durable `jobs.jsonl` ledger + live registry; filters `status`/`client`/`user`/`flow`/`since`/`limit`), job IDs logged to `docker logs media_pipeline` (submit + finish), structured 404 on unknown job. Verified live incl. ledger durability across a container restart. Evidence: `docs/matrix_validation_log.md` (Run 2026-11-04); contract: `docs/matrix_media_pipeline_api.md` §2 + §7.1. SQLite registry evaluated + deferred (ledger covers it at current volume).
+- [ ] **Thor: mcp_media additions (T1–T5)** — SUBMIT/DONE log lines, `media_list_jobs` tool + `client` passthrough, 60 s MCP timeout in tool descriptions, `media_fetch` basename-collision fix, mcp_vision permission fix. Spec: `docs/thor_media_mcp_handoff.md` (~2 h, all additive).
+- [ ] **Mac: `media-film` orchestration skill** — state file on disk after every submit, retry wrapper on every MCP call, timeboxed chunks, resume protocol (state file + `/health` + `GET /jobs`), queue management, QC gates, publish checklist. Spec: `docs/media_film_skill_spec.md` (~1–2 h; dry-run + kill test to verify).
+
 ### Modes / switching
 
 - [ ] **Verify `qwen-long` mode switch end-to-end** — compose + profile exist but the switch has not been verified in production. *(docs/matrix_runtime_modes.md)*
@@ -51,6 +62,8 @@ Detailed reference: `docs/backup_chain_plan.md`.
 - ~~Consider W8A16 + MTP as a quality upgrade~~ (2026-09-27) — the W8A16 experiments were Qwen3.6 (dropped 2026-08-28); MTP is already in production on the NVFP4 daily driver (2 tokens, tuned 2026-08-25); no Qwen3.8 8-bit candidate identified — revisit only if 4-bit quality issues surface. *(EXPERIMENTS_RESULTS.md, Next Steps)*
 
 ## Done (this consolidation)
+
+- [x] **Media pipeline job visibility (matrix, 2026-11-04)** — post-incident hardening for the 2026-11-02 film run (9 lost job IDs, ~1 h GPU + ~1 h recovery): `GET /jobs` (durable `jobs.jsonl` ledger + live registry, filterable, survives pipeline restarts), job-ID logging to the container log, structured 404 with hint. `improve_mediapipeline_todo.md` removed — consolidated into `docs/matrix_media_pipeline_api.md` (contract + §7.1 client guidance), `docs/thor_media_mcp_handoff.md` (thor T1–T5 spec), `docs/media_film_skill_spec.md` (Mac skill spec). Evidence: `docs/matrix_validation_log.md` (Run 2026-11-04).
 
 - [x] **`media-mcp-client/` resync (2026-09-27)** — resolved by referencing the official repo instead of keeping a snapshot: the authoritative `mcp_media` implementation is [`mcp/servers/media`](https://github.com/choukalos/homelab-ai-harness/tree/main/mcp/servers/media) in `github.com/choukalos/homelab-ai-harness` (all 2026-09-25 updates checked in + pushed: tool renames, `media_job_result`/`media_put`/`media_fetch`, `non_blocking`, `{path, location}` shapes — 22 tools). The stale pre-2026-09-25 snapshot (`mcp_tools.py`, `media_pipeline_client.py`, `HANDOFF.md`) was deleted; `media-mcp-client/` is now a pointer doc. Contract: GitHub README + `docs/matrix_media_pipeline_api.md`. *(TODO.md, 2026-09-25 verification)*
 

@@ -58,7 +58,8 @@ keyframes → I2V shots → TTS/music/SFX → SeedVR2 upscale → ffmpeg assembl
 `docker exec`/`cp` into `comfyui_backend`.
 
 ```bash
-curl -s http://localhost:8189/health                 # {ok, max_concurrent, max_queue_depth, max_pending, pending, running, queued, queue_depth}
+curl -s http://localhost:8189/health                 # {ok, gpu_locked, jobs, max_concurrent, max_queue_depth, max_pending, pending, running, queued, queue_depth, retention_*}
+curl -s 'http://localhost:8189/jobs?limit=10'        # list jobs (durable across restarts; filters: status/client/user/flow/since/limit)
 model-manager rebuild media-pipeline                 # rebuild image from source + recreate (after code changes)
 ```
 
@@ -69,7 +70,8 @@ with `status=queued`. Waiting depth is capped by `MAX_QUEUE_DEPTH` (default 5) �
 See `media-pipeline/` (build context) and the remote client in `media-mcp-client/` (pointer to `mcp/servers/media` in the homelab-ai-harness repo).
 
 **Full API contract + metering:** `docs/matrix_media_pipeline_api.md` (endpoints, job model,
-queue, VRAM budget, commercial recipe). Since 2026-09-06 the pipeline attributes every job to
+job visibility — `GET /jobs` + job-ID logging, 2026-11-04; metering, VRAM budget,
+commercial recipe). Since 2026-09-06 the pipeline attributes every job to
 its `user`/`client` (optional fields on every job POST) and measures work units (mpix_steps /
 mpix_frames / audio_seconds) at calibrated full-cost rates: `GET /metrics` (Prometheus
 `media_*` job/cost metrics, scraped by Thor) + one durable line per job at
