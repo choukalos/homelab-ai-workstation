@@ -16,6 +16,10 @@ Flows (each returns a job_id; poll GET /jobs/{id}):
   POST /trim         cut a clip to a time range (ffmpeg, CPU)
   POST /freeze       still image or video frame -> static N-second clip (ffmpeg, CPU)
   POST /caption      burn text into a clip (ffmpeg drawtext, CPU)
+  GET  /jobs         list jobs, newest first (sync): durable jobs.jsonl ledger
+                      (finished jobs, survives restarts) merged with the live
+                      in-memory registry (in-flight + this process's outputs).
+                      Filters: status, client, user, flow, since (ISO), limit
   GET  /info         ffprobe metadata (sync, not a job)
   GET  /voices       list the TTS voice library (sync)
   POST /voices       register a TTS voice from a reference clip (job; XTTS
@@ -50,6 +54,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -377,6 +382,10 @@ def new_job(flow: str, payload: dict) -> str:
                  "started": None, "finished": None, "output": {}, "error": None,
                  "user": payload.get("user"), "client": payload.get("client"),
                  "payload": {k: v for k, v in payload.items() if k != "file_bytes"}}
+    # Job IDs must be recoverable from `docker logs media_pipeline` even when
+    # the caller dies (2026-11-02 incident: lost IDs were unrecoverable).
+    logger.info("job submitted: %s flow=%s client=%s user=%s",
+                jid, flow, payload.get("client") or "-", payload.get("user") or "-")
     return jid
 
 
@@ -385,6 +394,9 @@ def set_status(jid: str, status: str, **kw):
     JOBS[jid].update(kw)
     if status in ("done", "error", "timeout"):
         JOBS[jid]["finished"] = time.time()
+        logger.info("job finished: %s status=%s error=%s",
+                    jid, status,
+                    str(kw.get("error"))[:200] if kw.get("error") else "-")
 
 
 async def save_upload(jid: str, f: UploadFile) -> str:
@@ -1457,10 +1469,191 @@ def metrics():
     return Response(metering.render(), media_type=metering.CONTENT_TYPE_LATEST)
 
 
+# ------------------------------------------------------------------ job listing
+# Durable ledger of finished jobs: the metering jobs.jsonl (one line per
+# completed job; 10 MB cap with keep-newest rotation; never touched by the
+# retention sweeper). The in-memory JOBS table is authoritative for in-flight
+# jobs and this process's outputs; the ledger covers finished jobs across
+# restarts. GET /jobs merges the two (contract: docs/matrix_media_pipeline_api.md).
+JOBS_JSONL = JOB_DIR / "metrics" / "jobs.jsonl"
+_LEDGER_MAX_LINES = 5000  # safety bound; the 10 MB cap holds well under this
+
+
+def _iso(ts) -> str | None:
+    """epoch float -> ISO-8601 UTC string (the jobs.jsonl ts format)."""
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(s: str) -> float | None:
+    """ISO-8601 (Z suffix ok) -> epoch float, or None."""
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _read_jobs_ledger() -> list[dict]:
+    """Parse the durable jobs.jsonl ledger (oldest first). Never raises."""
+    recs: list[dict] = []
+    if not JOBS_JSONL.is_file():
+        return recs
+    try:
+        with open(JOBS_JSONL, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(r, dict) and r.get("job_id"):
+                    recs.append(r)
+    except OSError:
+        return []
+    if len(recs) > _LEDGER_MAX_LINES:
+        recs = recs[-_LEDGER_MAX_LINES:]  # keep the newest
+    return recs
+
+
+def _job_outputs(jid: str) -> list[str] | None:
+    """Run-dir-relative output files of a job dir (excluding input/), or None
+    if the dir no longer exists (retention-swept)."""
+    jdir = JOB_DIR / jid
+    if not jdir.is_dir():
+        return None
+    outs: list[str] = []
+    try:
+        for p in sorted(jdir.rglob("*")):
+            rel = p.relative_to(JOB_DIR)
+            if p.is_file() and "input" not in rel.parts[:1]:
+                outs.append(str(rel))
+            if len(outs) >= 20:
+                break
+    except OSError:
+        return None
+    return outs or None
+
+
+@app.get("/jobs")
+def list_jobs(status: str = None, client: str = None, user: str = None,
+              flow: str = None, since: str = None, limit: int = 50):
+    """List jobs, newest first (sync, no job_id). Merges the durable
+    jobs.jsonl ledger (finished jobs — survives restarts) with the in-memory
+    registry (in-flight jobs + this process's outputs). Read-only.
+
+    Filters (all optional, combinable):
+      status  comma-separated subset of queued,running,done,error,timeout (or 'all')
+      client  exact match on the client identity (e.g. 'pi', 'siri')
+      user    exact match on the user identity
+      flow    exact match on the flow (e.g. 'shots', 'tts')
+      since   ISO-8601; keep jobs created at/after this time (for ledger jobs
+              created ≈ done − queue_wait − duration, i.e. approximate)
+      limit   1..200 (default 50)
+
+    Per-job fields: job_id, flow, status, client, user, created, done,
+    queue_position (queued only), model, duration_s, cost_usd (ledger jobs),
+    error, output (result dict, this process only), outputs (run-dir-relative
+    files from disk; null when the job dir was retention-swept).
+    """
+    try:
+        limit = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "limit must be an integer 1..200")
+    statuses = {s.strip() for s in (status or "").lower().split(",") if s.strip()}
+    if statuses - {"all", "queued", "running", "done", "error", "timeout"}:
+        raise HTTPException(400, "status must be a comma-separated subset of "
+                                 "queued,running,done,error,timeout (or 'all')")
+    if "all" in statuses:
+        statuses = set()
+    since_epoch = None
+    if since:
+        since_epoch = _parse_iso(since)
+        if since_epoch is None:
+            raise HTTPException(400, "since must be ISO-8601 (e.g. 2026-11-01T00:00:00Z)")
+
+    merged: dict[str, dict] = {}
+    # 1) finished jobs from the durable ledger (oldest first)
+    for r in _read_jobs_ledger():
+        jid = r["job_id"]
+        done_epoch = _parse_iso(r.get("ts"))
+        created = (done_epoch - (r.get("queue_wait_s") or 0) - (r.get("duration_s") or 0)
+                   if done_epoch is not None else None)
+        merged[jid] = {
+            "job_id": jid, "flow": r.get("flow"), "status": r.get("status"),
+            "client": r.get("client"), "user": r.get("user"),
+            "created": _iso(created), "done": r.get("ts"),
+            "model": r.get("model"), "duration_s": r.get("duration_s"),
+            "cost_usd": r.get("cost_usd"),
+            "error": r.get("error"), "output": None,
+        }
+    # 2) overlay the in-memory registry (authoritative for in-flight + outputs)
+    for jid, j in list(JOBS.items()):
+        st = j.get("status") or "queued"
+        rec = merged.get(jid)
+        if rec is not None:
+            rec["status"] = st
+            if j.get("created"):
+                rec["created"] = _iso(j["created"])
+            if j.get("finished"):
+                rec["done"] = _iso(j["finished"])
+            if j.get("error"):
+                rec["error"] = str(j["error"])[:500]
+            if j.get("output"):
+                rec["output"] = j["output"]
+        else:
+            rec = {
+                "job_id": jid, "flow": j.get("flow"), "status": st,
+                "client": j.get("client"), "user": j.get("user"),
+                "created": _iso(j.get("created")),
+                "done": _iso(j.get("finished")),
+                "model": None, "duration_s": None, "cost_usd": None,
+                "error": str(j["error"])[:500] if j.get("error") else None,
+                "output": j.get("output"),
+            }
+        if st == "queued":
+            rec["queue_position"] = queue_position(jid)
+        merged[jid] = rec
+
+    # 3) filter
+    rows = []
+    for rec in merged.values():
+        if statuses and rec["status"] not in statuses:
+            continue
+        if client and rec.get("client") != client:
+            continue
+        if user and rec.get("user") != user:
+            continue
+        if flow and rec.get("flow") != flow:
+            continue
+        if since_epoch is not None:
+            c = _parse_iso(rec.get("created"))
+            if c is None or c < since_epoch:
+                continue
+        rows.append(rec)
+
+    # 4) newest first (missing created sorts last)
+    rows.sort(key=lambda r: _parse_iso(r.get("created")) or 0.0, reverse=True)
+    rows = rows[:limit]
+
+    # 5) attach on-disk outputs (works across restarts; null when swept)
+    for rec in rows:
+        rec["outputs"] = _job_outputs(rec["job_id"])
+    return {"count": len(rows), "jobs": rows}
+
+
 @app.get("/jobs/{jid}")
 def job_status(jid: str):
     if jid not in JOBS:
-        raise HTTPException(404, "unknown job")
+        raise HTTPException(404, {
+            "error": "unknown_job",
+            "message": f"job {jid} is not in the live registry",
+            "hint": "it may have finished before this process started or its "
+                    "dir been retention-swept; list recent jobs with "
+                    "GET /jobs?since=<iso>&limit=100 (durable ledger)",
+        })
     j = dict(JOBS[jid])
     if j.get("status") == "queued":
         j["queue_position"] = queue_position(jid)
