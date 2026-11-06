@@ -44,6 +44,19 @@ map: `docs/media_film_skill_spec.md` §1–2.
 - [ ] **Thor: mcp_media additions (T1–T5)** — SUBMIT/DONE log lines, `media_list_jobs` tool + `client` passthrough, 60 s MCP timeout in tool descriptions, `media_fetch` basename-collision fix, mcp_vision permission fix. Spec: `docs/thor_media_mcp_handoff.md` (~2 h, all additive).
 - [ ] **Mac: `media-film` orchestration skill** — state file on disk after every submit, retry wrapper on every MCP call, timeboxed chunks, resume protocol (state file + `/health` + `GET /jobs`), queue management, QC gates, publish checklist. Spec: `docs/media_film_skill_spec.md` (~1–2 h; dry-run + kill test to verify).
 
+### Tab tool (tab_pdf.py) — Phase 4 pipeline side (enhance_tab_tool.md, 2026-11-05 tab run)
+
+Context: `enhance_tab_tool.md` (repo root) — plan to fix "NO SHAPE" chords + rework
+the SOLO lane. Phases 1–3 are all `tab_pdf.py` / thor `mcp_media` work (no Matrix
+involvement); Phase 4 is the one media-pipeline (Matrix, GPU host) item: make
+bends/vibrato detectable by emitting per-note pitch contours. The DSP already
+computed them — basic-pitch's `note_events` carry a per-frame `pitch_bends` list
+(1/3-semitone bins vs nominal pitch, ~86 fps grid; `None` for overlapping notes,
+which basic-pitch drops by default) and `stage_notes()` was discarding it.
+
+- [ ] **Pipeline: per-note `pitch_contour` (Phase 4 / B4) — code done 2026-11-06, pending first-job validation** — `stage_notes()` in `media-pipeline/workers/transcribe_worker.py` now emits an optional `pitch_contour` on each note event: 5 evenly-spaced points (onset→offset), semitones vs the note's nominal pitch, downsampled from the per-frame bends. Additive optional field in `notes.json` → `analysis.json` (`analysis.version` unchanged; notes without bend data carry no field). Log line now reports coverage: `notes: N events (M with pitch contour, max |dev| X.XX st)`. Deployed to the live worker location (`/home/chuck/data/comfyui/run/media_workers/`, in sync with the repo copy — workers run from the bind mount per job, no rebuild/restart needed). **Open:** validate on the next transcribe job (contour count in the log + `pitch_contour` present in `analysis.json`; SCOM's intro bends are the known reference). Existing 4 QA job artifacts predate the field — Phase 4 only pays off on fresh transcriptions. *(enhance_tab_tool.md §B4, Phase 4)*
+- [ ] **tab_pdf (thor): render `b`/`v` marks when `pitch_contour` present** — the consumer half of Phase 4: deterministic rules (sustained offset → bend `b`, oscillation → vibrato `v`, thresholds as named constants tuned against SCOM intro / U2 One verse). Tracked in `enhance_tab_tool.md` Phase 4 — deliberately separate from the tab_pdf rework (Phases 1–3). *(enhance_tab_tool.md §B4)*
+
 ### Modes / switching
 
 - [ ] **Verify `qwen-long` mode switch end-to-end** — compose + profile exist but the switch has not been verified in production. *(docs/matrix_runtime_modes.md)*

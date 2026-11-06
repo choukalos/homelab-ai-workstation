@@ -9,6 +9,8 @@ Stages (sequential, one process per job):
   0 ingest    ffmpeg -> audio.wav (44.1 kHz stereo s16)
   1 global    librosa: key (Krumhansl-Schmuckler), BPM (beat tracking, 60-180 guard)
   2 notes     basic-pitch (ONNX): polyphonic events -> song.mid + notes.json
+              (+ optional per-note pitch_contour: 5-pt downsample of basic-pitch's
+              per-frame bends, semitones vs nominal pitch — bends/vibrato detectable)
   3 chords    CQT chord-template matching (beat-aligned, anti-flap)
   4 sections  deterministic segmentation (onset/energy envelope)
   5 lyrics    demucs htdemucs -> vocals.wav (default; --stems false = full mix);
@@ -208,6 +210,27 @@ def stage_key(cqt, bin_pc, chords, note_events):
 
 
 # ------------------------------------------------------------------ stage 2
+def _pitch_contour(bends, n=5):
+    """Downsample basic-pitch's per-frame pitch-bend list to `n` evenly
+    spaced points in semitones (offset from the note's nominal pitch).
+
+    basic-pitch emits one int per frame (~86 fps) between the note's start
+    and end, in 1/3-semitone contour bins (CONTOURS_BINS_PER_SEMITONE=3),
+    on an evenly spaced time grid across the note. 5 points is enough for
+    the consumer (tab_pdf.py) to tell a sustained offset (bend) from
+    oscillation (vibrato) from flat. None when the note has no bend data
+    (e.g. overlapping notes, which basic-pitch drops by default).
+    """
+    if not bends:
+        return None
+    if len(bends) == 1:
+        pts = [bends[0]]
+    else:
+        idx = [round(i * (len(bends) - 1) / (n - 1)) for i in range(n)]
+        pts = [bends[i] for i in idx]
+    return [round(p / 3.0, 2) for p in pts]
+
+
 def stage_notes(wav, out_dir):
     from basic_pitch.inference import predict
     t0 = time.time()
@@ -215,16 +238,25 @@ def stage_notes(wav, out_dir):
         wav, onset_threshold=0.5, frame_threshold=0.3)
     # note_events: (start_s, end_s, midi, amplitude, pitch_bends)
     events = []
-    for start, end, midi, amp, _bends in note_events:
+    n_contour = 0
+    max_dev = 0.0
+    for start, end, midi, amp, bends in note_events:
         start, end, midi, amp = float(start), float(end), int(round(float(midi))), float(amp)
         if not (0 < end - start < 60) or not (0 <= midi <= 127):
             continue
-        events.append({"midi": midi, "start_s": round(start, 3),
-                       "end_s": round(end, 3),
-                       "freq_hz": round(440.0 * 2 ** ((midi - 69) / 12.0), 1),
-                       "amplitude": round(amp, 4)})
+        ev = {"midi": midi, "start_s": round(start, 3),
+              "end_s": round(end, 3),
+              "freq_hz": round(440.0 * 2 ** ((midi - 69) / 12.0), 1),
+              "amplitude": round(amp, 4)}
+        contour = _pitch_contour(bends)
+        if contour is not None:
+            ev["pitch_contour"] = contour
+            n_contour += 1
+            max_dev = max(max_dev, max(abs(p) for p in contour))
+        events.append(ev)
     events.sort(key=lambda e: (e["start_s"], e["midi"]))
-    log(f"notes: {len(events)} events in {time.time()-t0:.0f}s")
+    log(f"notes: {len(events)} events ({n_contour} with pitch contour, "
+        f"max |dev| {max_dev:.2f} st) in {time.time()-t0:.0f}s")
 
     midi_data.write(os.path.join(out_dir, "song.mid"))
     with open(os.path.join(out_dir, "notes.json"), "w") as f:
