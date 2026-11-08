@@ -5,6 +5,26 @@ Last consolidated: 2026-09-27 (experiment cleanup + backup-chain plan).
 
 ## Active
 
+### Tab tool: pitch/vibrato + lyrics capture (2026-11-08, DONE)
+
+Thor flagged two remaining items on the transcribe/tab pipeline. Both done:
+
+- **Pitch/vibrato detection** — already shipped (v1.4.1, commit `4d2658c`):
+  per-note `pitch_contour` (5-point semitone-vs-nominal) on every note in
+  `notes.json` → `analysis.json`, plus the tab.md pitch/vibrato note. Verified
+  on Back In Black: 1,117/1,117 notes carry contours (max |dev| 2.33 st).
+- **Lyrics capture** — root cause: Silero VAD (faster-whisper's `vad_filter`)
+  is trained on clean speech and keeps only ~2% of a dense-rock vocal stem
+  (Back In Black: 3 garbled lines from a 4-min song). Fix: two-pass ASR in
+  `workers/transcribe_worker.py` — pass A (stem + VAD) as before; when VAD
+  keeps <25% of a >60 s track, pass B runs on the full mix with VAD off; the
+  pass with more words wins (deterministic). New `analysis.json` fields:
+  `lyrics_source` (`stem_vad`|`mix_vad`|`mix_no_vad`), `lyrics_vad_kept_frac`,
+  `lyrics_passes`. Verified: Back In Black now 62 clean lines (was 3), Riptide
+  unchanged (stem_vad, 53 lines, no fallback). Also fixed worker stdout being
+  dropped on success in `server.py run_worker` (stage/coverage lines now in
+  the pipeline log). Spec updated: `docs/transcribe_pipeline_spec.md`.
+
 ### Backup chain: Lego → Athena + Lego data cleanup (2026-09-27)
 
 Execution plan (human-readable, Phase 1/2 = user, Phase 3 = agent): **`nas_backup_plan.md`**.

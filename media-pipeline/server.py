@@ -431,12 +431,16 @@ def copy_comfy_outputs(jid: str, outputs: dict, prefix_filter: str = "") -> list
 
 
 def run_worker(worker: str, args: list[str], timeout: float = 3600) -> str:
-    """Run a worker script inside the comfyui container (GPU work)."""
+    """Run a worker script inside the comfyui container (GPU work).
+    Worker stdout is logged on success too — the stage/coverage lines
+    (e.g. transcribe's pitch-contour coverage) are the only job trace."""
     py = WORKER_PY.get(worker, "/comfy/mnt/venv/bin/python")
     cmd = ["docker", "exec", "-u", "comfy", CONTAINER, py, f"{WORKERS}/{worker}"] + args
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"worker failed: {r.stderr[-2000:]}")
+    for line in r.stdout.strip().splitlines():
+        logger.info("worker %s: %s", worker, line)
     return r.stdout.strip()
 
 

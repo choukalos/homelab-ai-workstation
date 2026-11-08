@@ -284,6 +284,23 @@ tab_pdf rework.
 | **3 — solo rework** | B3 (per-measure fretboard boards: duration-sized dots + duration tail (default on), time-order badges, technique connectors with vector slide/vibrato icons, solo key panel, fret window + starting-fret label, beat ruler, dense-measure fallback, `solo_style` enum `board`\|`text`) + visual QA on all 4 songs | the big one |
 | **4 — pipeline-side (Matrix)** | B4: pitch-contour note events so bends/vibrato become detectable; `tab_pdf.py` renders `b`/`v` marks when present | separate work item, GPU-host DSP |
 
+**Status (2026-11-08):**
+
+- **Phase 4 (pipeline side) — DONE** (v1.4.1, commit `4d2658c`): every note
+  in `notes.json`/`analysis.json` now carries `pitch_contour` (5-point
+  semitone-vs-nominal, from basic-pitch's per-frame `bend`); the worker logs
+  coverage (`notes: N events (M with pitch contour, max |dev| X st)`) and it
+  now reaches the pipeline log (worker stdout was previously dropped on
+  success — fixed in `server.py run_worker`). Verified on Back In Black:
+  1,117/1,117 notes, max |dev| 2.33 st. **Remaining (thor side):** `tab_pdf.py`
+  rendering of `b`/`v` marks from the contours.
+- **Lyrics capture — DONE** (same day): Silero VAD kept only ~2% of a
+  dense-rock vocal stem (Back In Black: 3 garbled lines). Two-pass ASR in
+  `transcribe_worker.py`: VAD kept-fraction gate (<25% of a >60 s track) →
+  no-VAD full-mix pass B; more-words-wins. Back In Black now 62 clean lines;
+  Riptide unchanged (stem_vad). New `analysis.json` fields: `lyrics_source`,
+  `lyrics_vad_kept_frac`, `lyrics_passes`. See `docs/transcribe_pipeline_spec.md`.
+
 ### Open questions
 
 - Technique thresholds: validate against SCOM's intro (known hammer-ons)

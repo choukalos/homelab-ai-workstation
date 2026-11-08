@@ -104,6 +104,8 @@ One worker process per job, stages run sequentially in the job dir:
 4. sections    deterministic segmentation (see §5.4)
 5. lyrics      [stems, default] demucs htdemucs → vocal stem (fallback: full mix)
               [if lyrics] faster-whisper (word timestamps, VAD on) → raw lines
+              (two-pass: if VAD keeps <25% of a >60 s track, a no-VAD
+              full-mix pass runs; the pass with more words wins)
 6. mapping     deterministic guitar mapping (see §5) → tab data in analysis.json
 6.5 post       [deterministic] transpose → chord_style → capo → shape hints
               (see docs/transcribe_thor_spec.md; the LLM never sees this)
@@ -138,6 +140,18 @@ Stage details:
   sung lines — `no_speech_prob` is NOT usable as a filter: sung vocals score
   high even on real lines). Consecutive duplicate lines are merged. Raw lines
   → `lyrics_raw.txt`.
+  **Two-pass VAD fallback (v1.4.2):** Silero VAD is trained on clean speech
+  and can keep only a sliver of a dense-rock vocal stem (Back In Black:
+  2.2% kept → 6 garbled lines). After pass A (stem + VAD) the worker measures
+  the VAD kept-fraction (the exact call faster-whisper makes internally for
+  `vad_filter=True`). If the track is >60 s and VAD kept <25%, **pass B**
+  runs: faster-whisper on the **full mix with `vad_filter=False`** (same
+  hallucination backstop + dedup). The pass with **more words** wins
+  (deterministic — no LLM); the winner is recorded as `lyrics_source`
+  (`stem_vad` | `mix_vad` | `mix_no_vad`) with per-pass stats in
+  `lyrics_passes`, and a caveat is appended when pass B is adopted. On clean
+  songs the VAD pass keeps ≥25% and pass B never runs (Riptide: 64% kept,
+  53 lines — unchanged behavior).
 - **6. mapping** — §5.1/§5.2: assign every note a role (lead / accompaniment /
   bass) and a string+fret; build the per-section tab data. Runs on the
   (possibly transposed) note events, so the tab is in the final key with
@@ -244,6 +258,9 @@ All under the job dir (14-day retention like every other flow). `vocals.wav`
   "key": "E minor",
   "bpm": 128,
   "stems_used": false,
+  "lyrics_source": "stem_vad",            // stem_vad | mix_vad | mix_no_vad (two-pass ASR)
+  "lyrics_vad_kept_frac": 0.64,           // fraction of the track Silero VAD kept (pass A input)
+  "lyrics_passes": {"a": {"lines": 53, "words": 335}, "b": null},  // null pass = never ran
   "polish_fallback": false,
   "confidence": "medium",
   "caveats": ["dense mix — lead/accompaniment separation is heuristic"],
@@ -495,6 +512,16 @@ Run on the GPU host; all must pass before the Thor side is built.
   `avg_logprob < -1.0`) already mitigate; `no_speech_prob` is NOT usable as a
   filter (sung vocals score high even on real lines). `lyrics_raw.txt` keeps
   the pre-polish lines for comparison.
+- **Lyrics nearly empty on a dense rock track** (e.g. 3–6 lines on a 4-min
+  song): Silero VAD keeps only a sliver of the vocal stem — it's trained on
+  clean speech and dense/processed rock vocals defeat it (Back In Black:
+  2.2% kept). The two-pass fallback (v1.4.2) handles this automatically: when
+  VAD keeps <25% of a >60 s track, a no-VAD full-mix pass runs and the pass
+  with more words wins. Check `lyrics_source` (`mix_no_vad` = fallback
+  adopted), `lyrics_passes` (per-pass line/word counts) and the caveat in
+  `analysis.json`. If `lyrics_source: mix_no_vad`, expect a few more
+  instrumental-hallucination lines than the stem pass — the backstop + dedup
+  still apply, and it is still far better than the 1% VAD result.
 - **Half/double-time BPM:** stage 1's beat-grid guard handles 60–180 BPM;
   out-of-range songs report the raw tracking value + a caveat.
 - **Queue full (503):** unchanged behavior — the Thor client backs off with

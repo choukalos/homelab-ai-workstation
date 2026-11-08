@@ -432,44 +432,50 @@ def stage_sections(y, dur, min_section_s, chords=None):
 # sung vocals score 0.6-0.9 even on genuine lines, so filtering on it would
 # drop the verses.
 _COMP_MAX, _LOGP_MIN = 2.4, -1.0
+# VAD kept-fraction gate: Silero VAD (faster-whisper's vad_filter) is trained
+# on clean speech and can keep only a sliver of a dense-rock vocal stem
+# (Back In Black 2026-11-08: 1% kept -> 3 garbled lines; no-VAD full-mix pass
+# captured the real lyrics). Below this kept fraction a no-VAD full-mix pass
+# is run and the pass with more words wins (deterministic; on clean songs the
+# VAD pass wins and the fallback never triggers).
+_VAD_KEEP_MIN = 0.25
+_FALLBACK_MIN_DUR_S = 60.0
 
 
 def _norm_text(s):
     return re.sub(r"[\W_]+", " ", s.lower()).strip()
 
 
-def stage_lyrics(wav, out_dir, args):
-    """Returns (lines, stems_used, caveat|None)."""
-    caveat = None
-    vocals = None
-    if args.stems:
-        log(f"stems: demucs {args.demucs_model} ...")
-        r = subprocess.run([sys.executable, "-m", "demucs", "-n", args.demucs_model,
-                            "--two-stems", "vocals",
-                            "-o", os.path.join(out_dir, "demucs"), wav],
-                           capture_output=True, text=True, timeout=3600)
-        vocals = os.path.join(out_dir, "demucs", args.demucs_model, "audio", "vocals.wav")
-        if r.returncode != 0 or not os.path.exists(vocals):
-            # lyrics are the valuable output — never fail the job over stems:
-            # fall back to full-mix ASR (degraded on dense mixes) + caveat
-            caveat = ("demucs failed — ASR ran on the full mix; expect garbled "
-                      "lines where the music dominates the vocals")
-            log(f"stems: demucs failed ({r.stderr[-200:]}) — falling back to full mix")
-            vocals = None
-    asr_path = vocals if vocals else wav
-    log(f"asr: faster-whisper {args.whisper_model} ({args.whisper_device}) on "
-        f"{'vocals stem' if vocals else 'full mix'} ...")
-    from faster_whisper import WhisperModel
-    t0 = time.time()
+def _n_words(lines):
+    return sum(len(l.get("words") or []) for l in lines)
+
+
+def _vad_kept_frac(path):
+    """Fraction of the track Silero VAD keeps — the exact call faster-whisper
+    makes internally for vad_filter=True (16 kHz mono, default VadOptions).
+    None if unmeasurable (the fallback gate is skipped, not forced)."""
     try:
-        model = WhisperModel(args.whisper_model, device=args.whisper_device,
-                             compute_type="float16" if args.whisper_device == "cuda" else "int8")
+        import librosa
+        from faster_whisper.vad import get_speech_timestamps, VadOptions
+        y, sr = sf.read(path, dtype="float32")
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        y16 = librosa.resample(y, orig_sr=sr, target_sr=16000)
+        ts = get_speech_timestamps(y16, VadOptions(), 16000)
+        kept = sum(t["end"] - t["start"] for t in ts) / 16000
+        return kept / max(1e-6, len(y16) / 16000)
     except Exception as e:
-        die(f"whisper model {args.whisper_model!r} unavailable: {e}")
-    segments, _info = model.transcribe(asr_path, word_timestamps=True,
-                                       vad_filter=True, beam_size=5)
-    lines = []
-    n_dropped = 0
+        log(f"asr: VAD kept-fraction measurement failed ({e}) — fallback gate off")
+        return None
+
+
+def _asr_lines(model, path, vad_filter, tag):
+    """One whisper pass: transcribe + hallucination backstop + dedup.
+    Returns (lines, n_dropped)."""
+    t0 = time.time()
+    segments, _info = model.transcribe(path, word_timestamps=True,
+                                       vad_filter=vad_filter, beam_size=5)
+    lines, n_dropped = [], 0
     for seg in segments:
         # hallucination backstop: instrumental sections misheard as words show
         # up as high compression and/or collapsed logprob (standard whisper
@@ -495,13 +501,72 @@ def stage_lyrics(wav, out_dir, args):
         else:
             deduped.append(ln)
     if len(deduped) != len(lines):
-        log(f"asr: merged {len(lines)-len(deduped)} duplicate line(s)")
+        log(f"asr[{tag}]: merged {len(lines)-len(deduped)} duplicate line(s)")
     if n_dropped:
-        log(f"asr: dropped {n_dropped} hallucinated segment(s) "
+        log(f"asr[{tag}]: dropped {n_dropped} hallucinated segment(s) "
             f"(compression>{_COMP_MAX} or logprob<{_LOGP_MIN})")
-    lines = deduped
-    log(f"asr: {len(lines)} lines in {time.time()-t0:.0f}s")
-    return lines, bool(vocals), caveat
+    log(f"asr[{tag}]: {len(deduped)} lines in {time.time()-t0:.0f}s")
+    return deduped, n_dropped
+
+
+def stage_lyrics(wav, out_dir, args):
+    """Returns (lines, stems_used, caveat|None, meta)."""
+    caveat = None
+    vocals = None
+    if args.stems:
+        log(f"stems: demucs {args.demucs_model} ...")
+        r = subprocess.run([sys.executable, "-m", "demucs", "-n", args.demucs_model,
+                            "--two-stems", "vocals",
+                            "-o", os.path.join(out_dir, "demucs"), wav],
+                           capture_output=True, text=True, timeout=3600)
+        vocals = os.path.join(out_dir, "demucs", args.demucs_model, "audio", "vocals.wav")
+        if r.returncode != 0 or not os.path.exists(vocals):
+            # lyrics are the valuable output — never fail the job over stems:
+            # fall back to full-mix ASR (degraded on dense mixes) + caveat
+            caveat = ("demucs failed — ASR ran on the full mix; expect garbled "
+                      "lines where the music dominates the vocals")
+            log(f"stems: demucs failed ({r.stderr[-200:]}) — falling back to full mix")
+            vocals = None
+    asr_path = vocals if vocals else wav
+    log(f"asr: faster-whisper {args.whisper_model} ({args.whisper_device}) on "
+        f"{'vocals stem' if vocals else 'full mix'} ...")
+    from faster_whisper import WhisperModel
+    try:
+        model = WhisperModel(args.whisper_model, device=args.whisper_device,
+                             compute_type="float16" if args.whisper_device == "cuda" else "int8")
+    except Exception as e:
+        die(f"whisper model {args.whisper_model!r} unavailable: {e}")
+    # pass A: the usual VAD pass on the stem (or full mix when stems are off)
+    lines_a, _ = _asr_lines(model, asr_path, vad_filter=True, tag="A")
+    words_a = _n_words(lines_a)
+    kept = _vad_kept_frac(asr_path)
+    meta = {"lyrics_source": "stem_vad" if vocals else "mix_vad",
+            "vad_kept_frac": round(kept, 3) if kept is not None else None,
+            "passes": {"a": {"lines": len(lines_a), "words": words_a}, "b": None}}
+    # pass B (only when VAD clearly failed): no-VAD on the full mix. The
+    # hallucination backstop + dedup still apply; the pass with more words
+    # wins (deterministic selection — no LLM).
+    dur = sf.info(asr_path).duration
+    if kept is not None and dur > _FALLBACK_MIN_DUR_S \
+            and kept < _VAD_KEEP_MIN:
+        log(f"asr: VAD kept only {100*kept:.0f}% of the track — running "
+            f"no-VAD full-mix pass B ...")
+        lines_b, _ = _asr_lines(model, wav, vad_filter=False, tag="B")
+        words_b = _n_words(lines_b)
+        meta["passes"]["b"] = {"lines": len(lines_b), "words": words_b}
+        if words_b > words_a:
+            lines, meta["lyrics_source"] = lines_b, "mix_no_vad"
+            why = (f"VAD kept only {100*kept:.0f}% of the track (sung vocals on a "
+                   f"dense mix) — lyrics taken from the full-mix no-VAD pass "
+                   f"({words_b} words vs {words_a})")
+            caveat = f"{caveat}; {why}" if caveat else why
+            log(f"asr: adopting pass B ({words_b} words > {words_a})")
+        else:
+            lines = lines_a
+            log(f"asr: keeping pass A ({words_a} words >= {words_b})")
+    else:
+        lines = lines_a
+    return lines, bool(vocals), caveat, meta
 
 
 def write_lyrics_txt(lines, out_dir, disabled=False, name="lyrics.txt"):
@@ -1052,9 +1117,9 @@ def main():
     sections = stage_sections(y, dur, min_section_s, chords)
 
     # 5. lyrics (vocal stem by default — see stage 5 comment)
-    raw_lines, stems_used, asr_caveat = ([], False, None)
+    raw_lines, stems_used, asr_caveat, asr_meta = ([], False, None, None)
     if do_lyrics:
-        raw_lines, stems_used, asr_caveat = stage_lyrics(wav, out_dir, argparse.Namespace(
+        raw_lines, stems_used, asr_caveat, asr_meta = stage_lyrics(wav, out_dir, argparse.Namespace(
             stems=do_stems, whisper_model=whisper_model, whisper_device=whisper_device,
             demucs_model=demucs_model))
         # raw ASR output is kept separately (reproducible); lyrics.txt is
@@ -1187,6 +1252,9 @@ def main():
         "key": g["key"],
         "bpm": g["bpm"],
         "stems_used": stems_used,
+        "lyrics_source": asr_meta["lyrics_source"] if asr_meta else None,
+        "lyrics_vad_kept_frac": asr_meta["vad_kept_frac"] if asr_meta else None,
+        "lyrics_passes": asr_meta["passes"] if asr_meta else None,
         "transpose_semitones": transpose,
         "chord_style": chord_style,
         "capo": use_capo,
