@@ -1,0 +1,39 @@
+# ollama-copywriter-gpu1 — Ollama copywriter (Gemma 4 31B) pinned to GPU 1
+# Status: DRAFT (add_card_plan.md Phase 0a) — becomes active after the 2nd card is
+# installed (Phase 1). The copywriter moves from GPU 0 (shared, 14 GB slot) to GPU 1
+# (dedicated 24 GB).
+
+name: ollama-copywriter-gpu1
+alias: matrix-copywriter  # NEW LiteLLM alias (Phase 3/4 adds the Thor entry)
+backend: ollama
+status: draft
+
+model:
+  path: gemma4:31b
+  quantization: "Q4_K_M (~20.4 GB: 18.7 model + 1.2 vision + 0.5 draft/speculative)"
+  format: ollama
+  parameters: 31B (dense + vision + draft/speculative)
+  context: 8-16K comfortable (~3.6 GB headroom on 24 GB); 32K tight (q8 KV)
+  fast_option: gemma4:26b (17 GB MoE) — already pulled, faster
+
+launch:
+  container: ollama
+  image: ollama/ollama:latest
+  compose: compose/ollama-gpu1.yml
+  port: 11434
+  gpu: 1  # device_ids: ['1']
+  env:
+    OLLAMA_KEEP_ALIVE: "5m"
+    OLLAMA_MAX_LOADED_MODELS: "2"
+
+health:
+  endpoint: http://localhost:11434/api/tags
+  expected_model_name: gemma4:31b
+
+notes:
+  - "Swaps with the media pipeline on GPU 1 (keep_alive idle-unload + headroom guard,
+    add_card_plan.md §4.1.4)"
+  - "20.4 GB model + ~3.6 GB context headroom on the 24 GB card"
+  - "Mutually exclusive with the GPU 0 Ollama compose (compose/gemma4-moe.yml)"
+  - "Pull in progress (Phase 0a): state/ollama_pull_gemma4_31b.log"
+  - "Open question §7.2: 31B (quality ceiling) vs 26B MoE (fast) — 31B pulled, 26B kept"

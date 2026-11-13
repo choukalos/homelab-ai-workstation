@@ -1,0 +1,68 @@
+# matrix-coder-flashnext — Qwen3.8-Flash-Next daily model (llama.cpp)
+# Status: DRAFT (add_card_plan.md Phase 0a) — candidate for the `daily` mode.
+# Replaces matrix-coder (Qwen3.8-27B NVFP4 vLLM) only if the QNF experiment
+# (Phase 5) wins.
+#
+# Serves as `qwen38-27b` on :8000 — the LiteLLM matrix-coder contract is UNCHANGED
+# (Thor needs no changes). llama.cpp `--alias qwen38-27b` provides the served name.
+
+name: matrix-coder-flashnext
+alias: matrix-coder
+backend: llama.cpp
+status: draft
+
+model:
+  path: /data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
+  quantization: IQ4_XS (97.7 GB, 3 shards) — Swift 1.5
+  format: gguf
+  expected_vram: ~63.5 GB on-GPU + ~34 GB host RAM (mmap)
+  parameters: 125B MoE (6B active/token) + 51B PLE n-gram embedding + 4B MTP
+  context: 262144
+  vision: true
+  fallback_quant: >
+    IQ3_S GSQ-RCO (83.7 GB, 2 shards) — compose/experiments/qwen38-flash-next-gsq-rco.yml.
+    Less RAM-resident (~20 GB vs ~34 GB) → less PCIe traffic (relevant at x8); lower quality.
+
+launch:
+  container: qwen38-flash-next
+  image: ghcr.io/ggml-org/llama.cpp:server
+  compose: compose/experiments/qwen38-flash-next-gguf.yml
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models:ro
+  args:
+    --model: /data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
+    --alias: qwen38-27b
+    --host: 0.0.0.0
+    --port: "8080"
+    --n-gpu-layers: "999"
+    --ctx-size: "262144"
+    --parallel: "2"
+    --cont-batching: true
+    --jinja: true
+    --flash-attn: on
+    --cache-type-k: q8_0
+    --cache-type-v: q4_0
+    --mmproj: /data/models/gguf/mmproj-Swift-1.5-Qwen3.8-Flash-Next-BF16.gguf
+    --temp: "1.0"
+    --top-p: "0.95"
+    --top-k: "20"
+    --n-predict: "-1"
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen38-27b
+
+compatible_modes:
+  - daily
+
+notes:
+  - "Requires stopping the vLLM daily driver (port 8000 + ~56 GB VRAM) before launch"
+  - "QSA sparse-attention support in llama.cpp MUST be verified in the first benchmark
+    (Phase 0b/5) — a dense-256K fallback collapses throughput (KV-read dominated)"
+  - "PCIe x8 watch-item: ~34 GB weights RAM-resident; the Phase 0b x16 baseline isolates
+    the x8 delta (both cards drop to x8 per mobo manual)"
+  - "Promotion path: Phase 5 (QNF experiment) → if it wins, this becomes the `daily`
+    profile and matrix-coder (vLLM) is archived"
+  - "Pre-download DONE 2026-10-31 (IQ4_XS 3 shards + mmproj, byte-verified 2026-11-13)"

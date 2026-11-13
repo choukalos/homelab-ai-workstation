@@ -1,0 +1,62 @@
+# vLLM Qwen3.8-27B NVFP4 — BUMPED daily (Phase 4 — the x8-immune safe lane)
+# DRAFT (Phase 0a) — NOT yet applied. Becomes the working `daily` in Phase 4, once the
+# media pipeline has moved to GPU 1 and freed the ~14 GB it held on GPU 0.
+#
+# Same model + served name as compose/qwen-coder.yml (qwen38-27b on :8000) — the only
+# changes are the headroom bumps, now safe because GPU 0 is dedicated to the daily LLM:
+#   - --gpu-memory-utilization 0.75 -> 0.95  (reclaim ~14 GB for KV cache; step to 0.97/
+#     0.98 in Phase 4 if stable — vLLM needs activation headroom, ~1 GB free target)
+#   - --max-num-seqs 3 -> 4                 (the "concurrent threads" bump; 5-6 if stable)
+#   - --max-model-len 196608 -> 262144      (192K -> 256K context)
+#
+# x8-immune: weights + KV all live in VRAM, so the PCIe x16->x8 drop (both cards) has no
+# effect. This is the guaranteed fallback if the Flash-Next (QNF) experiment under-
+# performs at x8.
+#
+# Usage: docker compose -f compose/qwen-coder-bumped.yml up -d
+# (Mutually exclusive with compose/qwen-coder.yml — same container qwen38 + port 8000.)
+
+services:
+  qwen38:
+    image: vllm/vllm-openai:latest
+    container_name: qwen38
+    restart: unless-stopped
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_HOME=/data/models
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_XET_HIGH_PERFORMANCE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - /home/chuck/data/models:/data/models
+      - /home/chuck/homelab/scripts/templates:/templates:ro
+    command: >
+      --model unsloth/Qwen3.8-27B-NVFP4
+      --served-model-name qwen38-27b
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 262144
+      --max-num-seqs 4
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.95
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --trust-remote-code
+      --limit-mm-per-prompt '{"image": 5, "video": 2}'
+      --reasoning-parser qwen3
+      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      --default-chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "high"}'
+      --override-generation-config '{"temperature": 0.7, "top_p": 0.95}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
