@@ -1,0 +1,54 @@
+# experiment-qwen38-flash-next-gsq-rco — Experiment 8b (fallback): Qwen3.8-Flash-Next 125B MoE
+# Swift 1.5 IQ3_S GSQ-RCO GGUF (UkisAI) via llama.cpp.
+# Compose: compose/experiments/qwen38-flash-next-gsq-rco.yml
+#
+# Use if IQ4_XS (experiment-qwen38-flash-next-gguf) is too tight on RAM or more
+# headroom is wanted. Weights pre-downloaded 2026-11-13 (~84.7 GB, 2 shards + mmproj).
+
+name: qwen38-flash-next-gsq-rco
+alias: matrix-coder
+backend: llama.cpp
+status: ready
+experiment: true
+
+model:
+  path: /home/chuck/data/models/gguf/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+  quantization: IQ3_S GSQ-RCO (83.7 GB, 2 shards; dev KLD 0.1447 @512 — on par with ISTA GSQ-RCO, better than std IQ3_M at ~10 GB smaller)
+  format: GGUF (llama.cpp)
+  expected_vram: ~63.5 GB GPU + ~20 GB RAM (mmap)
+  parameters: 125B MoE (6B active/token + 51B n-gram embedding PLE + 4B MTP)
+  context: 262144
+  architecture: "Qwen3.8-Flash-Next (48 layers = 12 x (3 GDN + 1 QSA); only QSA layers carry per-token KV)"
+
+launch:
+  container: qwen38-flash-next
+  image: ghcr.io/ggml-org/llama.cpp:server
+  compose: compose/experiments/qwen38-flash-next-gsq-rco.yml
+  restart: "no"
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models:ro
+  args:
+    # Full arg list lives in the compose file; key settings:
+    - --alias qwen38-27b
+    - --ctx-size 262144
+    - --parallel 2
+    - --cache-type-k q8_0 --cache-type-v q4_0
+    - --flash-attn on
+    - --mmproj /data/models/gguf/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen38-27b
+
+compatible_modes:
+  - experiment
+
+notes:
+  - Weights downloaded 2026-11-13 — ready to launch
+  - Fallback tier: the one that runs 2x256K ALONGSIDE the ~14 GB media pipeline on current 62 GB RAM (IQ4_XS is at the wall there)
+  - Still stop the qwen-coder daily driver (port 8000) — model-manager experiment start does this
+  - Only ONE of the two flash-next experiment files should run at a time (primary: experiment-qwen38-flash-next-gguf)
+  - Same launch preconditions + QSA sparse-attention caveat as the IQ4_XS profile
+  - Rollback: model-manager mode rollback (restores qwen-coder.yml on port 8000)
