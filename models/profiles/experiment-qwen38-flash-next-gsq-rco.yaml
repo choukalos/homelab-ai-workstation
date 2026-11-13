@@ -22,7 +22,7 @@ model:
 
 launch:
   container: qwen38-flash-next
-  image: ghcr.io/ggml-org/llama.cpp:server
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda  # CUDA build — plain 'server' tag is CPU-ONLY
   compose: compose/experiments/qwen38-flash-next-gsq-rco.yml
   restart: "no"
   port: 8000

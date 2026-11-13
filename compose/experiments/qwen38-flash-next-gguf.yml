@@ -71,7 +71,10 @@
 
 services:
   qwen38-flash-next:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    # CUDA build — the plain 'server' tag is CPU-ONLY (2026-11-13: an experiment
+    # ran entirely on CPU because of this; see state/switch_log + benchmark report
+    # data/benchmarks/results/20261113_171630: GPU util 0%, VRAM 22 MB).
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: qwen38-flash-next
     restart: "no"
     ipc: host

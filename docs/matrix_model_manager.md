@@ -22,6 +22,7 @@ model-manager mode rollback             # Rollback to last known good mode
 model-manager profile show <PROFILE>    # Show a profile's full spec
 model-manager profile validate <P>      # Validate a profile's compose/args/env
 model-manager health                    # Check all running services
+model-manager media <up|down|status>    # Start/stop/check media pipeline (+ ComfyUI)
 model-manager preflight <MODE>          # Run preflight checks without switching
 model-manager benchmark <PROFILE>       # Run benchmark harness against a profile
 model-manager rebuild [SERVICE]        # Rebuild a service image from source + recreate (default: media-pipeline)
@@ -31,6 +32,26 @@ model-manager rebuild [SERVICE]        # Rebuild a service image from source + r
 > recreates the running container, so code changes go live without a manual `docker build`/`up`.
 > `media-pipeline` is the default. ComfyUI stop uses `--profile image down` (profile services need the
 > profile flag or a bare `down` silently no-ops).
+
+> **`media <up|down|status>`** (added 2026-11-13): direct media-pipeline + ComfyUI controls. The
+> services live under compose profile `"image"`, so a bare `docker compose up`/`down` without
+> `--profile image` silently no-ops — these wrappers always pass the profile flag.
+
+> **2026-11-13 reliability fixes** (after the flash-next experiment incident):
+> - `experiment start` now stops the media pipeline + ComfyUI first (frees ~14 GB VRAM; a CPU-bound
+>   experiment otherwise puts the host at the RAM wall and OOM-kills the image services) and unloads
+>   loaded Ollama models so the GPU is fully free.
+> - Rollback / mode switch / experiment switch now stop the **active experiment's own container**
+>   (named experiments run under their own `launch.container`, e.g. `qwen38-flash-next` — not
+>   `qwen38`). Previously the experiment was left running, held port 8000, and the post-switch
+>   health check was answered by the stale experiment → fake "success" in the switch log.
+> - Before starting vLLM, port 8000 must actually be free or the switch aborts (state NOT updated).
+>   Health waits now require the expected **container** to be running AND the expected **model** to
+>   be served — a bare port probe can be faked by a stale service.
+> - After an experiment starts, its logs are scanned for "no usable GPU found" / "compiled without
+>   GPU support" and a loud warning is printed (a CPU-only image build serves the model fine but
+>   runs everything on CPU). The experiment compose files now pin `llama.cpp:server-cuda`
+>   (the plain `server` tag is CPU-only).
 
 ## Architecture
 

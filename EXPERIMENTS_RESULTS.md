@@ -390,6 +390,33 @@ Fallback if OOM: `UD-IQ3_XXS` (82 GB, 85.4% retention) or smaller `--ctx-size`.
 ⚠️ The 4-bit quant gives up some of that headroom (Unsloth: 92.3% top-1 retention at Q4_K_XL).
 If it holds up, this is the strongest candidate to replace the 27B daily driver.
 
+## ❌ Experiment 8: Qwen3.8-Flash-Next 125B MoE — IQ4_XS GGUF via llama.cpp (2026-11-13) — INVALID RUN
+
+**Status: results invalid — model ran 100% on CPU. Must be rerun.**
+
+- Candidate: `ukisai/Swift-1.5-Qwen3.8-Flash-Next` IQ4_XS (97.7 GB, 3 shards) — supersedes
+  Experiment 7 (UD-Q4_K_XL, never downloaded). Compose: `compose/experiments/qwen38-flash-next-gguf.yml`.
+- Launched 2026-11-13 17:02 UTC via `model-manager experiment start --profile`, benchmarked 17:16–18:05.
+- **Root cause:** the compose pinned `ghcr.io/ggml-org/llama.cpp:server` — the **CPU-only** build.
+  Server logs: `warning: no usable GPU found, --gpu-layers option will be ignored` / `llama.cpp was
+  compiled without GPU support`. The full 97.7 GB model ran mmap'd from RAM on CPU; llama.cpp even
+  reduced slot context 262144 → 131072 to fit system memory.
+- **Evidence (benchmark report `data/benchmarks/results/20261113_171630/`):**
+  - `VRAM before: 22 MB, VRAM after: 22 MB, GPU util before/after: 0% / 0%`
+  - Throughput ~18 tok/s mean (7.9–19.3); stress 76/80 ok at 4 concurrent (16 s avg/request)
+  - Quality tests: 4 of 5 **timed out** (120 s read timeout) — tool-calling test alone produced output
+- **Collateral:** the model-manager rollback logged a fake "success (6s)" because it only looked for
+  the `qwen38` container while the experiment ran as `qwen38-flash-next`; the experiment kept holding
+  port 8000 and had to be stopped manually. The CPU run also put the host at the RAM wall and
+  OOM-killed `comfyui_backend` (17:16). Fixed 2026-11-13 — see `docs/matrix_model_manager.md`.
+- **Fix applied:** compose + profiles now pin `llama.cpp:server-cuda` (image pulled 2026-11-13);
+  `model-manager` now stops the media pipeline/ComfyUI before experiments, stops the active
+  experiment's own container on rollback/switch, verifies port 8000 is free + the right model is
+  serving before logging success, and warns loudly if an experiment starts without a GPU.
+- **Action:** rerun the benchmark with the CUDA image before drawing any conclusions about
+  IQ4_XS quality/throughput. The 20261113_171630 numbers are CPU numbers and must not be compared
+  to the NVFP4 vLLM baseline.
+
 ## Next Steps
 
 1. ~~Update daily driver with MTP~~ (applied 2026-08-14, superseded by the Qwen3.8 NVFP4 promotion on 2026-08-24)
@@ -397,6 +424,7 @@ If it holds up, this is the strongest candidate to replace the 27B daily driver.
 3. ~~Run experiment 6: Nemotron-3-Puzzle-75B NVFP4~~ (2026-09-27: **dropped** — old model; Flash-Next is the next candidate)
 4. ~~Consider testing W8A16 + MTP as a potential quality upgrade~~ (2026-09-27: **dropped** — the W8A16 experiments were Qwen3.6, superseded by Qwen3.8; MTP is already in production on the NVFP4 daily driver (2 tokens, tuned 2026-08-25); no Qwen3.8 8-bit candidate identified — revisit only if 4-bit quality issues surface)
 5. ~~Verify MTP (3 tokens) on the promoted NVFP4 model after the restart~~ (done 2026-08-25: MTP tuned to 2 tokens, benchmarked at 123.95 tok/s — see speed fix above)
-6. **Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)** — compose ready; 111 GB pre-download required (see Experiment 7 section). **Sole remaining candidate** (2026-09-27)
+6. ~~Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)~~ (2026-10-31: **superseded by Experiment 8** — Swift 1.5 IQ4_XS weights pre-downloaded; base-model UD-Q4_K_XL 111.3 GB never downloaded)
+7. **Rerun experiment 8 (IQ4_XS, llama.cpp `server-cuda`)** — first run 2026-11-13 was invalid (CPU-only image, see Experiment 8 section). Rerun benchmark before any quality/throughput conclusions
 
 > **2026-09-27 cleanup:** all artifacts for the done/superseded/dropped rounds were removed — 9 experiment compose files, 9 profiles, 7 stopped containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). This file is the permanent record of those results. Kept locally: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver).

@@ -28,7 +28,8 @@
 
 services:
   qwen38-flash-next:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    # CUDA build — the plain 'server' tag is CPU-ONLY (see gguf sibling file).
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: qwen38-flash-next
     restart: "no"
     ipc: host

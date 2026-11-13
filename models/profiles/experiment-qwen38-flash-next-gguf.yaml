@@ -22,7 +22,7 @@ model:
 
 launch:
   container: qwen38-flash-next
-  image: ghcr.io/ggml-org/llama.cpp:server
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda  # CUDA build — plain 'server' tag is CPU-ONLY
   compose: compose/experiments/qwen38-flash-next-gguf.yml
   restart: "no"
   port: 8000
@@ -47,7 +47,7 @@ compatible_modes:
 
 notes:
   - Weights downloaded 2026-10-31 — ready to launch
-  - STOP the media pipeline first (~14 GB VRAM): with it running, IQ4_XS at 2x256K is at the RAM wall (62/62 GB); without it, 4x256K fits VRAM
+  - Media pipeline + ComfyUI are stopped automatically by `model-manager experiment start` (~14 GB VRAM): with it running, IQ4_XS at 2x256K is at the RAM wall (62/62 GB); without it, 4x256K fits VRAM. Bring it back with `model-manager media up`.
   - Also stop qwen-coder daily driver (port 8000) — model-manager experiment start does this
   - Let ollama release the GPU (keep_alive 5m idle timeout)
   - Only ONE of the two flash-next experiment files should run at a time (fallback: experiment-qwen38-flash-next-gsq-rco)

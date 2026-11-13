@@ -13,6 +13,7 @@
 #   profile show <PROFILE>    — Show a profile's full spec
 #   profile validate <P>      — Validate a profile's compose/args/env
 #   health                    — Check all running services
+#   media <up|down|status>    — Start/stop/check media pipeline (+ ComfyUI)
 #   preflight <MODE>          — Run preflight checks without switching
 #   benchmark <PROFILE>       — Run benchmark harness against a profile
 #   experiment start <MODEL>  — Start a candidate model on port 8000
@@ -137,6 +138,77 @@ container_running() {
 health_check() {
     local endpoint="$1"
     curl -sf --max-time 5 "$endpoint" &>/dev/null
+}
+
+# Stop (and remove) a container if it is running. Prints status.
+stop_container() {
+    local c="$1"
+    if container_running "$c"; then
+        docker stop "$c" 2>&1 | sed 's/^/    /' || true
+        docker rm "$c" 2>/dev/null | sed 's/^/    /' || true
+        echo -e "    ${GREEN}✓ Stopped $c${NC}"
+        return 0
+    fi
+    return 1
+}
+
+# Container name of the active named experiment ("" if none).
+# Named experiments run under their OWN container name (profile launch.container,
+# e.g. qwen38-flash-next) — NOT the production qwen38 container.
+active_experiment_container() {
+    local exp
+    exp=$(active_experiment)
+    if [[ -n "$exp" && "$exp" != "none" ]]; then
+        profile_container "$exp"
+    fi
+}
+
+# Wait until a container is running AND serving the expected model at the endpoint.
+# Deliberately stricter than a bare endpoint check: a stale service (e.g. an
+# experiment that failed to stop) can answer on port 8000 and fake a "healthy"
+# result if we only probe the port.
+#   wait_healthy <container> <endpoint> <expected_model|""> <max_wait_s>
+wait_healthy() {
+    local container="$1" endpoint="$2" expected_model="$3" max_wait="${4:-180}"
+    local waited=0
+    while (( waited < max_wait )); do
+        if container_running "$container" && health_check "$endpoint"; then
+            if [[ -n "$expected_model" ]]; then
+                local models
+                models=$(curl -sf --max-time 3 "$endpoint" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(', '.join(m['id'] for m in d.get('data', [])))
+except:
+    print('')
+" 2>/dev/null)
+                [[ "$models" == *"$expected_model"* ]] && return 0
+            else
+                return 0
+            fi
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    return 1
+}
+
+# Scan a container's logs for GPU-missing warnings (CPU-only image builds).
+# Prints a loud warning if the container is serving without a GPU, so
+# benchmarks are never silently run (and reported) as CPU numbers.
+check_gpu_warning() {
+    local container="$1"
+    local hit
+    hit=$(docker logs "$container" 2>&1 | grep -m1 -E 'no usable GPU found|compiled without GPU support')
+    if [[ -n "$hit" ]]; then
+        echo -e "    ${RED}✗✗✗ WARNING: NO GPU DETECTED — $container is running on CPU! ✗✗✗${NC}"
+        echo -e "    ${RED}  The container image is a CPU-only build (check 'image:' in the compose file,${NC}"
+        echo -e "    ${RED}  e.g. llama.cpp needs the 'server-cuda' tag, not 'server').${NC}"
+        echo -e "    ${RED}  Any benchmark/throughput numbers from this run are CPU numbers.${NC}"
+        return 0
+    fi
+    return 1
 }
 
 # Get the current mode from state
@@ -760,7 +832,8 @@ cmd_mode_switch() {
             comfyui_action="start"
         fi
     else
-        if container_running "comfyui_backend"; then
+        # Stop if EITHER container is up — media_pipeline can outlive comfyui_backend
+        if container_running "comfyui_backend" || container_running "media_pipeline"; then
             comfyui_action="stop"
         fi
     fi
@@ -797,21 +870,28 @@ cmd_mode_switch() {
     
     # --- PHASE 1: Stop things that need stopping ---
     
+    # Stop the active experiment's container if the target mode doesn't run it.
+    # Named experiments run under their OWN container name (e.g. qwen38-flash-next),
+    # so the qwen38 check below would miss them — and a still-running experiment
+    # holds port 8000, faking the post-switch health check.
+    local exp_container
+    exp_container=$(active_experiment_container)
+    if [[ "$target_mode" != "experiment" && -n "$exp_container" ]] && container_running "$exp_container"; then
+        sub_section "Stopping active experiment container: $exp_container..."
+        stop_container "$exp_container"
+    fi
+    
     # Stop vLLM if needed (before starting a new one)
     if [[ "$vllm_action" == *"stop"* || "$vllm_action" == *"swap"* ]]; then
         sub_section "Stopping vLLM..."
-        if container_running "qwen38"; then
-            docker stop qwen38 2>&1 | sed 's/^/    /'
-            docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
-            echo -e "    ${GREEN}✓ Stopped${NC}"
-        fi
+        stop_container "qwen38"
     fi
     
     # Stop ComfyUI if needed (also stops media-pipeline — same compose file + profile "image").
     # NOTE: must pass --profile image, else `down` leaves profile services running.
     if [[ "$comfyui_action" == "stop" ]]; then
         sub_section "Stopping ComfyUI (+ media-pipeline)..."
-        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down 2>&1 | sed 's/^/    /' || true
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -820,21 +900,26 @@ cmd_mode_switch() {
     # Start/swap vLLM
     if [[ "$vllm_action" == *"start"* || "$vllm_action" == *"swap"* ]]; then
         sub_section "Starting vLLM: $target_vllm"
+        # Safety: port 8000 must actually be free. If something stale is still
+        # serving there, the new vLLM cannot bind and the health check below
+        # would be answered by the wrong service (a fake "success").
+        if ss -tln 2>/dev/null | grep -q ":8000 "; then
+            echo -e "    ${RED}✗ Port 8000 is still in use — aborting switch (state NOT updated)${NC}"
+            echo -e "    ${RED}  Find the holder: ss -tlnp | grep ':8000' ; docker ps -a${NC}"
+            return 1
+        fi
         local compose_path
         compose_path=$(profile_compose "$target_vllm")
         docker compose -f "$COMPOSE_DIR/$compose_path" up -d 2>&1 | sed 's/^/    /'
-        echo "    Waiting for vLLM to initialize..."
-        local waited=0
-        while (( waited < 180 )); do
-            if health_check "http://localhost:8000/v1/models"; then
-                echo -e "    ${GREEN}✓ vLLM healthy${NC}"
-                break
-            fi
-            sleep 5
-            ((waited += 5))
-        done
-        if (( waited >= 180 )); then
-            echo -e "    ${YELLOW}⚠ vLLM did not respond within 180s — check docker logs qwen38${NC}"
+        local vllm_expected
+        vllm_expected=$(profile_get "$target_vllm" "health.expected_model_name")
+        echo "    Waiting for vLLM to initialize (container: qwen38)..."
+        if wait_healthy "qwen38" "http://localhost:8000/v1/models" "$vllm_expected" 180; then
+            echo -e "    ${GREEN}✓ vLLM healthy (container running, serving: ${vllm_expected:-expected model})${NC}"
+        else
+            echo -e "    ${RED}✗ vLLM did not become healthy within 180s — aborting switch (state NOT updated)${NC}"
+            echo -e "    ${RED}  Check: docker logs qwen38 ; docker ps -a${NC}"
+            return 1
         fi
     fi
     
@@ -848,15 +933,11 @@ cmd_mode_switch() {
         compose_path=$(profile_compose "$first_ollama")
         docker compose -f "$COMPOSE_DIR/$compose_path" up -d 2>&1 | sed 's/^/    /'
         echo "    Waiting for Ollama to initialize..."
-        local waited=0
-        while (( waited < 60 )); do
-            if health_check "http://localhost:11434"; then
-                echo -e "    ${GREEN}✓ Ollama healthy${NC}"
-                break
-            fi
-            sleep 5
-            ((waited += 5))
-        done
+        if wait_healthy "ollama" "http://localhost:11434" "" 60; then
+            echo -e "    ${GREEN}✓ Ollama healthy${NC}"
+        else
+            echo -e "    ${YELLOW}⚠ Ollama did not respond within 60s — check docker logs ollama${NC}"
+        fi
     elif [[ "$ollama_action" == *"reload"* ]]; then
         sub_section "Reloading Ollama models..."
         # First unload models that shouldn't be in target mode
@@ -898,25 +979,22 @@ cmd_mode_switch() {
     
     # Start ComfyUI
     if [[ "$comfyui_action" == "start" ]]; then
-        sub_section "Starting ComfyUI..."
+        sub_section "Starting ComfyUI (+ media-pipeline)..."
         docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image up -d 2>&1 | sed 's/^/    /'
         echo "    Waiting for ComfyUI to initialize..."
-        local waited=0
-        while (( waited < 120 )); do
-            if health_check "http://localhost:8188"; then
-                echo -e "    ${GREEN}✓ ComfyUI healthy${NC}"
-                break
-            fi
-            sleep 5
-            ((waited += 5))
-        done
-        if (( waited >= 120 )); then
-            echo -e "    ${YELLOW}⚠ ComfyUI did not respond within 120s${NC}"
+        if wait_healthy "comfyui_backend" "http://localhost:8188" "" 120; then
+            echo -e "    ${GREEN}✓ ComfyUI healthy${NC}"
+        else
+            echo -e "    ${YELLOW}⚠ ComfyUI did not respond within 120s — check docker logs comfyui_backend${NC}"
         fi
     fi
     
     # Update state
     set_mode "$target_mode"
+    # Leaving experiment mode clears any stale experiment pointer
+    if [[ "$target_mode" != "experiment" ]]; then
+        clear_active_experiment
+    fi
     write_active_profiles "$target_profiles"
     
     local end_time
@@ -954,6 +1032,18 @@ cmd_mode_rollback() {
     local was_experiment=false
     if [[ "$current_exp" != "none" && "$current_exp" != "" ]]; then
         was_experiment=true
+    fi
+
+    # Stop the active experiment container BEFORE clearing state.
+    # Named experiments run under their OWN container name (e.g. qwen38-flash-next),
+    # not qwen38. If left running, they hold port 8000 (the new vLLM can't bind)
+    # and answer the post-switch health check — making the rollback log a fake
+    # "success" while the experiment keeps serving.
+    local exp_container
+    exp_container=$(active_experiment_container)
+    if [[ -n "$exp_container" ]] && container_running "$exp_container"; then
+        echo -e "  ${YELLOW}Stopping active experiment container: $exp_container${NC}"
+        stop_container "$exp_container"
     fi
 
     # Clean up old ad-hoc experiment compose
@@ -1248,6 +1338,63 @@ cmd_rebuild() {
     fi
 }
 
+# Direct media-pipeline controls. The media pipeline + ComfyUI live under
+# profile "image" in compose/comfyui.yml — a bare `docker compose up`/`down`
+# WITHOUT --profile image silently no-ops, so these wrappers are the safe path.
+#   model-manager media up      — start ComfyUI + media pipeline
+#   model-manager media down    — stop ComfyUI + media pipeline
+#   model-manager media status  — show container + health state
+cmd_media() {
+    local action="${1:-status}"
+    case "$action" in
+        up)
+            section "Starting media pipeline (+ ComfyUI)"
+            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image up -d 2>&1 | sed 's/^/  /'
+            local waited=0
+            while (( waited < 120 )); do
+                if health_check "http://localhost:8189/health" && health_check "http://localhost:8188"; then
+                    echo -e "  ${GREEN}✓ Media pipeline + ComfyUI healthy${NC}"
+                    break
+                fi
+                sleep 5
+                waited=$((waited + 5))
+            done
+            if (( waited >= 120 )); then
+                echo -e "  ${YELLOW}⚠ Not healthy within 120s — check: docker logs media_pipeline ; docker logs comfyui_backend${NC}"
+            fi
+            ;;
+        down)
+            section "Stopping media pipeline (+ ComfyUI)"
+            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/  /'
+            echo -e "  ${GREEN}✓ Stopped${NC}"
+            ;;
+        status)
+            section "Media pipeline status"
+            for c in comfyui_backend media_pipeline; do
+                if container_running "$c"; then
+                    echo -e "  ${GREEN}●${NC} $c: running"
+                else
+                    echo -e "  ${RED}○${NC} $c: stopped"
+                fi
+            done
+            if health_check "http://localhost:8189/health"; then
+                echo -e "  ${GREEN}✓${NC} :8189/health responding"
+            else
+                echo -e "  ${RED}✗${NC} :8189/health not responding"
+            fi
+            if health_check "http://localhost:8188"; then
+                echo -e "  ${GREEN}✓${NC} :8188 (ComfyUI) responding"
+            else
+                echo -e "  ${RED}✗${NC} :8188 (ComfyUI) not responding"
+            fi
+            ;;
+        *)
+            echo -e "  ${RED}Usage: model-manager media <up|down|status>${NC}"
+            return 1
+            ;;
+    esac
+}
+
 cmd_preflight() {
     if [[ $# -lt 1 ]]; then
         echo -e "  ${RED}Usage: model-manager preflight <MODE>${NC}"
@@ -1317,10 +1464,29 @@ cmd_experiment_start() {
 
         # Stop current vLLM
         sub_section "Stopping current vLLM..."
-        if container_running "qwen38"; then
-            docker stop qwen38 2>&1 | sed 's/^/    /'
-            docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
+        stop_container "qwen38"
+
+        # Stop the media pipeline + ComfyUI. They hold ~14 GB VRAM and several GB
+        # of RAM; the experiment's memory budget (see profile notes / compose
+        # header) requires that headroom — running alongside puts the host at the
+        # RAM wall and can OOM-kill the image services.
+        sub_section "Stopping media pipeline + ComfyUI (frees ~14 GB VRAM)..."
+        if container_running "comfyui_backend" || container_running "media_pipeline"; then
+            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
             echo -e "    ${GREEN}✓ Stopped${NC}"
+        else
+            echo -e "    ${CYAN}Not running — nothing to stop${NC}"
+        fi
+
+        # Unload any Ollama models so the GPU is fully free (keep_alive would
+        # otherwise hold VRAM for 5m after the last request).
+        local loaded_ollama
+        loaded_ollama=$(docker exec ollama ollama ps 2>/dev/null | tail -n +2 | awk '{print $1}' || true)
+        if [[ -n "$loaded_ollama" ]]; then
+            sub_section "Unloading Ollama models from GPU..."
+            for m in $loaded_ollama; do
+                docker exec ollama ollama stop "$m" 2>&1 | sed 's/^/    /' || true
+            done
         fi
 
         # Save current mode for rollback
@@ -1335,16 +1501,18 @@ cmd_experiment_start() {
         # Start the experiment using the named compose file
         local exp_compose
         exp_compose=$(experiment_compose_path "$target_profile")
+        local exp_container_name
+        exp_container_name=$(profile_container "$target_profile")
+        [[ -z "$exp_container_name" ]] && exp_container_name="qwen38-flash-next"
+        local exp_expected
+        exp_expected=$(profile_get "$target_profile" "health.expected_model_name")
         sub_section "Starting experiment: $target_profile"
         docker compose -f "$exp_compose" up -d 2>&1 | sed 's/^/    /'
 
-        echo "    Waiting for vLLM to initialize..."
-        local max_wait=180
-        local waited=0
-        while (( waited < max_wait )); do
-            if health_check "http://localhost:8000/v1/models"; then
-                local exp_model
-                exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+        echo "    Waiting for experiment to initialize (container: $exp_container_name)..."
+        if wait_healthy "$exp_container_name" "http://localhost:8000/v1/models" "$exp_expected" 180; then
+            local exp_model
+            exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -1352,14 +1520,13 @@ try:
 except:
     print('unknown')
 " 2>/dev/null)
-                echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
-                break
-            fi
-            sleep 5
-            ((waited += 5))
-        done
-        if (( waited >= max_wait )); then
-            echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
+            echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+            # GPU verification: a CPU-only image build serves the model fine but
+            # runs everything on CPU — catch it loudly so benchmarks are never
+            # silently invalid.
+            check_gpu_warning "$exp_container_name"
+        else
+            echo -e "    ${YELLOW}⚠ Model did not respond within 180s — check logs: docker logs $exp_container_name${NC}"
         fi
 
         # Update state
@@ -1438,8 +1605,12 @@ except:
     
     # Safety: stop current vLLM first
     sub_section "Stopping current vLLM..."
-    if container_running "qwen38"; then
-        docker stop qwen38 2>&1 | sed 's/^/    /'
+    stop_container "qwen38"
+
+    # Stop the media pipeline + ComfyUI (~14 GB VRAM — see named-profile path above)
+    if container_running "comfyui_backend" || container_running "media_pipeline"; then
+        sub_section "Stopping media pipeline + ComfyUI (frees ~14 GB VRAM)..."
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -1501,12 +1672,9 @@ YAMLEOF
     
     # Wait for it to come up
     echo "    Waiting for vLLM to initialize..."
-    local max_wait=180
-    local waited=0
-    while (( waited < max_wait )); do
-        if health_check "http://localhost:8000/v1/models"; then
-            local exp_model
-            exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+    if wait_healthy "qwen38" "http://localhost:8000/v1/models" "" 180; then
+        local exp_model
+        exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -1514,14 +1682,9 @@ try:
 except:
     print('unknown')
 " 2>/dev/null)
-            echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
-            break
-        fi
-        sleep 5
-        ((waited += 5))
-    done
-    if (( waited >= max_wait )); then
-        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
+        echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+    else
+        echo -e "    ${YELLOW}⚠ Model did not respond within 180s — check logs: docker logs qwen38${NC}"
     fi
     
     # Update state
@@ -1659,12 +1822,15 @@ cmd_experiment_switch() {
         fi
     fi
 
-    # Stop current vLLM
+    # Stop the current experiment. Named experiments run under their OWN container
+    # name (e.g. qwen38-flash-next) — stopping only qwen38 would leave the old
+    # experiment holding port 8000.
     sub_section "Stopping current experiment..."
-    if container_running "qwen38"; then
-        docker stop qwen38 2>&1 | sed 's/^/    /'
-        docker rm qwen38 2>/dev/null | sed 's/^/    /' || true
-        echo -e "    ${GREEN}✓ Stopped${NC}"
+    stop_container "qwen38"
+    local old_exp_container
+    old_exp_container=$(active_experiment_container)
+    if [[ -n "$old_exp_container" && "$old_exp_container" != "qwen38" ]]; then
+        stop_container "$old_exp_container"
     fi
 
     # Log the switch
@@ -1678,13 +1844,15 @@ cmd_experiment_switch() {
     sub_section "Starting experiment: $target_profile"
     docker compose -f "$exp_compose" up -d 2>&1 | sed 's/^/    /'
 
-    echo "    Waiting for vLLM to initialize..."
-    local max_wait=180
-    local waited=0
-    while (( waited < max_wait )); do
-        if health_check "http://localhost:8000/v1/models"; then
-            local exp_model
-            exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
+    local new_exp_container
+    new_exp_container=$(profile_container "$target_profile")
+    [[ -z "$new_exp_container" ]] && new_exp_container="qwen38-flash-next"
+    local new_exp_expected
+    new_exp_expected=$(profile_get "$target_profile" "health.expected_model_name")
+    echo "    Waiting for experiment to initialize (container: $new_exp_container)..."
+    if wait_healthy "$new_exp_container" "http://localhost:8000/v1/models" "$new_exp_expected" 180; then
+        local exp_model
+        exp_model=$(curl -sf --max-time 3 http://localhost:8000/v1/models 2>/dev/null | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -1692,14 +1860,10 @@ try:
 except:
     print('unknown')
 " 2>/dev/null)
-            echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
-            break
-        fi
-        sleep 5
-        ((waited += 5))
-    done
-    if (( waited >= max_wait )); then
-        echo -e "    ${YELLOW}⚠ Model did not respond within ${max_wait}s — check logs: docker logs qwen38${NC}"
+        echo -e "    ${GREEN}✓ Experiment model serving: $exp_model${NC}"
+        check_gpu_warning "$new_exp_container"
+    else
+        echo -e "    ${YELLOW}⚠ Model did not respond within 180s — check logs: docker logs $new_exp_container${NC}"
     fi
 
     # Update state
@@ -1780,6 +1944,7 @@ usage() {
     echo "  profile validate <P>      Validate a profile"
     echo "  health                    Check all running services"
     echo "  rebuild [SERVICE]         Rebuild a service image from source + recreate (default: media-pipeline)"
+    echo "  media <up|down|status>    Start/stop/check media pipeline (+ ComfyUI)"
     echo "  preflight <MODE>          Run preflight checks without switching"
     echo "  benchmark <PROFILE>       Run benchmark harness"
     echo ""
@@ -1843,6 +2008,9 @@ case "$CMD" in
         ;;
     rebuild)
         cmd_rebuild "$@"
+        ;;
+    media)
+        cmd_media "$@"
         ;;
     preflight)
         cmd_preflight "$@"
