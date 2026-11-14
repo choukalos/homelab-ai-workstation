@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-11-14T00:10:06Z",
+  "profile": "experiment-qwen38-flash-next-gguf",
+  "model": "/home/chuck/data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf",
+  "endpoint": "http://localhost:8000/v1",
+  "category": "all",
+  "params": {
+    "warmup": 5,
+    "runs": 20,
+    "concurrent": 4,
+    "tokens": 512
+  },
+  "gpu": {
+    "vram_used_before_mb": 71933,
+    "vram_used_after_mb": 71945,
+    "gpu_util_before_pct": 0,
+    "gpu_util_after_pct": 94
+  },
+  "latency": {
+    "ttft_ms_mean": 47.43,
+    "ttft_ms_median": 45.7,
+    "ttft_ms_p95": 55.0,
+    "ttft_ms_min": 44.87,
+    "ttft_ms_max": 55.0,
+    "total_ms_mean": 48.42,
+    "total_ms_median": 46.68,
+    "total_runs": 20
+  },
+  "throughput": {
+    "tokens_per_sec_mean": 291.4,
+    "tokens_per_sec_median": 291.61,
+    "tokens_per_sec_min": 275.67,
+    "tokens_per_sec_max": 298.42,
+    "target_tokens": 512,
+    "total_runs": 20
+  },
+  "stress": {
+    "concurrent": 4,
+    "rounds": 20,
+    "total_requests": 80,
+    "success": 80,
+    "fail": 0,
+    "avg_time_per_request_s": 0.909,
+    "total_throughput_req_per_s": 22.01
+  }
+}

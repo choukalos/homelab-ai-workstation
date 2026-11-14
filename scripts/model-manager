@@ -1406,11 +1406,21 @@ cmd_preflight() {
 
 cmd_benchmark() {
     if [[ $# -lt 1 ]]; then
-        echo -e "  ${RED}Usage: model-manager benchmark <PROFILE>${NC}"
+        echo -e "  ${RED}Usage: model-manager benchmark <PROFILE> [benchmark.sh options...]${NC}"
         return 1
     fi
-    
-    bash "$SCRIPTS_DIR/benchmark.sh" "$@"
+
+    # benchmark.sh takes the profile via --profile, not as a positional arg
+    # (positional args there hit 'Unknown option' and exit 2). Translate the
+    # documented positional form; pass everything else through untouched.
+    local args=()
+    if [[ "$1" != -* ]]; then
+        args+=("--profile" "$1")
+        shift
+    fi
+    args+=("$@")
+
+    bash "$SCRIPTS_DIR/benchmark.sh" "${args[@]}"
 }
 
 cmd_experiment_start() {

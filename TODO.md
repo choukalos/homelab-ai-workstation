@@ -38,13 +38,7 @@ Detailed reference: `docs/backup_chain_plan.md`.
 
 ### vLLM / model experiments
 
-- [ ] **Run experiment 7: Qwen3.8-Flash-Next 125B MoE — 4-bit GGUF via llama.cpp** — Qwen4-arch preview (125B main / 6B active + 51B n-gram embedding, 262K ctx). 111 GB Q4_K_XL fits 72 GiB VRAM + 62 GiB RAM; vLLM path is a no-go (FP8 = 173 GiB). Steps:
-  1. Pre-download (111 GB, ~4 shards): `huggingface-cli download unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-Q4_K_XL/*" --local-dir /home/chuck/data/models/gguf`
-  2. Stop `qwen-coder` daily driver (frees port 8000 + GPU); let ollama idle-release the GPU (keep_alive 5m)
-  3. `docker compose -f compose/experiments/qwen38-flash-next-gguf.yml up -d`
-  4. Smoke-test via LiteLLM (`matrix-coder`), then benchmark vs the 27B daily driver
-  5. Restore `qwen-coder.yml` on port 8000 when done (or promote Flash-Next if it wins)
-  Fallback if RAM-tight: `UD-IQ3_XXS` (82 GB, 85.4% retention). *(EXPERIMENTS_RESULTS.md, Experiment 7)*
+- [ ] **Experiment 8 follow-up: Flash-Next long-context verification + promotion decision** — rerun 2026-11-14 valid (291.4 tok/s = 2.35× the daily driver, quality 4/5 solid; first 2026-11-13 run invalid — CPU-only image). Pending: (a) long-context quality rerun — harness reads only `message.content`, missing `reasoning_content` (thinking model) + `max_tokens: 64` too small; (b) 2×256K concurrent decode test to verify QSA sparse attention in llama.cpp + the 60–75 tok/s/session estimate. Then decide: promote Flash-Next IQ4_XS as the daily driver, or keep NVFP4 27B. *(EXPERIMENTS_RESULTS.md, Experiment 8)*
 - [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
 
 ### Media pipeline / MCP follow-ups (from 2026-09-25 verification)

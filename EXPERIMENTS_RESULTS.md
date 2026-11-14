@@ -390,12 +390,49 @@ Fallback if OOM: `UD-IQ3_XXS` (82 GB, 85.4% retention) or smaller `--ctx-size`.
 ⚠️ The 4-bit quant gives up some of that headroom (Unsloth: 92.3% top-1 retention at Q4_K_XL).
 If it holds up, this is the strongest candidate to replace the 27B daily driver.
 
-## ❌ Experiment 8: Qwen3.8-Flash-Next 125B MoE — IQ4_XS GGUF via llama.cpp (2026-11-13) — INVALID RUN
+## ✅ Experiment 8: Qwen3.8-Flash-Next 125B MoE — IQ4_XS GGUF via llama.cpp (2026-11-14) — VALID RERUN
 
-**Status: results invalid — model ran 100% on CPU. Must be rerun.**
+**Status: valid GPU run. Strong candidate — 2.35× daily-driver throughput at 125B. Promotion
+decision pending long-context verification (open items below).**
 
 - Candidate: `ukisai/Swift-1.5-Qwen3.8-Flash-Next` IQ4_XS (97.7 GB, 3 shards) — supersedes
   Experiment 7 (UD-Q4_K_XL, never downloaded). Compose: `compose/experiments/qwen38-flash-next-gguf.yml`.
+- Rerun launched 2026-11-14 00:05 UTC via `model-manager experiment start --profile
+  experiment-qwen38-flash-next-gguf` (CUDA image), benchmarked 00:06–00:10. Full report:
+  `data/benchmarks/results/20261114_001006/` (plus a partial latency/throughput-only run at
+  `20261114_000605/`). Rolled back to `qwen-coder` via `model-manager mode rollback` — the fixed
+  rollback correctly stopped the `qwen38-flash-next` container and freed port 8000.
+- **GPU verified:** VRAM 71933→71945 MB (model loaded on GPU), GPU util 0%→94% — vs the invalid
+  run's 22 MB / 0%.
+- **Results vs NVFP4 27B baseline (2026-08-25, `data/benchmarks/baseline/`):**
+
+  | Metric | Flash-Next IQ4_XS | Baseline (NVFP4 27B) |
+  |---|---|---|
+  | Throughput (512 tok × 20 runs) | **291.4 tok/s** (275.7–298.4) | 123.95 tok/s |
+  | TTFT (mean / p95) | 47.4 / 55.0 ms | 35.5 / 39.1 ms |
+  | Stress (4 concurrent, 80 req) | 80/80 ok, 0.909 s/req, 22.0 req/s | 80/80 ok, 0.837 s/req, 23.9 req/s |
+
+  - **2.35× the daily driver's throughput** at 125B total / 6B active per token — consistent with
+    MoE expert-read-bound decode. Short-context caveat: the harness only tests ~1K context; the
+    compose header's 60–75 tok/s/session estimate applies at 2×256K where KV reads dominate.
+- **Quality: 4 of 5 solid** (vs 4 of 5 timing out in the CPU run): tool calling (clean
+  `tool_calls` JSON with correct args), code generation, debugging (correct root cause), and
+  refactoring all good.
+- **Long-context: inconclusive — likely a harness artifact, not a model failure.** Needle-in-haystack
+  at ~445K chars returned empty `content`. Swift 1.5 is a reasoning model: the harness only reads
+  `message.content`, ignoring `reasoning_content` (see the tool-calling output — `content: ""` with
+  the full analysis in `reasoning_content`), and `max_tokens: 64` is too small to get past the
+  thinking. Rerun with `reasoning_content` capture (or `enable_thinking: false`) + `max_tokens ≥ 512`.
+- **Open items before promotion:**
+  1. Rerun the long-context quality test after the harness fix above.
+  2. Verify QSA sparse attention in llama.cpp at long context (2×256K concurrent decode) — if it
+     falls back to dense 256K attention, the KV/throughput budget collapses (compose header caveat).
+  3. If both hold: promote Flash-Next IQ4_XS as the daily driver; otherwise keep NVFP4 27B.
+
+### 8a. First run (2026-11-13) — INVALID: CPU-only image
+
+**Results invalid — model ran 100% on CPU. Superseded by the 2026-11-14 rerun above.**
+
 - Launched 2026-11-13 17:02 UTC via `model-manager experiment start --profile`, benchmarked 17:16–18:05.
 - **Root cause:** the compose pinned `ghcr.io/ggml-org/llama.cpp:server` — the **CPU-only** build.
   Server logs: `warning: no usable GPU found, --gpu-layers option will be ignored` / `llama.cpp was
@@ -413,9 +450,8 @@ If it holds up, this is the strongest candidate to replace the 27B daily driver.
   `model-manager` now stops the media pipeline/ComfyUI before experiments, stops the active
   experiment's own container on rollback/switch, verifies port 8000 is free + the right model is
   serving before logging success, and warns loudly if an experiment starts without a GPU.
-- **Action:** rerun the benchmark with the CUDA image before drawing any conclusions about
-  IQ4_XS quality/throughput. The 20261113_171630 numbers are CPU numbers and must not be compared
-  to the NVFP4 vLLM baseline.
+- **Action (done 2026-11-14):** reran with the CUDA image — valid results above. The 20261113_171630
+  numbers are CPU numbers and must not be compared to the NVFP4 vLLM baseline.
 
 ## Next Steps
 
@@ -425,6 +461,7 @@ If it holds up, this is the strongest candidate to replace the 27B daily driver.
 4. ~~Consider testing W8A16 + MTP as a potential quality upgrade~~ (2026-09-27: **dropped** — the W8A16 experiments were Qwen3.6, superseded by Qwen3.8; MTP is already in production on the NVFP4 daily driver (2 tokens, tuned 2026-08-25); no Qwen3.8 8-bit candidate identified — revisit only if 4-bit quality issues surface)
 5. ~~Verify MTP (3 tokens) on the promoted NVFP4 model after the restart~~ (done 2026-08-25: MTP tuned to 2 tokens, benchmarked at 123.95 tok/s — see speed fix above)
 6. ~~Run experiment 7: Qwen3.8-Flash-Next 4-bit GGUF (llama.cpp)~~ (2026-10-31: **superseded by Experiment 8** — Swift 1.5 IQ4_XS weights pre-downloaded; base-model UD-Q4_K_XL 111.3 GB never downloaded)
-7. **Rerun experiment 8 (IQ4_XS, llama.cpp `server-cuda`)** — first run 2026-11-13 was invalid (CPU-only image, see Experiment 8 section). Rerun benchmark before any quality/throughput conclusions
+7. ~~Rerun experiment 8 (IQ4_XS, llama.cpp `server-cuda`)~~ (done 2026-11-14 — valid GPU run: 291.4 tok/s = 2.35× NVFP4 27B baseline, quality 4/5 solid; first 2026-11-13 run invalid, see Experiment 8 section)
+8. **Experiment 8 follow-up: long-context verification + promotion decision** — (a) fix the benchmark long-context test to capture `reasoning_content` (or `enable_thinking: false`) with `max_tokens ≥ 512` and rerun; (b) 2×256K concurrent decode test to verify QSA sparse attention in llama.cpp + the 60–75 tok/s/session estimate; then decide: promote Flash-Next IQ4_XS as the daily driver or keep NVFP4 27B
 
 > **2026-09-27 cleanup:** all artifacts for the done/superseded/dropped rounds were removed — 9 experiment compose files, 9 profiles, 7 stopped containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). This file is the permanent record of those results. Kept locally: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver).

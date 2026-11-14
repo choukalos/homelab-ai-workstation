@@ -47,6 +47,7 @@ compatible_modes:
 
 notes:
   - Weights downloaded 2026-10-31 — ready to launch
+  - 2026-11-14: valid CUDA rerun benchmarked (data/benchmarks/results/20261114_001006) — 291.4 tok/s (2.35× NVFP4 27B baseline), stress 80/80 @4 conc, quality 4/5 solid; long-context inconclusive (harness reads only message.content, misses reasoning_content). See EXPERIMENTS_RESULTS.md Experiment 8.
   - Media pipeline + ComfyUI are stopped automatically by `model-manager experiment start` (~14 GB VRAM): with it running, IQ4_XS at 2x256K is at the RAM wall (62/62 GB); without it, 4x256K fits VRAM. Bring it back with `model-manager media up`.
   - Also stop qwen-coder daily driver (port 8000) — model-manager experiment start does this
   - Let ollama release the GPU (keep_alive 5m idle timeout)

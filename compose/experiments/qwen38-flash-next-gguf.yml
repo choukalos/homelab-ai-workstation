@@ -50,7 +50,9 @@
 #   -> 8+ short-context agent sessions fit easily in the same budget.
 #   Caveat: estimates assume llama.cpp implements QSA sparse attention
 #   (2048-token budget). If it falls back to dense 256K attention, KV reads
-#   dominate and numbers collapse — verify with the first benchmark.
+#   dominate and numbers collapse. Short-context benchmark 2026-11-14 was fine
+#   (291 tok/s, 2.35× baseline) but does NOT verify this — still needs a 2x256K
+#   concurrent decode test (see EXPERIMENTS_RESULTS.md Experiment 8).
 #
 # Fallback if RAM is tighter than expected: qwen38-flash-next-gsq-rco.yml
 #   (IQ3_S GSQ-RCO, 83.7 GB -> ~20 GB RAM; KLD on par with/better than std IQ3_M)
