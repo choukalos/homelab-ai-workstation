@@ -361,8 +361,18 @@ candidate) *before* install. If good → proceed with confidence.
 > **Independent of Phase 5** (2026-11-21, Chuck): all GPU 1 work — the media
 > pipeline has no dependency on the daily model. Can run in either order; only
 > constraint is scheduling the Phase 5 agent-down window around a long session.
-- [ ] Re-run the 720p gate on 24 GB (`qa_wan_phase1.py 720`); if green, lift the
-      480p-only API gate (new `WAN_RESOLUTIONS` + metering note).
+- [x] Re-run the 720p gate on 24 GB (`qa_wan_phase1.py 720 --gpu 1`) —
+      **PASSED 2026-11-21**: peak **19,641 MiB** (4.8 GB headroom on the 24 GB
+      card), 57 min wall incl. model load; ComfyUI's dynamic VRAM management
+      auto-offloads ~1.8 GB of weights to CPU (why 720p fits — and why it's
+      ~55 min/clip vs ~10 min at 480p). **480p cap lifted**:
+      `WAN_RESOLUTIONS = {(832, 480), (1280, 720)}` (workflows.py + the /shots
+      400 message); pipeline rebuilt + verified live (640×360 → 400 with the
+      new set; 1280×720 accepted — the test job was canceled via this
+      ComfyUI fork's `POST /api/jobs/{id}/cancel` endpoint, queue left clean).
+      Docs updated: API contract §2/§4/§6 + changelog, wan_shots_todo header,
+      mcp_media tool descriptions + README, media-film SKILL.md +
+      pipeline-contract.md (harness repo).
 - [ ] Try Q6_K / Q8_0 / FP8 Wan experts + T5-on-GPU + both-experts-resident; pick the
       best quality/VRAM fit at 720p.
 - [ ] Adapt the VRAM headroom guard for the Ollama-resident case (§4.1.4).

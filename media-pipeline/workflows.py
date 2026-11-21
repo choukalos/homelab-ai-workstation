@@ -124,7 +124,7 @@ WAN_HIGHNOISE = "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
 WAN_LOWNOISE = "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
 WAN_CLIP = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 WAN_VAE = "wan_2.1_vae.safetensors"
-WAN_RESOLUTIONS = {(832, 480)}  # 720p (1280x720) rejected: OOM, Phase 1 gate
+WAN_RESOLUTIONS = {(832, 480), (1280, 720)}  # 720p admitted 2026-11-21 (Phase 6 gate: peak 19.6 GB on the 24 GB GPU 1 card)
 SHOT_MODELS = ("ltxv2b", "wan14b")
 SHOT_MODEL_ENV = "MEDIA_SHOT_MODEL"
 SHOT_MODEL_DEFAULT = "ltxv2b"
@@ -137,8 +137,9 @@ SHOT_MODEL_DEFAULTS = {
 
 
 def resolve_shot_model(payload: dict) -> str:
-    """'ltxv2b' (fast, ~8 s) or 'wan14b' (Wan 2.2 14B quality, ~10 min, 480p).
-    Per-request payload['model'] > MEDIA_SHOT_MODEL env > built-in 'ltxv2b'.
+    """'ltxv2b' (fast, ~8 s) or 'wan14b' (Wan 2.2 14B quality; 480p ~10 min,
+    720p ~55 min — CPU offload). Per-request payload['model'] > MEDIA_SHOT_MODEL
+    env > built-in 'ltxv2b'.
     Unknown values raise ValueError (the /shots API validates up front so a
     bad name is a clean 400, not a job error)."""
     m = str(payload.get("model") or os.environ.get(SHOT_MODEL_ENV, SHOT_MODEL_DEFAULT)).lower()
@@ -151,16 +152,18 @@ def wan22_i2v(keyframe: str, prompt: str, width=832, height=480, frames=81,
               fps=16.0, seed=42, negative=NEG_VIDEO, prefix="shot"):
     """Wan 2.2 I2V-A14B (dual-expert MoE, GGUF Q5_K_M) image-to-video.
 
-    `keyframe` = ComfyUI input filename. 480p only (832x480): 720p OOM'd the
-    Phase 1 VRAM gate (2026-10-25). frames: 81 @16fps ~= 5.1s (must be 4k+1).
-    Dual-expert sampling: high-noise expert steps 0-10 (add_noise), low-noise
-    expert steps 10-20 — 20 steps each, cfg 5.0, euler/simple, shift 5.0
-    (official Comfy-Org base-mode graph; no 4-step LoRA). umt5-xxl fp8 text
-    encoder runs on CPU. ~10 min per clip at 480p (vs ~8 s for ltxv2b).
+    `keyframe` = ComfyUI input filename. 480p (832x480) or 720p (1280x720):
+    720p admitted 2026-11-21 (Phase 6 gate on the 24 GB GPU 1 card — peak
+    19.6 GB; ComfyUI auto-offloads ~1.8 GB of weights to CPU, so 720p is
+    ~55 min/clip vs ~10 min at 480p). frames: 81 @16fps ~= 5.1s (must be
+    4k+1). Dual-expert sampling: high-noise expert steps 0-10 (add_noise),
+    low-noise expert steps 10-20 — 20 steps each, cfg 5.0, euler/simple,
+    shift 5.0 (official Comfy-Org base-mode graph; no 4-step LoRA). umt5-xxl
+    fp8 text encoder runs on CPU. (vs ~8 s for ltxv2b).
     """
     assert (frames - 1) % 4 == 0, "frames must be 4k+1"
     assert (width, height) in WAN_RESOLUTIONS, \
-        f"wan14b supports {sorted(WAN_RESOLUTIONS)} only (720p failed the VRAM gate)"
+        f"wan14b supports {sorted(WAN_RESOLUTIONS)} only"
     return {
         "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_HIGHNOISE}},
         "2": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_LOWNOISE}},

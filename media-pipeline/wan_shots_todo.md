@@ -3,6 +3,11 @@
 > Created: 2026-10-25 · Status: **COMPLETE 2026-10-31** (QA passed; default
 > flipped to `wan14b`; thor MCP handoff delivered — the deployed `media_generate_shot`
 > carries the `model` param, verified in the live tool list 2026-11-21)
+> **2026-11-21 (Phase 6):** the 480p-only decision (below, §VRAM gate) is
+> superseded — 720p (1280×720) passed the gate on the dedicated 24 GB GPU 1
+> card (peak 19.6 GB, 4.8 GB headroom) and `WAN_RESOLUTIONS` now admits both.
+> 720p is ~55 min/clip (CPU offload) vs ~10 min at 480p. See
+> `docs/matrix_media_pipeline_api.md` changelog 2026-11-21.
 > Related: `docs/matrix_media_pipeline_api.md` (contract + VRAM budget §6),
 > `docs/matrix_comfyui_media_api.md` (ComfyUI :8188), `docs/matrix_inventory.md` (GPU/models)
 

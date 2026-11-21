@@ -1901,8 +1901,7 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
     r = float(fps) if fps is not None else d["fps"]
     if m == "wan14b":
         if (w, h) not in wf.WAN_RESOLUTIONS:
-            raise HTTPException(400, f"wan14b supports {sorted(wf.WAN_RESOLUTIONS)} "
-                                     f"only (720p failed the VRAM gate, 2026-10-25)")
+            raise HTTPException(400, f"wan14b supports {sorted(wf.WAN_RESOLUTIONS)} only")
         if (f - 1) % 4 != 0:
             raise HTTPException(400, "wan14b frames must be 4k+1 (e.g. 49, 81, 121)")
     with job_slot():
