@@ -115,7 +115,6 @@ home/
     preflight.sh        # Pre-launch validation
     benchmark.sh        # Performance benchmarks
     matrix_health.sh    # Quick health checks
-    vllm_feature_eval.sh # vLLM feature testing
     comfyui_venv_deps.sh # Reinstall custom-node deps after a ComfyUI venv rebuild (numpy<2.5 pin)
     backup/              # Lego NAS backup: rsync-over-CIFS snapshots (docs/matrix_backup.md + backup/README.md)
   docs/                 # Design docs & reference materials

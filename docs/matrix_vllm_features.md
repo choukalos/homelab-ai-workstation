@@ -1,6 +1,7 @@
 # vLLM Feature Evaluation
 
-> Created: 2026-07-03, updated 2026-08-25
+> Created: 2026-07-03, updated 2026-08-25, **updated 2026-11-21 (all three deferred
+candidates rejected — not interesting; candidate list is now empty)**
 > vLLM version: 0.24.0
 > GPU: NVIDIA RTX PRO 5000 72GB Blackwell
 > Model: unsloth/Qwen3.8-27B-NVFP4 (since 2026-08-24; previously Lorbus/Qwen3.6-27b-int4-AutoRound)
@@ -32,55 +33,26 @@ These are already in `compose/qwen-coder.yml` and running in production:
 | History | Promoted 2026-08-14 (137 tok/s with INT4, baseline `20260814_233938`). Added at the 2026-08-24 promotion with 3 tokens; tuned to 2 on 2026-08-25 after the 3rd token showed ~55% acceptance (vLLM warns multi-forward on the same MTP layer lowers acceptance). Post-fix: 123.95 tok/s (benchmark `20260825_222844`) |
 | Risk | Low — model natively supports it; minimal VRAM impact |
 
-### Speculative Decoding (External Draft Model)
+### Speculative Decoding (External Draft Model) — ❌ REJECTED 2026-11-21
 
-| Property | Value |
-|---|---|
-| vLLM Flag | `--speculative-config '{"model_name": "...", "num_steps": N}'` |
-| Model Support | Requires a separate draft model (smaller) + target model |
-| Status | ❌ Not ready — requires second model on GPU |
-| Expected Benefit | Draft model predicts tokens, target verifies → faster generation |
-| Risk | Adds VRAM for draft model; complexity; draft model quality matters |
-| Note | MTP (above) is *internal* speculative decoding. This section is for *external* draft models. |
+`--speculative-config '{"model_name": "...", "num_steps": N}'` — a separate small
+draft model predicts tokens, the target verifies. **Rejected (user decision
+2026-11-21: not interesting).** MTP (above) already provides *internal*
+speculative decoding (2 tokens, active in production), and the Phase 4 0.95
+config leaves only ~3 GB of GPU 0 headroom — no room for a draft model.
 
-**Evaluation Plan:**
-1. Identify a small draft model (e.g., Gemma4-2B or similar)
-2. Calculate combined VRAM: Qwen3.8-27B NVFP4 (~55GB) + draft model
-3. If combined VRAM < 65GB, test with `--speculative-config '{"model_name": "...", "num_steps": 5}'`
-4. Benchmark throughput and TTFT
-5. Verify coding quality doesn't degrade
-6. Likely deferred until we have more VRAM headroom
+### FP4 / NVFP4 KV Cache — ❌ REJECTED 2026-11-21
 
-### FP4 / NVFP4 KV Cache
+`--kv-cache-dtype nvfp4` — smaller KV cache than the active FP8. **Rejected
+(user decision 2026-11-21: not interesting).** The active FP8 KV cache is
+sufficient at the Phase 4 config (256K ctx, KV pool 42.47 GiB = 1.2M tokens);
+Blackwell support was unverified and quality risk was open.
 
-| Property | Value |
-|---|---|
-| vLLM Flag | `--kv-cache-dtype nvfp4` |
-| Hardware Support | Requires Hopper (H100+) or specific Blackwell support |
-| Status | ⏳ Watch — vLLM 0.24.0 lists `nvfp4` as a kv-cache-dtype option |
-| Expected Benefit | Even smaller KV cache than FP8 → more context or concurrency |
-| Risk | Blackwell support may be immature; quality loss possible |
+### TensorRT-LLM — ❌ REJECTED 2026-11-21
 
-**Evaluation Plan:**
-1. Verify RTX PRO 5000 Blackwell supports NVFP4 in vLLM
-2. Test with `--kv-cache-dtype nvfp4` on a non-critical session
-3. Compare FP8 vs NVFP4 VRAM, throughput, and coding quality
-4. Only promote if quality is indistinguishable and VRAM savings > 15%
-
-### TensorRT-LLM
-
-| Property | Value |
-|---|---|
-| vLLM Integration | `--load-format tensorrt_llm` |
-| Status | ❌ Not ready — requires TensorRT-LLM engine serialization |
-| Expected Benefit | Higher throughput via optimized kernels |
-| Risk | Complex build process; model must be serialized; limited quantization support |
-
-**Evaluation Plan:**
-1. Check if vLLM 0.24.0 supports TensorRT-LLM for this model/quantization
-2. Attempt to build a TensorRT-LLM engine for unsloth/Qwen3.8-27B-NVFP4
-3. If successful, benchmark vs vanilla vLLM
-4. Roll back if build fails or quality degrades
+`--load-format tensorrt_llm` — higher throughput via optimized kernels.
+**Rejected (user decision 2026-11-21: not interesting).** Complex engine
+serialization for uncertain benefit on an already-NVFP4 model.
 
 ## Evaluation Protocol
 
@@ -100,7 +72,9 @@ For each feature:
 
 | Feature | Date | Reason |
 |---|---|---|
-| *(none yet)* | | |
+| Speculative Decoding (External Draft Model) | 2026-11-21 | Not interesting (user decision). MTP internal speculative decoding is active; no VRAM headroom for a draft model (0.95 config) |
+| FP4 / NVFP4 KV Cache (`--kv-cache-dtype nvfp4`) | 2026-11-21 | Not interesting (user decision). FP8 KV cache sufficient at the Phase 4 256K/0.95 config |
+| TensorRT-LLM (`--load-format tensorrt_llm`) | 2026-11-21 | Not interesting (user decision). Complex serialization, uncertain benefit for the NVFP4 model |
 
 ### Promotion Log
 
@@ -115,6 +89,6 @@ For each feature:
 
 ## Next Evaluation Priority
 
-1. **FP4/NVFP4** — Check Blackwell hardware support (NVFP4 weights already in production; KV-cache nvfp4 still untested)
-2. **Speculative decoding** — Wait for VRAM headroom or smaller draft model
-3. **TensorRT-LLM** — Lowest priority (complex build, uncertain benefit for NVFP4)
+**None — the candidate list is empty** (all three deferred features rejected
+2026-11-21 as not interesting). If a new vLLM feature becomes interesting, use
+the Evaluation Protocol above.

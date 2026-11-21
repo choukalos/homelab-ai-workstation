@@ -39,7 +39,7 @@ Detailed reference: `docs/backup_chain_plan.md`.
 ### vLLM / model experiments
 
 - [x] **Experiment 8 follow-up: Flash-Next long-context verification + promotion decision** — **CONSOLIDATED into `add_card_plan.md` Phase 5 (2026-11-21)**: the x16 baseline is captured (291.4 tok/s, 2026-11-14 rerun — boot-journal proven; first 2026-11-13 run invalid — CPU-only image), and the pending items (long-context quality rerun with `reasoning_content` + larger `max_tokens`; 2×256K → 4×256K concurrent decode at x8 to verify QSA sparse attention; promotion decision vs the bumped 27B) are now Phase 5's gate sequence. *(add_card_plan.md Phase 0b/5, EXPERIMENTS_RESULTS.md Experiment 8)*
-- [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
+- [x] **vLLM deferred features** — **CLOSED 2026-11-21 (all 3 rejected — not interesting):** external draft-model speculative decoding, NVFP4 KV cache, and TensorRT-LLM are all dropped (user decision). Recorded in the rejection log; the candidate list is now empty. *(docs/matrix_vllm_features.md — Rejection Log + Next Evaluation Priority)*
 
 ### Media pipeline / MCP follow-ups (from 2026-09-25 verification)
 
