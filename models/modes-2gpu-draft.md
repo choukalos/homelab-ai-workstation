@@ -21,13 +21,14 @@
 >
 > Current `MODE_PROFILES` (in `scripts/model-manager`, for reference):
 > ```
-> MODE_PROFILES[daily]="matrix-coder matrix-gemma4-moe embeddings"
+> MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
+> MODE_PROFILES[legacy-daily]="matrix-coder-partial matrix-gemma4-moe embeddings"
 > MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
-> MODE_PROFILES[qwen-long]="qwen-long embeddings"
 > MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
 > MODE_PROFILES[experiment]="experiment embeddings"
 > MODE_PROFILES[images]="comfyui media-pipeline matrix-gemma4-moe embeddings"
 > ```
+> (qwen-long retired 2026-11-21 — Phase 4: the daily serves 256K natively.)
 
 ## New / changed modes
 

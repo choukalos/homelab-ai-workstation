@@ -86,7 +86,8 @@ Expected, not bloat.) Retention: keep last 2 model snapshots (rollback to the
 previous model set).
 
 **Explicitly OUT** (re-downloadable): the rest of `data/models/hub/`
-(non-manifest: Lorbus INT4 18 GB — live `qwen-long` mode; cyankiwi
+(non-manifest: Lorbus INT4 18 GB — `qwen-long` mode, retired 2026-11-21, weights
+still on disk; cyankiwi
 gemma-4-26B AWQ 17 GB — live Ollama light model; both re-pullable from HF),
 `data/ollama/` (~34 GB), `data/huggingface/` (~18 GB), `upscale_models`,
 `animatediff_*`, `controlnet`, etc. The Inferact NVFP4 duplicate (25 GB) and

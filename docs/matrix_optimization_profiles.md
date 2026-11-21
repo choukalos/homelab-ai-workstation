@@ -56,35 +56,8 @@ args, VRAM budget, and concurrency settings.
 
 ## Switching Between Profiles
 
-### From daily (matrix-coder) to qwen-long
-```bash
-# 1. Pre-check
-preflight.sh qwen-long
-
-# 2. Unload gemma4 from Ollama (frees ~17 GB; embeddings stay running)
-docker exec ollama ollama unload gemma4:26b
-
-# 3. Stop current vLLM
-docker compose -f compose/qwen-coder.yml down
-
-# 4. Start qwen-long
-docker compose -f compose/qwen-long.yml up -d
-
-# 5. Verify
-curl -sf http://localhost:8000/v1/models && echo OK
-```
-
-### From qwen-long back to daily
-```bash
-# 1. Stop qwen-long
-docker compose -f compose/qwen-long.yml down
-
-# 2. Restart daily
-docker compose -f compose/qwen-coder.yml up -d
-
-# 3. Restart Ollama with gemma4
-docker compose -f compose/gemma4-moe.yml up -d
-```
+> **qwen-long switching procedures removed 2026-11-21** (mode retired — the
+compose file no longer exists). Use `model-manager mode switch` for the current modes.
 
 ### From daily to experiment
 ```bash

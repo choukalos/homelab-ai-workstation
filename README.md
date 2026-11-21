@@ -40,7 +40,6 @@ All ports are LAN-only. Never exposed publicly.
 |---|---|---|---|---|
 | `daily` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | ✅ (concurrent) | Normal use |
 | `qwen-coder` | Qwen3.8-27B NVFP4 | embeddings only | ✅ (concurrent) | Max coding performance |
-| `qwen-long` | Qwen3.6-27B (240K ctx) | embeddings only | ✅ (concurrent) | Long-context work |
 | `llms` | Qwen3.8-27B NVFP4 | Gemma4 + embeddings | ✅ (concurrent) | Multi-model tool experiments |
 | `experiment` | Candidate model | embeddings | ✅ (concurrent) | Test new models |
 
@@ -102,7 +101,6 @@ Named experiments are defined by a YAML profile and a Docker Compose file:
 home/
   compose/              # Docker Compose configs (canonical)
     qwen-coder.yml      # vLLM Qwen3.8-27B NVFP4 (primary)
-    qwen-long.yml       # vLLM Qwen3.6-27B (long-context, optimized)
     gemma4-moe.yml      # Ollama (gemma4 + embeddings)
     experiment.yml      # vLLM template (copy & edit)
     comfyui.yml         # ComfyUI (Qwen-Image create + edit) + media-pipeline orchestrator

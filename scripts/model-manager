@@ -57,7 +57,6 @@ declare -A MODE_PROFILES
 MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
 MODE_PROFILES[legacy-daily]="matrix-coder-partial matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
-MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[experiment]="experiment embeddings"
 MODE_PROFILES[images]="comfyui media-pipeline matrix-gemma4-moe embeddings"
@@ -385,7 +384,7 @@ cmd_init() {
     
     # Detect mode by matching container states to MODE_PROFILES
     local detected_mode="unknown"
-    for mode in daily qwen-coder qwen-long llms experiment images; do
+    for mode in daily qwen-coder llms experiment images; do
         local profiles="${MODE_PROFILES[$mode]}"
         local mode_vllm=false
         local mode_ollama=false
@@ -605,7 +604,7 @@ cmd_list() {
     echo ""
     section "Available Modes"
     echo ""
-    for mode in daily qwen-coder qwen-long llms experiment images; do
+    for mode in daily qwen-coder llms experiment images; do
         local profiles="${MODE_PROFILES[$mode]}"
         printf "  ${BOLD}%-15s${NC}  %s\n" "$mode" "$profiles"
     done
@@ -675,7 +674,7 @@ cmd_mode_switch() {
     if [[ -z "$target_mode" ]]; then
         echo -e "  ${RED}Usage: model-manager mode switch [--yes] <MODE>${NC}"
         echo ""
-        echo "  Modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
+        echo "  Modes: daily legacy-daily qwen-coder llms experiment images"
         return 1
     fi
     
@@ -683,7 +682,7 @@ cmd_mode_switch() {
     if [[ -z "${MODE_PROFILES[$target_mode]+x}" ]]; then
         echo -e "  ${RED}Unknown mode: $target_mode${NC}"
         echo ""
-        echo "  Valid modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
+        echo "  Valid modes: daily legacy-daily qwen-coder llms experiment images"
         return 1
     fi
     
@@ -2097,7 +2096,7 @@ usage() {
     echo "  experiment show <NAME>                Show experiment profile details"
     echo "  experiment archive                    View experiment history"
     echo ""
-    echo "Modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
+    echo "Modes: daily legacy-daily qwen-coder llms experiment images"
 }
 
 # Load env

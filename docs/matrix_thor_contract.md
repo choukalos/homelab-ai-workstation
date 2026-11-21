@@ -32,7 +32,7 @@ not the IP address. The IP may change.
 | Port | Service | Protocol | Purpose | Always Available? |
 |---|---|---|---|---|
 | `8000` | vLLM | HTTP/JSON (OpenAI-compatible) | Primary model inference (`matrix-coder`) | ✅ Yes (except during mode switches) |
-| `11434` | Ollama | HTTP/JSON | Light model + embeddings (`matrix-gemma4-moe`, `embeddings`) | ✅ Yes (all modes except `qwen-coder`/`qwen-long`) |
+| `11434` | Ollama | HTTP/JSON | Light model + embeddings (`matrix-gemma4-moe`, `embeddings`) | ✅ Yes (all modes except `qwen-coder`) |
 
 ### Infrastructure Endpoints (Thor Prometheus Scrape)
 
@@ -60,9 +60,9 @@ Thor's `thor.litellm.config.yml` defines these aliases that route to Matrix:
 
 | Alias | Thor LiteLLM Config | Matrix Endpoint | Valid In Modes |
 |---|---|---|---|
-| `matrix-coder` | `openai/qwen38-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `qwen-long`, `llms`, `experiment` |
+| `matrix-coder` | `openai/qwen38-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `llms`, `experiment` |
 | `matrix-gemma4-moe` | `ollama/gemma4:26b` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms` |
-| `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `qwen-coder`, `qwen-long`, `experiment` |
+| `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `qwen-coder`, `experiment` |
 
 ### Critical Rule: The `matrix-coder` Alias Is Stable
 
@@ -74,7 +74,6 @@ alias stays the same. Clients never need config changes.
 |---|---|---|---|
 | `daily` | Qwen3.8-27B NVFP4 (vLLM :8000) ✅ | Gemma4-26B (Ollama :11434) ✅ | nomic-embed-text (Ollama :11434) ✅ |
 | `qwen-coder` | Qwen3.8-27B NVFP4 @ higher VRAM ✅ | ❌ OFFLINE (gemma4 unloaded) | ✅ |
-| `qwen-long` | Qwen3.6-27B INT4 long-context (240K) ✅ | ❌ OFFLINE | ✅ |
 | `llms` | Qwen3.8-27B NVFP4 ✅ | Gemma4-26B ✅ | ✅ |
 | `experiment` | *Candidate model* on :8000 ✅ | Depends on candidate size | Depends on candidate size |
 
@@ -169,7 +168,6 @@ Mode switches are **operator-initiated on Matrix**. Thor is NOT notified in adva
 | Transition | Duration | Impact on Thor |
 |---|---|---|
 | `daily` → `qwen-coder` | ~2-5 min | `matrix-gemma4-moe` offline during/after; `matrix-coder` briefly down during restart |
-| `daily` → `qwen-long` | ~2-5 min | `matrix-gemma4-moe` offline during/after; `matrix-coder` briefly down during restart |
 | `daily` → `experiment` | ~2-5 min | `matrix-coder` alias works but points to a different model temporarily |
 | `daily` → `llms` | ~0 min | No change (same as daily) |
 

@@ -45,7 +45,7 @@ Detailed reference: `docs/backup_chain_plan.md`.
 
 - [x] **MCP tool calls abort at ~30 s while pipeline jobs keep running** — **FIXED (thor `mcp_media` tool, 2026-09-25): submit-and-poll** — every job tool takes `non_blocking` (returns `{job_id}` in ~1 s; `false` = legacy blocking behavior) and a new `media_job_result(job_id, wait_seconds≤25)` polls under the 30 s client abort, so no tool call can exceed it. Retested live 2026-09-25: image job `14802a5b1eee` (qwen21, 25 steps) submitted non-blocking and polled to `done` over 2 polls (~50 s total) with no client abort. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
 - [x] **`media_pull` rejects `media_jobs/<job_id>/<file>` paths (404)** — **FIXED (thor `mcp_media` tool, 2026-09-25):** `media_pull` now accepts `media_jobs/<job_id>/<file>` paths (verified: signed URL minted for `media_jobs/8fb134a2ea1b/mp_8fb134a2ea1b_00001_.png`). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
-- [ ] **Pipeline is a single-worker queue** — jobs run strictly serially (a CPU ffmpeg freeze queued behind a GPU image edit). Fine for now; revisit if throughput matters (per-flow worker pools). *(docs/matrix_validation_log.md, Run 2026-09-25, Findings)*
+- [x] **Pipeline is a single-worker queue** — **DROPPED 2026-11-21 (decision: keep single-worker).** Jobs run strictly serially (`MAX_CONCURRENT_JOBS=1`); a CPU ffmpeg freeze queues behind a GPU job. User confirmed this is fine — no per-flow worker pools. *(docs/matrix_validation_log.md, Run 2026-09-25, Findings — the finding stands as documented behavior)*
 
 ### Media pipeline / MCP follow-ups (2026-11-02 incident)
 
@@ -61,7 +61,7 @@ environment map: `docs/media_film_skill_spec.md` §1–2.
 
 ### Modes / switching
 
-- [ ] **Verify `qwen-long` mode switch end-to-end** — compose + profile exist but the switch has not been verified in production. *(docs/matrix_runtime_modes.md)*
+- [x] **Verify `qwen-long` mode switch end-to-end** — **DROPPED 2026-11-21 (mode retired, never verified):** the bumped 27B daily serves 256K natively (Phase 4), covering the long-context use case on the retired model. `compose/qwen-long.yml` + `models/profiles/qwen-long.yaml` deleted; mode removed from `model-manager` / `preflight.sh` / `matrix_health.sh`; operational docs updated (historical records untouched). The 18 GB `Lorbus/Qwen3.6-27b-int4-AutoRound` weights remain on disk (re-downloadable — optional cleanup). *(docs/matrix_runtime_modes.md — retirement note)*
 - [x] **Embeddings decision review** — **REVIEWED 2026-11-21, decision stands**: the "before Phase 15" trigger was stale (Phase 15 shipped months ago) and no revisit condition met (still nomic-embed-text 274 MB; <100 MB VRAM on GPU 1; no Ollama bottleneck). Disambiguation recorded: the decision covers the RAG **embedding** model only — the daily driver **LLM** has been multimodal (native image + video) since 2026-08-24, a different component. *(docs/matrix_embeddings_decision.md, Review 2026-11-21)*
 
 ### Housekeeping

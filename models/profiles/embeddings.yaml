@@ -36,5 +36,4 @@ compatible_modes:
   - daily
   - llms
   - qwen-coder
-  - qwen-long
   - images

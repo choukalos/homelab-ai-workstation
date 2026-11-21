@@ -2,8 +2,8 @@
 # matrix-preflight — Pre-flight validation for mode switches
 # Usage: matrix-preflight <MODE|PROFILE>
 #
-# MODE:  daily | qwen-coder | qwen-long | llms | experiment | images
-# PROFILE: matrix-coder | matrix-gemma4-moe | embeddings | qwen-long | experiment | comfyui
+# MODE:  daily | qwen-coder | llms | experiment | images
+# PROFILE: matrix-coder | matrix-coder-partial | matrix-gemma4-moe | embeddings | experiment | comfyui
 #
 # Exit 0 = all PASS, Exit 1 = FAIL(s), Exit 2 = usage error
 
@@ -33,8 +33,8 @@ section() { echo -e "\n--- $1 ---"; }
 usage() {
     echo "Usage: $0 <MODE|PROFILE>"
     echo ""
-    echo "Modes:    daily  legacy-daily  qwen-coder  qwen-long  llms  experiment  images"
-    echo "Profiles: matrix-coder  matrix-coder-partial  matrix-gemma4-moe  embeddings  qwen-long  experiment  comfyui"
+    echo "Modes:    daily  legacy-daily  qwen-coder  llms  experiment  images"
+    echo "Profiles: matrix-coder  matrix-coder-partial  matrix-gemma4-moe  embeddings  experiment  comfyui"
     echo "          media-gpu1  ollama-copywriter-gpu1  matrix-coder-flashnext"
     exit 2
 }
@@ -125,7 +125,6 @@ MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
 # pipeline) + gemma4 + embeddings.
 MODE_PROFILES[legacy-daily]="matrix-coder-partial matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
-MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[experiment]="experiment embeddings"
 MODE_PROFILES[images]="comfyui media-pipeline matrix-gemma4-moe embeddings"
@@ -462,7 +461,7 @@ if curl -sf --max-time 3 http://localhost:8000/v1/models &>/dev/null; then
     pass "vLLM health endpoint responding"
 else
     echo "  vLLM (:8000) DOWN"
-    if [[ "$PROFILES" == *"matrix-coder"* ]] || [[ "$PROFILES" == *"qwen-long"* ]] || [[ "$PROFILES" == *"experiment"* ]]; then
+    if [[ "$PROFILES" == *"matrix-coder"* ]] || [[ "$PROFILES" == *"experiment"* ]]; then
         warn "vLLM not responding but target mode needs it — will need to start"
     fi
 fi

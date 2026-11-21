@@ -64,7 +64,6 @@ model-manager rebuild [SERVICE]        # Rebuild a service image from source + r
 │       ├── matrix-coder.yaml
 │       ├── matrix-gemma4-moe.yaml
 │       ├── embeddings.yaml
-│       ├── qwen-long.yaml
 │       ├── experiment.yaml
 │       └── comfyui.yaml
 ├── docs/
@@ -112,7 +111,7 @@ model-manager mode switch <MODE>
   │
   ├── 4. Display plan to operator:
   │     ├── "Will stop: matrix-coder"
-  │     ├── "Will start: qwen-long"
+  │     ├── "Will start: matrix-coder-partial"
   │     ├── "Will restart: ollama (no change)"
   │     ├── "Aliases affected: gemma4-moe offline"
   │     └── "Expected downtime: ~5-10 min"
@@ -165,7 +164,7 @@ model-manager mode rollback
    vLLM instance. The manager enforces this ordering.
 5. **Metrics never stop.** node-exporter and dcgm-exporter are always running. The manager
    never stops them.
-6. **Ollama stays up unless the mode explicitly stops it.** Even in `qwen-coder` and `qwen-long`,
+6. **Ollama stays up unless the mode explicitly stops it.** Even in `qwen-coder`,
    Ollama keeps running for embeddings; the manager just unloads gemma4.
 
 ## Profile Validation

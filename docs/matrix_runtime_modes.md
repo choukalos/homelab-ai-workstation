@@ -124,36 +124,15 @@ Transparent to clients: the LiteLLM alias `matrix-coder` serves `qwen38-27b` eit
 
 ---
 
-## `qwen-long` — Long-Context Work
+## ~~`qwen-long` — Long-Context Work~~ — RETIRED 2026-11-21
 
-**Goal:** Maximize context window for large codebases or documents.
-
-**What's running:**
-
-| Service | Container | Model | Port | Backend | VRAM |
-|---|---|---|---|---|---|
-| Primary model | `qwen38` | Lorbus/Qwen3.6-27b-int4-AutoRound | 8000 | vLLM | ~50-55 GB |
-| Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
-
-**Changes from daily:**
-- Different model: `Lorbus/Qwen3.6-27b-int4-AutoRound` (240K ctx) vs daily's Qwen3.8-27B NVFP4
-- `--max-model-len 240000`, `--max-num-seqs 2`, `--gpu-memory-utilization 0.50`, `--chunked-prefill-size 16384`
-- Serves as `qwen38-27b` — the alias follows port 8000 (see design principle above), so `matrix-coder` routes to the long-context model while this mode is active
-
-**LiteLLM aliases valid:** `matrix-coder`, `embeddings`
-**Aliases offline:** `matrix-gemma4-moe`
-
-**Startup:**
-```bash
-docker compose -f compose/qwen-coder.yml down
-docker compose -f compose/qwen-long.yml up -d
-```
-
-**⚠️ Compose + profile exist** (`compose/qwen-long.yml`, `models/profiles/qwen-long.yaml`) **but the mode switch has not been verified end-to-end yet** (see TODO).
-**⚠️ Superseded (2026-11-21):** the model here (`Lorbus/Qwen3.6-27b-int4-AutoRound`) is retired —
-the daily now serves 256K natively (Phase 4). Revisit only if >256K contexts become needed.
-
-**Rollback to daily:** Restart vLLM with standard `compose/qwen-coder.yml` args.
+> **Retired (add_card_plan Phase 4):** the mode was never verified end-to-end, and the
+> bumped 27B daily now serves **256K natively** (was 192K) — the use case (long-context
+> work on Qwen3.6-27B INT4 240K) is covered by the daily. `compose/qwen-long.yml` +
+> `models/profiles/qwen-long.yaml` deleted 2026-11-21; mode removed from
+> `model-manager` / `preflight.sh` / `matrix_health.sh`. The 18 GB
+> `Lorbus/Qwen3.6-27b-int4-AutoRound` weights remain on disk (re-downloadable from HF —
+> optional cleanup). Revisit only if >256K contexts become needed.
 
 ---
 
@@ -251,7 +230,6 @@ upscale). Idle cost ~0.7 GB — safe to leave running.
 | `daily` | (none — this is current) | (none) | all valid |
 | `qwen-coder` | Ollama gemma4 (unload) | vLLM @ 0.95/seqs5/256K | gemma4-moe offline |
 | `legacy-daily` | vLLM (swap to 0.75/seqs3/192K) | vLLM partial + gemma4:26b | coder → partial (same served name) |
-| `qwen-long` | vLLM, Ollama gemma4 | vLLM @ long-ctx args | gemma4-moe offline |
 | `llms` | (same as daily) | (same as daily) | all valid |
 | `experiment` | vLLM | vLLM with new model | coder points to experiment |
 
@@ -267,7 +245,6 @@ upscale). Idle cost ~0.7 GB — safe to leave running.
 |---|---|---|
 | `daily` / `qwen-coder` / `llms` | ~69 GB (0.95 util, Phase 4) | ~3 GB (KV pool pre-allocated) |
 | `legacy-daily` | ~56 GB (0.75 util) | ~16 GB |
-| `qwen-long` | ~50-55 GB | ~17-22 GB |
 | `experiment` | varies | varies |
 
 **GPU 1 (24 GB) — media XOR copywriter:**

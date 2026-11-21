@@ -208,7 +208,7 @@ queue wait, params) is in `jobs.jsonl` — the Prometheus metrics are the aggreg
 
 **File:** `state/current_mode`
 
-Plain text file containing the active mode name (`daily`, `qwen-coder`, `qwen-long`,
+Plain text file containing the active mode name (`daily`, `qwen-coder`,
 `llms`, `experiment`). Set by the model manager during mode switches.
 
 > The old `images` mode is retired (2026-08-27) — image generation runs concurrently
@@ -269,8 +269,13 @@ NVIDIA RTX PRO 5000 72GB Blackwell, 84, 56575 MiB, 73415 MiB, 92 %, 300.63 W
 |---|---|---|---|---|---|
 | `daily` | ~55 GB (0.75 util) | ~17 GB + 0.3 GB | ~12 GB cap (concurrent) | ~72 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
 | `qwen-coder` | ~55 GB (0.75 util) | ~0.3 GB | ~12 GB cap (concurrent) | ~67 GB | ~5 GB |
-| `qwen-long` | ~50-55 GB | ~0.3 GB | ~12 GB cap (concurrent) | ~62-67 GB | ~5-10 GB |
 | `experiment` | varies | varies | ~12 GB cap (concurrent) | varies | varies |
+
+> ⚠️ **Pre-2-GPU table** — the `qwen-long` row was retired 2026-11-21 (mode deleted;
+> the daily serves 256K natively) and the single-GPU co-location no longer applies:
+> since Phase 1 (2026-11-21) the media stack runs on **GPU 1** and the daily vLLM is
+> bumped to 0.95 util on **GPU 0**. Current per-GPU budgets:
+> `docs/matrix_runtime_modes.md` (VRAM Budget section).
 
 > ComfyUI runs at a `--reserve-vram 60` cap (~12 GB; 9.3–14.4 GB measured peaks).
 > Idle cost ~0.7 GB — safe to leave running alongside vLLM in any mode.

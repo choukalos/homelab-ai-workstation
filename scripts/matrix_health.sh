@@ -98,7 +98,7 @@ color() {
 # Determine overall health
 overall="HEALTHY"
 # Check if critical services for the current mode are down
-if [[ "$mode" == "daily" || "$mode" == "qwen-coder" || "$mode" == "qwen-long" || "$mode" == "experiment" ]]; then
+if [[ "$mode" == "daily" || "$mode" == "qwen-coder" || "$mode" == "experiment" ]]; then
     [[ "$vllm_status" == "down" ]] && overall="DEGRADED"
 fi
 if [[ "$vllm_status" == "down" && "$ollama_status" == "down" && "$comfyui_status" == "down" ]]; then
