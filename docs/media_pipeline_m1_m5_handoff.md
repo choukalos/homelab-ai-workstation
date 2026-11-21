@@ -281,6 +281,17 @@ Make progress first-class.
 
 ## Thor-side follow-ups (NOT this handoff — for the record)
 
+> **STATUS 2026-11-21: ALL COMPLETE** (implemented + accepted on the
+> `homelab-ai-harness` repo, `mcp/servers/media/`):
+> - `agents-skills/media-film/references/pipeline-contract.md` +
+>   `docs/media-mcp-handoff.md` §4: updated (C14 rule — duration now enforced;
+>   tool table + job model reflect kill/queue/progress).
+> - `media_kill_job` + `media_queue_status` MCP tools: added (client-scoped
+>   via the `client` param; 409/403/404 surfaced as structured errors).
+> - Client-layer acceptance: `mcp/servers/media/test_m1m5_client.py`
+>   **24/24 PASS** live against `:8189` (log: `state/qa_m1m5_mcp_client.log`
+>   on the GPU host).
+
 - `agents-skills/media-film/references/pipeline-contract.md` +
   `docs/media-mcp-handoff.md` §4: document the new semantics after the changes
   land (homelab repo, `tier2-media-film-production-lessons` companion).
