@@ -1,7 +1,7 @@
 # TODO
 
 Consolidated open work across the homelab repo. Sources are listed per item.
-Last consolidated: 2026-11-21 (M1–M5 follow-ups closed; T1–T5 + media-film skill marked live; Experiment 8 consolidated into add_card_plan Phase 5; benchmark plan status corrected to IMPLEMENTED).
+Last consolidated: 2026-11-21 (M1–M5 follow-ups closed; T1–T5 + media-film skill marked live; Experiment 8 consolidated into add_card_plan Phase 5; benchmark plan status corrected to IMPLEMENTED; embeddings decision reviewed + closed).
 
 ## Active
 
@@ -62,7 +62,7 @@ environment map: `docs/media_film_skill_spec.md` §1–2.
 ### Modes / switching
 
 - [ ] **Verify `qwen-long` mode switch end-to-end** — compose + profile exist but the switch has not been verified in production. *(docs/matrix_runtime_modes.md)*
-- [ ] **Embeddings decision review** — re-evaluate "keep embeddings on Matrix" before Phase 15 production deployment (decision + revisit conditions documented). *(docs/matrix_embeddings_decision.md)*
+- [x] **Embeddings decision review** — **REVIEWED 2026-11-21, decision stands**: the "before Phase 15" trigger was stale (Phase 15 shipped months ago) and no revisit condition met (still nomic-embed-text 274 MB; <100 MB VRAM on GPU 1; no Ollama bottleneck). Disambiguation recorded: the decision covers the RAG **embedding** model only — the daily driver **LLM** has been multimodal (native image + video) since 2026-08-24, a different component. *(docs/matrix_embeddings_decision.md, Review 2026-11-21)*
 
 ### Housekeeping
 

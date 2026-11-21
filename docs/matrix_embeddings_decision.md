@@ -1,8 +1,29 @@
 # Embeddings Decision: Matrix vs. Thor
 
 > Created: 2026-07-03
-> Status: **DECISION — Keep on Matrix (Interim)**
-> Review: Before Phase 15 production deployment
+> Status: **DECISION — Keep on Matrix (confirmed 2026-11-21 review)**
+> Review: was "before Phase 15 production deployment" — Phase 15 (compose
+> promotion / production hardening) is long done; review executed 2026-11-21
+> instead, no conditions met, decision stands.
+
+## Review 2026-11-21
+
+- **Phase 15 trigger stale** — the "before Phase 15 production deployment"
+  review was tied to the old refactor plan; that phase shipped months ago
+  (`compose/legacy/README.md`: promoted in Phase 15). Review executed now.
+- **No revisit condition met** — embedding model still nomic-embed-text
+  (274 MB, not 7B+); no Ollama bottleneck; embeddings use <100 MB on the
+  24 GB GPU 1 (moved there with Ollama in add-card Phase 1). Open question:
+  vector DB on Thor — even if one exists, a 274 MB model at 9–34 ms makes the
+  LAN hop negligible; revisit only if a 7B+ embedding model is adopted.
+- **Disambiguation (so the next review doesn't get confused):** this decision
+  covers the **RAG embedding model only** (nomic-embed-text, text-only,
+  document → vectors). The **daily driver LLM is multimodal** — native
+  image + video inputs since 2026-08-24 (`docs/matrix_vllm_features.md`,
+  `--limit-mm-per-prompt`), and the Flash-Next 125B candidate is multimodal
+  too. That's a different component; it never changed this decision.
+- **Outcome:** decision stands — embeddings stay on Matrix (Ollama, GPU 1).
+  TODO.md item closed.
 
 ## Current Architecture
 
