@@ -395,6 +395,16 @@ If it holds up, this is the strongest candidate to replace the 27B daily driver.
 **Status: valid GPU run. Strong candidate — 2.35× daily-driver throughput at 125B. Promotion
 decision pending long-context verification (open items below).**
 
+> **⚑ PHASE 0b x16 BASELINE (add_card_plan.md, confirmed 2026-11-21):** this run is the
+> pre-install x16 baseline for the Phase 5 x8 delta. It ran 2026-11-14 00:04–00:18 UTC,
+> **before the RTX PRO 4000 was added** — the 5000 was at x16 (single-card system). Evidence:
+> journalctl boot history — the experiment's boot (11-13 13:56 → 11-14 01:29) enumerated
+> only `02:00.0` (the 5000); `03:00.0` (the 4000) was absent and appeared only after the
+> 01:30 reboot (hot-plug; slots are `HotPlug+ Surprise+`), before the 04:10 Phase 1 pinning.
+> **Anchor numbers for the Phase 5 delta: 291.4 tok/s (512 tok × 20, x16), TTFT 47.4/55.0 ms,
+> stress 22.0 req/s @ 4 concurrent, quality 4/5.** The QSA sparse-attention question
+> (link-width-independent) is deferred to the Phase 5 x8 run.
+
 - Candidate: `ukisai/Swift-1.5-Qwen3.8-Flash-Next` IQ4_XS (97.7 GB, 3 shards) — supersedes
   Experiment 7 (UD-Q4_K_XL, never downloaded). Compose: `compose/experiments/qwen38-flash-next-gguf.yml`.
 - Rerun launched 2026-11-14 00:05 UTC via `model-manager experiment start --profile

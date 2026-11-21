@@ -9,7 +9,8 @@
 # Differences vs the legacy GPU 0 variant:
 #   - device_ids: ['1'] — pin to GPU 1 (the 24 GB card).
 #   - Copywriter = gemma4:31b (20.4 GB: 18.7 model + 1.2 vision + 0.5 draft/speculative).
-#     Fits the 24 GB card with ~3.6 GB for context (8–16K comfortable, 32K tight).
+#     Gemma 4's KV cache is tiny (~4 MiB/1K tokens): 64K ctx ≈ 22.1 GB total on the
+#     24 GB card (~2.3 GB headroom, measured 2026-11-21); 128K verified loadable.
 #     gemma4:26b (17 GB MoE) remains available as the fast option.
 #   - OLLAMA_KEEP_ALIVE=5m (unchanged) — idle-unload frees VRAM for the media pipeline
 #     (the swap mechanism, add_card_plan.md §4.1.4).

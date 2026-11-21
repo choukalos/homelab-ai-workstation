@@ -406,3 +406,58 @@ sampling is per-GPU (`nvidia-smi -i`), required for 2-GPU.
   {legacy-daily|daily|experiment}` works for all three modes (drill exercised
   `legacy-daily`; `daily`/`experiment` via plan display + preflight). The script
   header documents this as the external call shape.
+
+## Snapshot 2026-11-21 (later) — post-Phase-3 updates (add_card_plan.md v1.0)
+
+### Copywriter context flexed 32K → 64K (measured)
+
+- gemma4:31b on the 24 GB card: **22,021 MiB @ 32K, 22,047 @ 40K, 22,157 @ 64K,
+  22,125 @ 128K** (all with ComfyUI's ~334 MiB context resident). Gemma 4's KV
+  cache is tiny (~4 MiB/1K tokens — GQA), so context is nearly free on this card.
+- **Default budget: 64K** (~2.3 GB headroom; ~2.0 GB with nomic-embed-text
+  co-resident). **128K verified loadable** if a bigger budget is ever needed.
+- `models/profiles/ollama-copywriter-gpu1.yaml` + `compose/gemma4-moe.yml`
+  comments updated. (The LiteLLM alias entry, when added, should pass
+  `num_ctx: 65536`.)
+
+### Ollama model set (after dropping qwen3.6:27b)
+
+| Model | Size | Role |
+|---|---|---|
+| `gemma4:31b` | 20 GB | copywriter (GPU 1, 64K ctx) |
+| `gemma4:26b` | 17 GB | fast option (legacy-daily / swap) |
+| `nomic-embed-text:latest` | 274 MB | RAG embeddings |
+
+`qwen3.6:27b` (17 GB) dropped 2026-11-21 — 16 GB disk freed (771→755 GB used).
+Docs-only references (no compose/profile/model-manager callers).
+
+### PCIe / power answers (Chuck's questions)
+
+- **Why "1x PCI speed"?** Idle state — ASPM drops the link to **Gen1** when the
+  card is idle; **under load it negotiates Gen5 x8** (verified 2026-11-21 with a
+  torch matmul load: `gen.current=5, width=8, util=100 %`). x8 is the slot's
+  wired maximum (mobo manual); the card's port is x16-capable but the slot isn't.
+  Nothing to fix. Card TDP 145 W on the 600 W PSU — ample margin.
+- **Monitoring quirk:** after a short load burst, `utilization.gpu` (nvidia-smi
+  + DCGM) can stick at 100 % while the card is actually idle (power ≈ 5 W,
+  temp 49 °C, processes at 0 % CPU). Clears on CUDA context unload (tested:
+  `ollama stop` → back to 0 %/180 MHz/Gen1) or reboot. Data-quality caveat for
+  the Grafana GPU 1 util panel — power/temp are the reliable idle indicators.
+- **4000 SKU:** RTX PRO 4000 Blackwell 24 GB (plan §7.3 settled).
+
+### Phase 0b resolved — x16 baseline already captured
+
+- The **Experiment 8 valid rerun (2026-11-14 00:04–00:18 UTC) is the Phase 0b
+  x16 baseline** — it ran before the 4000 was added (boot-journal evidence: the
+  experiment's boot enumerated only the 5000; the 4000 appeared after the 01:30
+  reboot via hot-plug, before the 04:10 Phase 1 pinning).
+- **Anchor for the Phase 5 x8 delta: 291.4 tok/s** (512 tok × 20, x16),
+  TTFT 47.4/55.0 ms, stress 22.0 req/s @ 4 concurrent, quality 4/5.
+- Remaining 0b question (QSA sparse attention at long context) is
+  link-width-independent → folds into the Phase 5 x8 run.
+
+### Grafana (Phase 2 closed)
+
+- **2-GPU panels imported on Thor 2026-11-21 (Chuck)** per
+  `docs/thor_2gpu_grafana_handoff.md` + dashboard JSON. Phase 2 is now fully
+  complete (exporter + Prometheus + Grafana).

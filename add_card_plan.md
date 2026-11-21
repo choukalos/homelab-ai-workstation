@@ -66,10 +66,18 @@ constraint the new card removes.
 
 ### PCIe note (2-GPU config: x8, not x16)
 
-The 5000 is currently linked at **PCIe 5.0 x16** (verified 2026-11-13:
+The 5000 was linked at **PCIe 5.0 x16** pre-install (verified 2026-11-13:
 `pcie.link.width.current = 16`). **Per the mobo manual, installing the 2nd card
 drops BOTH cards to x8 (~31.5 GB/s vs ~63 GB/s)** — confirmed constraint, not an
-open question.
+open question. **Post-install verified 2026-11-21:** both cards negotiate **Gen5 x8
+under load** (`pcie.link.gen.current=5, width=8` while GPU-busy). Idle, the cards
+drop the link to **Gen1** (ASPM power management — the "1x speed" reading is the
+idle *speed*, not the width; width is x8, the slot maximum). Nothing to fix:
+x8 is the slot's wired maximum, and Gen5 x8 under load is the full negotiated
+link. (Monitoring quirk, 2026-11-21: after a short load burst, `utilization.gpu`
+can stick at 100 % while idle — power draw (≈5 W) shows the card is actually
+idle; clears on context unload / reboot. Minor data-quality caveat for the
+Grafana util panel.)
 
 | Workload | Impact at x8 |
 |---|---|
@@ -198,8 +206,9 @@ more headroom and is faster. Either works; see §7.2.
 
 > **Ordering (decided 2026-11-13):** card in → **metrics** → **modes/ops** (both get
 > us back to parity) → **ramp up the daily** → **QNF experiment** (swap 27B → QNF as
-> daily) → **flex the media pipeline**. Phase 0b is **on hold until ~Friday evening**
-> (Chuck's availability) and is the prerequisite for the QNF experiment's x8 delta.
+> daily) → **flex the media pipeline**. Phase 0b's x16 baseline was **already
+captured 2026-11-14** (the Experiment 8 rerun, pre-install — see Phase 0b below);
+> the remaining 0b question (QSA at long context) folds into the Phase 5 x8 run.
 
 ### Phase 0a — prep (pre-install, safe, no approval needed, no disruption)
 - [x] This plan (done) + answers locked in (§4).
@@ -218,13 +227,36 @@ more headroom and is faster. Either works; see §7.2.
 **Status: COMPLETE (2026-11-13).** No running service changed. Optional follow-up:
 pre-pull the IQ3_S GSQ-RCO fallback (83.7 GB) if desired (else on-demand in Phase 5).
 
-### Phase 0b — x16 Flash-Next baseline (pre-install, ON HOLD until ~Friday evening)
-> The 5000 is **x16 today and x8 after install**. A pre-install Flash-Next run is the
+### Phase 0b — x16 Flash-Next baseline — **RESOLVED 2026-11-21 (baseline already captured)**
+> The 5000 was **x16 pre-install and x8 after**. A pre-install Flash-Next run was the
 > **only** chance to capture a clean x16 baseline, so Phase 5 can attribute any
 > throughput drop to PCIe x8 with confidence instead of estimating.
-- [ ] Stop the daily driver (`qwen-coder`), run Flash-Next at x16, benchmark
-      (tok/s, TTFT, **QSA sparse-attention behavior**, quality probe), restore driver.
-- [ ] Record the x16 baseline into `EXPERIMENTS_RESULTS.md` for the Phase 5 delta.
+
+**Chuck's recollection confirmed 2026-11-21:** the x16 baseline **is the Experiment 8
+valid rerun (2026-11-14 00:04–00:18 UTC)** — it ran *before* the 4000 was added.
+Evidence (journalctl boot history):
+- Boot `554aac23` (11-13 13:56 → 11-14 01:29, the experiment's boot): kernel
+  enumerated only `02:00.0` (the 5000); `03:00.0` (the 4000) **absent**; boot
+  script reported a single GPU. 5000 verified x16 on 11-13 (plan v0.2) — same boot.
+- Reboot 11-14 01:30 (boot `dff75b4e`): boot script still reported only GPU 0 — the
+  4000 was added **after** that boot (hot-plug; the slots are `HotPlug+ Surprise+`),
+  before the 04:10 Phase 1 pinning. No reboot in between (boot ran 7 days).
+
+**The x16 baseline numbers (Experiment 8, `EXPERIMENTS_RESULTS.md`):**
+Flash-Next IQ4_XS @ x16, single-card system — **291.4 tok/s** (512 tok × 20 runs,
+275.7–298.4), TTFT 47.4/55.0 ms, stress 22.0 req/s @ 4 concurrent (80/80 ok),
+quality 4/5 solid. → Phase 5's x8 delta is measured against **291.4 tok/s**.
+
+- [x] Stop the daily driver, run Flash-Next at x16, benchmark (tok/s, TTFT,
+      quality probe), restore driver. — **done 2026-11-14 00:04–00:18 UTC** (the
+      Experiment 8 rerun; switch_log entries 00:04:27 / 00:18:04).
+- [x] Record the x16 baseline into `EXPERIMENTS_RESULTS.md` for the Phase 5 delta.
+      — **labeled 2026-11-21** (Experiment 8 section now carries the Phase 0b
+      baseline designation + the boot-journal evidence).
+- [ ] **QSA sparse-attention behavior at long context (2×256K)** — the remaining
+      0b question. Link-width-independent (software question), so it folds into the
+      **Phase 5 x8 run** instead of needing another pre-install window. Same for the
+      fixed long-context quality rerun (harness `reasoning_content` fix).
 
 **Learn (the high-value stuff):** (1) does llama.cpp implement QSA sparse attention
 (a dense-256K fallback collapses the numbers — find out *before* install); (2) the
@@ -259,11 +291,11 @@ candidate) *before* install. If good → proceed with confidence.
       both GPUs export per-index.
       **PASS** — full DCGM field set (util, FB_USED/FREE, power, temp, clocks, XID)
       exported per `gpu` index for both cards; live values.
-- [ ] Thor Prometheus/Grafana 2-GPU panels: daily-on-GPU0 / media-on-GPU1 split visible.
-      **Exporter side PASS** — Thor Prometheus target `matrix:9400` UP; `DCGM_FI_DEV_GPU_UTIL`
-      returns series for `gpu="0"` and `gpu="1"`. **Grafana panels pending (Thor-side,
-      Chuck)** — Grafana :3000 not reachable from Matrix; panel spec + suggested
-      queries in `docs/matrix_inventory.md` (2026-11-14 snapshot).
+- [x] Thor Prometheus/Grafana 2-GPU panels: daily-on-GPU0 / media-on-GPU1 split visible.
+      **DONE** — exporter side PASS (Thor Prometheus target `matrix:9400` UP;
+      `DCGM_FI_DEV_GPU_UTIL` returns series for `gpu="0"` and `gpu="1"`); **Grafana
+      2-GPU panels imported on Thor 2026-11-21 (Chuck)** per the handoff in
+      `docs/thor_2gpu_grafana_handoff.md` + dashboard JSON.
 - [x] **Gate: monitoring parity** — we can see both GPUs before any model change, so
       every later phase is observable. (Exporter + Prometheus verified; Grafana
       panels are a convenience layer, not a blocker.)
@@ -294,7 +326,8 @@ candidate) *before* install. If good → proceed with confidence.
       compares against.
 
 ### Phase 5 — QNF experiment (swap 27B → QNF as daily)
-> Depends on the Phase 0b x16 baseline (on hold until ~Friday evening).
+> Depends on the Phase 0b x16 baseline — **captured 2026-11-14 (291.4 tok/s @ x16,
+> see Phase 0b)**; the QSA/long-context question folds into this run.
 - [ ] Flash-Next experiment (IQ4_XS; IQ3_S fallback) at 2 × 256K → 4 × 256K **at x8**;
       **compare directly to the Phase 0b x16 baseline** → the x8 delta is measured,
       not estimated. Full benchmark vs the bumped 27B.
@@ -320,12 +353,21 @@ candidate) *before* install. If good → proceed with confidence.
    `scripts/model-manager`** — no separate wrapper script exists; the mode-switch
    entry point is the model-manager script itself. Call shape
    `model-manager mode switch --yes <mode>` verified in the Phase 3 drill.
-2. **Copywriter model**: Gemma 4 31B (dense, ~19 GB Q4, higher quality ceiling) vs
-   26B MoE (17 GB, faster)? And what context budget do you want (8K / 16K / 32K)?
-3. **Exact 4000 SKU** (for the PSU/connector check in §5.1)?
+2. ~~**Copywriter model**: Gemma 4 31B vs 26B MoE? Context budget?~~ — **settled
+   2026-11-21 (Chuck): 31B confirmed; context flexed 32K → 64K** (measured: 64K ≈
+   22.1 GB total on the 24 GB card, ~2.3 GB headroom — Gemma 4's KV is tiny,
+   ~4 MiB/1K tokens; 128K verified loadable as the ceiling). 26B MoE kept as the
+   fast option.
+3. ~~**Exact 4000 SKU** (for the PSU/connector check in §5.1)?~~ — **settled
+   2026-11-21 (Chuck): RTX PRO 4000 Blackwell 24 GB, on the 600 W power cable.**
+   Card TDP 145 W (measured power limit) — ample margin. PCIe: Gen5 x8 under load
+   (slot max), Gen1 at idle (ASPM) — see the §3 PCIe note.
 4. ~~**Which card ends up on x8**~~ — **settled 2026-11-13: both drop to x8** (mobo manual). No impact on media/copywriter/vLLM; Flash-Next risk row in §8 carries the consequence
-5. **Keep `qwen3.6:27b` in Ollama** (17 GB disk) or drop it once the copywriter moves
-   to GPU 1?
+5. ~~**Keep `qwen3.6:27b` in Ollama** (17 GB disk) or drop it once the copywriter
+   moves to GPU 1?~~ — **settled 2026-11-21 (Chuck): dropped.** `ollama rm
+   qwen3.6:27b` done (16 GB disk freed; no compose/profile/model-manager references
+   — docs-only). Ollama now: gemma4:31b (20 GB), gemma4:26b (17 GB),
+   nomic-embed-text (274 MB).
 
 ## 8. Risks & rollback
 
@@ -396,3 +438,18 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   (goal §1, current state §2, §4.1, Phase 3 item, §7.1); the script header now
   states the external call shape (`model-manager mode switch --yes <MODE>`) and
   lists the `gpu1` command (was missing from the header).
+- 2026-11-21: v1.0 — **Phase 0b resolved + open questions 2/3/5 settled (Chuck).**
+  (a) **The x16 Flash-Next baseline was already captured**: the Experiment 8 valid
+  rerun (2026-11-14 00:04–00:18 UTC) ran *before* the 4000 was added — proven by the
+  boot journal (the experiment's boot enumerated only the 5000; the 4000 appeared
+  after the 01:30 reboot via hot-plug, before the 04:10 Phase 1 pinning). Baseline:
+  291.4 tok/s @ x16, TTFT 47.4/55.0 ms, stress 22.0 req/s, quality 4/5. The QSA
+  long-context question (link-width-independent) folds into the Phase 5 x8 run.
+  (b) **Copywriter: 31B confirmed, context flexed 32K → 64K** — measured 22,021/22,157
+  MiB @ 32K/64K on the 24 GB card (Gemma 4 KV ≈ 4 MiB/1K tokens); 128K verified
+  loadable (22,125 MiB). Profile + compose updated. (c) **4000 SKU: RTX PRO 4000
+  Blackwell 24 GB on the 600 W cable** (TDP 145 W — ample margin). PCIe answer:
+  Gen5 x8 under load (slot max), Gen1 at idle = ASPM (the "1x" reading is idle
+  speed, not width); noted the util-sticks-at-100 %-while-idle monitoring quirk.
+  (d) **`qwen3.6:27b` dropped from Ollama** (16 GB disk freed; docs-only refs).
+  (e) **Grafana 2-GPU panels imported on Thor (Chuck)** — Phase 2 fully closed.

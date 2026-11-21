@@ -134,8 +134,10 @@ for m in data.get('models', []):
 | Model | Size | Params | Quantization |
 |---|---|---|---|
 | `nomic-embed-text:latest` | 274 MB | 137M | F16 |
-| `qwen3.6:27b` | 17 GB | 27B | Q4_K_M |
-| `gemma4:26b` | 17 GB | 26B | Q4_K_M |
+| `gemma4:31b` | 20 GB | 31B | Q4_K_M (copywriter, GPU 1; 64K ctx default — 128K verified) |
+| `gemma4:26b` | 17 GB | 26B | Q4_K_M (fast option) |
+
+(`qwen3.6:27b` dropped 2026-11-21 — 16 GB disk freed; no live references.)
 
 **Note:** Ollama has no `/metrics` endpoint. GPU memory used by Ollama models
 is tracked via `nvidia-smi` / dcgm-exporter.
