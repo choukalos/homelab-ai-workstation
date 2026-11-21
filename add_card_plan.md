@@ -351,10 +351,16 @@ candidate) *before* install. If good → proceed with confidence.
       not estimated. Full benchmark vs the bumped 27B.
 - [ ] Decision: promote QNF to `daily` (profile + mode + LiteLLM alias unchanged) or
       keep the bumped 27B. Archive the loser to `state/experiment_archive.md`.
-- [ ] **Gate: daily model settled** — before flexing the media pipeline, so media work
-      happens against a stable daily.
+- [ ] **Note (not a blocker): daily model settled** — Phase 6 is technically
+      independent (GPU 1 services only; the media pipeline has no dependency on
+      the daily model on GPU 0). The only coupling is scheduling: the Phase 5
+      agent-down window (qwen38 stop) shouldn't land mid-way through a long
+      Phase 6 session. Either order works.
 
 ### Phase 6 — flex the media pipeline (GPU 1 quality unlocks)
+> **Independent of Phase 5** (2026-11-21, Chuck): all GPU 1 work — the media
+> pipeline has no dependency on the daily model. Can run in either order; only
+> constraint is scheduling the Phase 5 agent-down window around a long session.
 - [ ] Re-run the 720p gate on 24 GB (`qa_wan_phase1.py 720`); if green, lift the
       480p-only API gate (new `WAN_RESOLUTIONS` + metering note).
 - [ ] Try Q6_K / Q8_0 / FP8 Wan experts + T5-on-GPU + both-experts-resident; pick the
