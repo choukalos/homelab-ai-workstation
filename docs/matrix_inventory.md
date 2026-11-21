@@ -397,10 +397,12 @@ sampling is per-GPU (`nvidia-smi -i`), required for 2-GPU.
   (expected — `legacy-daily` has no media tenant), restored.
 - `switch_log.md` gained the drill entries (all "success").
 
-### homelab.sh (§7.1)
+### homelab.sh (§7.1) — RESOLVED 2026-11-21
 
-- Still not located on matrix (searched /home/chuck, /opt, /srv, /usr/local/bin,
-  cron, systemd — none). Awaiting Chuck's answer (Thor? dotfiles?).
+- **It is `scripts/model-manager`** (Chuck: no separate wrapper script exists —
+  the mode-switch entry point is the model-manager script itself). The earlier
+  "not found on matrix" search was looking for a script that doesn't exist.
 - Integration contract verified: `model-manager mode switch --yes
   {legacy-daily|daily|experiment}` works for all three modes (drill exercised
-  `legacy-daily`; `daily`/`experiment` via plan display + preflight).
+  `legacy-daily`; `daily`/`experiment` via plan display + preflight). The script
+  header documents this as the external call shape.

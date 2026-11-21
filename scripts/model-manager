@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # model-manager — Safe mode switching for Matrix GPU appliance
+#
+# This script IS the homelab's mode-switch entry point (add_card_plan.md's
+# "homelab.sh" reference — there is no separate wrapper script).
+# External callers (cron, ops, other hosts): model-manager mode switch --yes <MODE>
+#
 # Usage: model-manager <command> [args...]
 #
 # Commands:
@@ -14,6 +19,7 @@
 #   profile validate <P>      — Validate a profile's compose/args/env
 #   health                    — Check all running services
 #   media <up|down|status>    — Start/stop/check media pipeline (+ ComfyUI)
+#   gpu1 <status|swap <T>>   — GPU 1 tenants: status, or explicit media ⇄ copywriter swap
 #   preflight <MODE>          — Run preflight checks without switching
 #   benchmark <PROFILE>       — Run benchmark harness against a profile
 #   experiment start <MODEL>  — Start a candidate model on port 8000

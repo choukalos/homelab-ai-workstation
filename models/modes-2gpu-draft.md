@@ -79,13 +79,14 @@ MODE_PROFILES[experiment]="experiment embeddings"
 5. `preflight <MODE>` for `daily` must verify BOTH GPUs are visible (nvidia-smi shows 2)
    before switching.
 
-## homelab.sh integration (Phase 3 — open question §7.1)
-Wherever `homelab.sh` lives, it keeps working by calling:
+## model-manager integration (Phase 3 — open question §7.1, RESOLVED)
+`homelab.sh` **is `scripts/model-manager`** (settled 2026-11-21, Chuck: no
+separate wrapper script exists — the mode-switch entry point is the model-manager
+script itself). External callers keep working by calling:
 ```
 model-manager mode switch --yes {legacy-daily|daily|experiment}
 ```
-**Status (2026-11-21):** still not located on matrix (searched /home/chuck, /opt,
-/srv, /usr/local/bin, cron, systemd — none). The call shape above is verified
-working for all three modes (Phase 3 drill exercised `legacy-daily`; `daily` and
-`experiment` verified via plan display + preflight). Awaiting Chuck's answer on
-where the script lives (Thor? dotfiles?) to confirm the exact call site.
+**Status (2026-11-21):** resolved — the call shape above is verified working for
+all three modes (Phase 3 drill exercised `legacy-daily`; `daily` and `experiment`
+verified via plan display + preflight). The script header documents this as the
+external call shape.

@@ -15,9 +15,10 @@ Add a 24 GB RTX 4000 (Blackwell) to the 2nd PCIe slot so that:
 - **GPU 1 (RTX 4000, 24 GB)** → dedicated to the **media pipeline** (full 24 GB) **and**
   an **Ollama copywriter** (Gemma 4 31B-class), with the two able to **swap in/out** of
   the card.
-- `homelab.sh` / model-manager keep working: experiments still run, a
-  **`legacy-daily`** mode preserves today's single-card setup as the rollback target,
-  and a new **`daily`** mode is the 2-GPU steady state.
+- `model-manager` (the mode-switch entry point — the plan's `homelab.sh`
+  reference is this script, no separate wrapper) keeps working: experiments still
+  run, a **`legacy-daily`** mode preserves today's single-card setup as the rollback
+  target, and a new **`daily`** mode is the 2-GPU steady state.
 
 ## 2. Current state (verified 2026-11-13)
 
@@ -47,9 +48,10 @@ constraint the new card removes.
   IQ4_XS is capped at **2 × 256K** sessions (RAM at the wall, 62/62 GB); **without the
   media pipe, 4 × 256K fits VRAM** (near-zero headroom → drop `--mmproj` or use 196608
   ctx for margin).
-- `homelab.sh`: **not found on matrix** (searched /home/chuck, /opt, /srv, /usr/local/bin).
-  Open question §7.1 — the plan is designed so it only needs to call
-  `model-manager mode switch <mode>`.
+- `homelab.sh`: **resolved 2026-11-21 — it is `scripts/model-manager`** (Chuck:
+  no separate wrapper script exists; the mode-switch entry point is the
+  model-manager script itself). External call shape:
+  `model-manager mode switch --yes <mode>` (verified in the Phase 3 drill).
 - Disk: **896 GB free** (1.7 TB vol). RAM: 62 GiB. Driver 595.91.07 (already
   Blackwell-capable — the 5000 runs on it).
 - GPU pinning: `comfyui.yml` / `gemma4-moe.yml` use `count: 1` (no `device_ids`) —
@@ -89,7 +91,7 @@ Steady-state properties:
 
 ## 4. The three questions
 
-### 4.1 homelab.sh + modes (legacy-daily / daily / experiment)
+### 4.1 model-manager + modes (legacy-daily / daily / experiment)
 
 Design (implemented in Phase 4, no changes yet):
 
@@ -112,9 +114,10 @@ Design (implemented in Phase 4, no changes yet):
      headroom < flow requirement → `ollama stop <copywriter>` (instant; weights stay
      on disk, next copy request reloads in ~10–30 s);
    - optional explicit `model-manager gpu1 swap {media|copywriter}` for manual swaps.
-5. **homelab.sh**: wherever it lives, it keeps working — it just calls
-   `model-manager mode switch {legacy-daily|daily|experiment}`. **Locate it first**
-   (§7.1) so we can confirm the call shape.
+5. **model-manager** (the mode-switch entry point — the plan's `homelab.sh`
+   reference; resolved 2026-11-21, §7.1): external callers keep working by
+   calling `model-manager mode switch --yes {legacy-daily|daily|experiment}`.
+   Call shape verified in the Phase 3 drill.
 
 ### 4.2 New daily model
 
@@ -271,9 +274,10 @@ candidate) *before* install. If good → proceed with confidence.
       2-GPU aware — both-GPUs-visible + per-GPU VRAM budget w/ GPU 1 XOR semantics.
       Pre-existing `--timeout` compose-flag bug fixed — it was silently no-op'ing
       every ComfyUI stop; caught by the drill.)
-- [x] Locate + integrate `homelab.sh` (§7.1). (**Locate: still open — not on matrix,
-      awaiting Chuck.** Integrate: the call shape `model-manager mode switch --yes
-      {legacy-daily|daily|experiment}` is verified working for all three modes.)
+- [x] Locate + integrate `homelab.sh` (§7.1). (**Resolved 2026-11-21: it is
+      `scripts/model-manager` itself — no separate wrapper script (Chuck).**
+      Call shape `model-manager mode switch --yes
+      {legacy-daily|daily|experiment}` verified working for all three modes.)
 - [x] Rollback drill: `legacy-daily` switch + back, timed, logged (`state/phase3_drill_20261121.log`).
       vLLM `qwen38` untouched throughout (container `State.StartedAt` identical
       pre/post; :8000 served `qwen38-27b` the whole time). Media stack down ~2 min
@@ -312,8 +316,10 @@ candidate) *before* install. If good → proceed with confidence.
 
 ## 7. Open questions (need your answers)
 
-1. **Where does `homelab.sh` live?** Not on matrix (searched /home/chuck, /opt, /srv,
-   /usr/local/bin). Thor? your dotfiles? Need it to confirm the mode-switch call shape.
+1. ~~**Where does `homelab.sh` live?**~~ — **settled 2026-11-21 (Chuck): it is
+   `scripts/model-manager`** — no separate wrapper script exists; the mode-switch
+   entry point is the model-manager script itself. Call shape
+   `model-manager mode switch --yes <mode>` verified in the Phase 3 drill.
 2. **Copywriter model**: Gemma 4 31B (dense, ~19 GB Q4, higher quality ceiling) vs
    26B MoE (17 GB, faster)? And what context budget do you want (8K / 16K / 32K)?
 3. **Exact 4000 SKU** (for the PSU/connector check in §5.1)?
@@ -384,3 +390,9 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   in 10 s; `gpu1 swap` verified both directions. `homelab.sh` locate still open
   (§7.1 — not on matrix); its call shape is verified working. Docs:
   `modes-2gpu-draft.md` → APPLIED, inventory 2026-11-21 snapshot.
+- 2026-11-21: v0.9 — **open question §7.1 settled (Chuck): `homelab.sh` is
+  `scripts/model-manager`** — no separate wrapper script exists; the mode-switch
+  entry point is the model-manager script itself. All plan/doc references updated
+  (goal §1, current state §2, §4.1, Phase 3 item, §7.1); the script header now
+  states the external call shape (`model-manager mode switch --yes <MODE>`) and
+  lists the `gpu1` command (was missing from the header).
