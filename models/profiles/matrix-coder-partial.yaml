@@ -1,0 +1,70 @@
+# matrix-coder-partial — the smaller-footprint daily (Phase 4 rollback path)
+# Status: ROLLBACK (not the default — daily/qwen-coder use matrix-coder, the bumped config)
+# 2026-11-21 (Phase 4): the bumped 27B (mem-util 0.95, seqs 5, 256K ctx) was
+# promoted to the daily runner. This profile preserves the pre-bump PARTIAL
+# config (0.75 / seqs 3 / 192K) — the one that leaves ~14 GB on GPU 0 for the
+# small queued media pipeline (pre-2-GPU). Wired to the `legacy-daily` mode:
+#   model-manager mode switch --yes legacy-daily
+# (stops the bumped qwen38, starts this one; the LiteLLM alias 'matrix-coder'
+# keeps serving qwen38-27b — the rollback is transparent to clients.)
+
+name: matrix-coder-partial
+alias: matrix-coder
+backend: vllm
+status: rollback
+
+model:
+  path: unsloth/Qwen3.8-27B-NVFP4
+  quantization: NVFP4 (NVIDIA 4-bit, Blackwell native)
+  format: modelopt
+  expected_vram: ~58 GB (measured 2026-08-23, mem-util 0.75)
+  parameters: 27B dense (hybrid GDN + vision)
+  context: 196608
+  vision: true
+
+launch:
+  container: qwen38
+  image: vllm/vllm-openai:latest
+  compose: compose/legacy/compose.qwen-coder-075-14gb-media.yml
+  port: 8000
+  shm_size: 16g
+  volumes:
+    - /home/chuck/data/models:/data/models
+    - /home/chuck/homelab/scripts/templates:/templates:ro
+  env:
+    HF_HOME: /data/models
+    HF_TOKEN: "${HF_TOKEN}"
+    HF_XET_HIGH_PERFORMANCE: "1"
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  args:
+    --model: unsloth/Qwen3.8-27B-NVFP4
+    --served-model-name: qwen38-27b
+    --host: 0.0.0.0
+    --port: 8000
+    --max-model-len: 196608
+    --max-num-seqs: 3
+    --max-num-batched-tokens: 8192
+    --gpu-memory-utilization: 0.75
+    --kv-cache-dtype: fp8
+    --enable-prefix-caching: true
+    --enable-chunked-prefill: true
+    --enable-auto-tool-choice: true
+    --tool-call-parser: qwen3_coder
+    --trust-remote-code: true
+    --limit-mm-per-prompt: '{"image": 5, "video": 2}'
+    --reasoning-parser: qwen3
+    --speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
+    --default-chat-template-kwargs: '{"preserve_thinking": true, "reasoning_effort": "high"}'
+    --override-generation-config: '{"temperature": 0.7, "top_p": 0.95}'
+
+health:
+  endpoint: http://localhost:8000/v1/models
+  expected_model_name: qwen38-27b
+
+compatible_modes:
+  - legacy-daily
+
+notes:
+  - "Same model + served name as matrix-coder (qwen38-27b on :8000) — mutually exclusive composes (same container qwen38 + port 8000); model-manager stops the running one before starting the other"
+  - "The PARTIAL config: mem-util 0.75 leaves ~14 GB on GPU 0 for the small media pipeline (ComfyUI ~14 GB gate) — how the stack ran queued on GPU 0 pre-2-GPU"
+  - "Benchmark at this config: 123.95 tok/s mean (baseline 20260825_222844); the bumped daily (matrix-coder) measures 136.74 tok/s (20261121_165352)"

@@ -34,7 +34,7 @@ usage() {
     echo "Usage: $0 <MODE|PROFILE>"
     echo ""
     echo "Modes:    daily  legacy-daily  qwen-coder  qwen-long  llms  experiment  images"
-    echo "Profiles: matrix-coder  matrix-gemma4-moe  embeddings  qwen-long  experiment  comfyui"
+    echo "Profiles: matrix-coder  matrix-coder-partial  matrix-gemma4-moe  embeddings  qwen-long  experiment  comfyui"
     echo "          media-gpu1  ollama-copywriter-gpu1  matrix-coder-flashnext"
     exit 2
 }
@@ -120,7 +120,10 @@ section "Profiles"
 # Map modes to profiles (MUST stay in sync with scripts/model-manager MODE_PROFILES)
 declare -A MODE_PROFILES
 MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
-MODE_PROFILES[legacy-daily]="matrix-coder matrix-gemma4-moe embeddings"
+# legacy-daily = the smaller-footprint daily (Phase 4 rollback): matrix-coder-
+# partial (0.75 PARTIAL config — ~14 GB GPU-0 headroom for the small media
+# pipeline) + gemma4 + embeddings.
+MODE_PROFILES[legacy-daily]="matrix-coder-partial matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
 MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"

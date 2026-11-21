@@ -490,3 +490,24 @@ Docs-only references (no compose/profile/model-manager callers).
 - Draft `compose/qwen-coder-bumped.yml` promoted to canonical
   `compose/qwen-coder.yml` + `models/profiles/matrix-coder.yaml` (both modes —
   `daily` and `qwen-coder` — use the profile).
+
+### Phase 4 — rollback path verified + baseline promoted (drill)
+
+- **`legacy-daily` mode now = the smaller-footprint daily** (new
+  `matrix-coder-partial` profile: 0.75/seqs3/192K, same model + served name
+  `qwen38-27b`). `model-manager mode switch --yes legacy-daily` is the
+  one-command rollback — transparent to clients (the LiteLLM alias serves
+  `qwen38-27b` either way). Preflight 24 PASS / 0 FAIL.
+- **Phase 4 drill (`state/phase4_drill_20261121.log`):** pre-freed GPU 1
+  (`docker restart comfyui_backend` — ComfyUI models resident ~11 GB from the
+  day's QA runs; the 17 GB gemma4:26b load needs the card mostly free).
+  qwen-coder → legacy-daily **187 s**: partial verified (max_model_len
+  **196608**, GPU 0 **56.2 GB**, gemma4:26b loaded 100 % GPU). → qwen-coder
+  **147 s**: bumped verified (max_model_len **262144**, GPU 0 **70.8 GB**).
+  Media stack restored ~15 s (the switch stops it — converge-to-target,
+  intended per the Phase 3 drill procedure).
+- **Baseline promoted** (`benchmark.sh --update-baseline`, run
+  `20261121_171732`, `data/benchmarks/baseline/summary.json`): TTFT
+  **28.8 ms** (was 35.52), **136.47 tok/s** mean (was 123.95), stress
+  4-concurrent **36.7 req/s (was 23.9 — +54 %** — the seqs bump paying off
+  under concurrency), 80/80 stress OK. VRAM 70.8 GB (by design at 0.95).

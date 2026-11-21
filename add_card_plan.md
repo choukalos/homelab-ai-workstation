@@ -485,3 +485,15 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   (headroom ~2 GB → ~0.6 GB, below the ~1 GB target). Agent-down window used:
   qwen38 recreated 16:47 UTC, ~4 min to healthy. Phase 5 (QNF) is next — it
   compares against this config.
+- 2026-11-21: **Phase 4 closed out — rollback path verified + baseline
+  updated.** `matrix-coder-partial` profile (0.75/seqs3/192K, same model +
+  served name) wired into `legacy-daily` (model-manager + preflight) —
+  one-command rollback, transparent to clients. Phase 4 drill
+  (`state/phase4_drill_20261121.log`): qwen-coder → legacy-daily 187 s
+  (partial verified: max_model_len 196608, GPU 0 56.2 GB, gemma4:26b loaded),
+  → qwen-coder 147 s (bumped verified: 262144, GPU 0 70.8 GB), media stack
+  restored ~15 s. Baseline promoted (`benchmark.sh --update-baseline`,
+  `data/benchmarks/baseline/summary.json`): TTFT 28.8 ms (was 35.5), 136.47
+  tok/s (was 123.95), stress 4-concurrent 36.7 req/s (was 23.9 — **+54 %**).
+  `EXPERIMENTS_RESULTS.md` + `docs/matrix_runtime_modes.md` refreshed for the
+  2-GPU era.

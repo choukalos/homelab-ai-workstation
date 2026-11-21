@@ -1,11 +1,15 @@
 # Matrix Runtime Modes
 
-> Documented: 2026-07-03, updated 2026-08-25 (Qwen3.8-27B NVFP4 promotion + speed fix; primary container renamed `qwen36` → `qwen38`)
+> Documented: 2026-07-03, updated 2026-08-25 (Qwen3.8-27B NVFP4 promotion + speed fix; primary container renamed `qwen36` → `qwen38`), **updated 2026-11-21 (2-GPU era: GPU 1 for media/copywriter, daily bumped to 0.95/seqs5/256K, `legacy-daily` = smaller-footprint rollback — see add_card_plan.md Phases 1–4)**
 
 ## How Modes Work
 
-Matrix has one 72 GB GPU. Each mode defines which models run, how much VRAM each gets,
-and which LiteLLM aliases are valid. Mode switches require stopping/restarting containers.
+Matrix has two GPUs: **GPU 0 = RTX PRO 5000 (72 GB)** — the daily LLM (vLLM, :8000) — and
+**GPU 1 = RTX PRO 4000 (24 GB)** — media pipeline (ComfyUI) XOR Ollama copywriter (gemma4:31b),
+XOR-enforced by the media pipeline's headroom guard. Each mode defines which models run, how much
+VRAM each gets, and which LiteLLM aliases are valid. Mode switches require stopping/restarting
+containers. Modes that don't list the media stack **stop it** (converge-to-target); restore with
+`docker compose -f compose/comfyui.yml --profile image up -d`.
 
 The `matrix-coder` LiteLLM alias always points at port 8000 — whatever model is running
 there is "the main model" to clients.
@@ -14,19 +18,20 @@ there is "the main model" to clients.
 
 ## `daily` — Normal Chat/Coding Use
 
-**What's running:**
+**What's running (2-GPU steady state):**
 
-| Service | Container | Model | Port | Backend | VRAM |
-|---|---|---|---|---|---|
-| Primary model | `qwen38` | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~54 GB (0.75 util) |
-| Light model | `ollama` | gemma4:26b (Q4_K_M) | 11434 | Ollama | ~17 GB (on demand) |
-| Embeddings | `ollama` | nomic-embed-text (F16) | 11434 | Ollama | ~274 MB |
-| Metrics | `node-exporter`, `dcgm-exporter` | — | 9100, 9400 | — | N/A |
+| Service | Container | GPU | Model | Port | Backend | VRAM |
+|---|---|---|---|---|---|---|
+| Primary model | `qwen38` | 0 | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~69 GB (0.95 util) |
+| Media stack | `comfyui_backend` + `media_pipeline` | 1 | LTXV 13B + SeedVR2 + Qwen-Image | 8188/8189 | ComfyUI | ~10–12 GB (models resident) |
+| Copywriter | `ollama` | 1 | gemma4:31b (Q4_K_XL) | 11434 | Ollama | ~22 GB (on demand, XOR media) |
+| Embeddings | `ollama` | 1 | nomic-embed-text (F16) | 11434 | Ollama | ~274 MB |
+| Metrics | `node-exporter`, `dcgm-exporter` | — | — | 9100, 9400 | — | N/A |
 
-**vLLM args (from compose/qwen-coder.yml):**
-- `--gpu-memory-utilization 0.75` → ~54 GB reserved (~58 GB measured with other services running)
-- `--max-model-len 196608`
-- `--max-num-seqs 3`
+**vLLM args (from compose/qwen-coder.yml — bumped 2026-11-21, add_card_plan Phase 4):**
+- `--gpu-memory-utilization 0.95` → ~69 GB reserved (GPU 0 is dedicated to the daily LLM)
+- `--max-model-len 262144` (256K)
+- `--max-num-seqs 5`
 - `--max-num-batched-tokens 8192`
 - `--kv-cache-dtype fp8`
 - `--enable-prefix-caching`
@@ -50,7 +55,8 @@ there is "the main model" to clients.
 cd /home/chuck/homelab
 docker compose -f compose/metrics.yml up -d
 docker compose -f compose/qwen-coder.yml up -d
-docker compose -f compose/gemma4-moe.yml up -d
+docker compose -f compose/comfyui.yml --profile image up -d   # media stack (GPU 1)
+# Ollama is a plain container (ollama:latest) — start with `docker start ollama`
 ```
 
 **Health checks:**
@@ -71,14 +77,16 @@ curl -s http://localhost:9400/metrics | head -1 # dcgm-exporter
 
 **What's running:**
 
-| Service | Container | Model | Port | Backend | VRAM |
-|---|---|---|---|---|---|
-| Primary model | `qwen38` | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~54 GB (gpu-mem 0.75) |
-| Embeddings | `ollama` | nomic-embed-text | 11434 | Ollama | ~274 MB |
+| Service | Container | GPU | Model | Port | Backend | VRAM |
+|---|---|---|---|---|---|---|
+| Primary model | `qwen38` | 0 | unsloth/Qwen3.8-27B-NVFP4 | 8000 | vLLM | ~69 GB (gpu-mem 0.95) |
+| Embeddings | `ollama` | 1 | nomic-embed-text | 11434 | Ollama | ~274 MB |
 
 **Changes from daily:**
 - Same model and vLLM args as daily (`compose/qwen-coder.yml`)
-- Ollama runs embeddings only (gemma4 unloaded)
+- Ollama runs embeddings only (copywriter unloaded from GPU 1)
+- The media stack (ComfyUI) is not part of this mode — if it's running it keeps running;
+  a switch *from* a mode that lists it will stop it (see How Modes Work)
 
 **LiteLLM aliases valid:** `matrix-coder`, `embeddings`
 **Aliases offline:** `matrix-gemma4-moe` (gemma4 unloaded from Ollama)
@@ -86,7 +94,7 @@ curl -s http://localhost:9400/metrics | head -1 # dcgm-exporter
 **Startup:**
 ```bash
 # Stop Gemma in Ollama
-docker exec ollama ollama unload gemma4:26b
+docker exec ollama ollama stop gemma4:26b
 # vLLM: standard production config
 docker compose -f compose/qwen-coder.yml down
 docker compose -f compose/qwen-coder.yml up -d
@@ -95,6 +103,24 @@ docker compose -f compose/qwen-coder.yml up -d
 **Health check:** `curl -s http://localhost:8000/v1/models`
 
 **Rollback to daily:** Restart Ollama with gemma4 loaded (vLLM unchanged).
+
+---
+
+## `legacy-daily` — Smaller-Footprint Rollback (pre-Phase-4 config)
+
+> Added 2026-11-21 (add_card_plan Phase 4). The pre-bump daily config, preserved as the
+> rollback target: `--gpu-memory-utilization 0.75`, `--max-num-seqs 3`, `--max-model-len 196608`
+> (`compose/legacy/compose.qwen-coder-075-14gb-media.yml` + profile `matrix-coder-partial`).
+> Note: the 0.75 config existed to leave ~14 GB on GPU 0 for the small (GPU-0) media pipeline —
+> that co-location no longer exists (media is on GPU 1), so the headroom is now just headroom.
+
+**What's running:** same as `daily` except the vLLM args (0.75/seqs3/192K, ~56 GB on GPU 0)
+and gemma4:26b loaded in Ollama.
+
+**Switch:** `model-manager mode switch --yes legacy-daily` (~3 min; vLLM swap + gemma4 load).
+**Verified:** Phase 4 drill 2026-11-21 (`state/phase4_drill_20261121.log`) — 187 s to the
+partial config (max_model_len 196608, GPU 0 56.2 GB), 147 s back, media stack restored in ~15 s.
+Transparent to clients: the LiteLLM alias `matrix-coder` serves `qwen38-27b` either way.
 
 ---
 
@@ -124,6 +150,8 @@ docker compose -f compose/qwen-long.yml up -d
 ```
 
 **⚠️ Compose + profile exist** (`compose/qwen-long.yml`, `models/profiles/qwen-long.yaml`) **but the mode switch has not been verified end-to-end yet** (see TODO).
+**⚠️ Superseded (2026-11-21):** the model here (`Lorbus/Qwen3.6-27b-int4-AutoRound`) is retired —
+the daily now serves 256K natively (Phase 4). Revisit only if >256K contexts become needed.
 
 **Rollback to daily:** Restart vLLM with standard `compose/qwen-coder.yml` args.
 
@@ -146,7 +174,8 @@ in `llms` mode you're actively using both models together.
 
 **LiteLLM aliases valid:** `matrix-coder`, `matrix-gemma4-moe`, `embeddings`
 
-**This is the current production state.**
+**Current production state as of 2026-11-21: `qwen-coder`** (daily's vLLM config, copywriter
+on-demand on GPU 1, media stack running).
 
 ---
 
@@ -191,9 +220,10 @@ docker compose -f compose/qwen-coder.yml up -d
 ## Image generation (ComfyUI) — not a mode
 
 > Updated 2026-08-27: image generation no longer requires stopping vLLM.
-> ComfyUI (Qwen-Image) runs **concurrently with any mode** at a ~12 GB VRAM
-> budget (`--reserve-vram 60`). `matrix-coder` stays online. The **media-pipeline**
-> orchestrator (port 8189) runs in the same `image` profile and starts/stops with ComfyUI.
+> **Updated 2026-11-21 (Phase 1):** the media stack now runs on **GPU 1** (24 GB card) —
+> `device_ids: ['1']`, no `--reserve-vram`. GPU 0 is untouched. The media pipeline's
+> headroom guard enforces the GPU-1 XOR with the Ollama copywriter (frees ComfyUI's VRAM
+> before a copywriter load if <8 GB is free).
 
 **Start / stop:**
 ```bash
@@ -203,8 +233,8 @@ curl -s http://localhost:8189/health                           # verify media-pi
 docker compose -f compose/comfyui.yml --profile image down     # stop (both)
 ```
 
-**VRAM:** ~12 GB cap; 9.3–14.4 GB measured peaks; total-GPU peak ≤ ~71.2 GB.
-Idle cost ~0.7 GB — safe to leave running.
+**VRAM (GPU 1):** models resident ~10–12 GB when idle after use; peaks ~16 GB (480p Wan
+upscale). Idle cost ~0.7 GB — safe to leave running.
 
 **Media-pipeline rebuild** (after code changes): `model-manager rebuild media-pipeline`.
 
@@ -219,7 +249,8 @@ Idle cost ~0.7 GB — safe to leave running.
 | Target mode | Stop containers | Start containers | Aliases affected |
 |---|---|---|---|
 | `daily` | (none — this is current) | (none) | all valid |
-| `qwen-coder` | Ollama gemma4 (unload) | vLLM @ higher gpu-mem | gemma4-moe offline |
+| `qwen-coder` | Ollama gemma4 (unload) | vLLM @ 0.95/seqs5/256K | gemma4-moe offline |
+| `legacy-daily` | vLLM (swap to 0.75/seqs3/192K) | vLLM partial + gemma4:26b | coder → partial (same served name) |
 | `qwen-long` | vLLM, Ollama gemma4 | vLLM @ long-ctx args | gemma4-moe offline |
 | `llms` | (same as daily) | (same as daily) | all valid |
 | `experiment` | vLLM | vLLM with new model | coder points to experiment |
@@ -228,11 +259,21 @@ Idle cost ~0.7 GB — safe to leave running.
 
 ---
 
-## VRAM Budget (72 GB GPU)
+## VRAM Budget (2-GPU)
 
-| Mode | vLLM | Ollama | Total | Headroom |
-|---|---|---|---|---|
-| `daily` | ~54 GB (0.75 util) | ~17 GB (gemma4) + 274 MB | ~71 GB (peak) | tight — gemma4 loads on demand, 5m keep-alive |
-| `qwen-coder` | ~54 GB (0.75 util) | ~274 MB (embed only) | ~54 GB | ~18 GB |
-| `qwen-long` | ~50-55 GB | ~274 MB | ~50-55 GB | ~17-22 GB |
-| `experiment` | varies | varies | varies | varies |
+**GPU 0 (72 GB) — daily LLM:**
+
+| Mode | vLLM | Headroom |
+|---|---|---|
+| `daily` / `qwen-coder` / `llms` | ~69 GB (0.95 util, Phase 4) | ~3 GB (KV pool pre-allocated) |
+| `legacy-daily` | ~56 GB (0.75 util) | ~16 GB |
+| `qwen-long` | ~50-55 GB | ~17-22 GB |
+| `experiment` | varies | varies |
+
+**GPU 1 (24 GB) — media XOR copywriter:**
+
+| Tenant | VRAM | Notes |
+|---|---|---|
+| Media stack (ComfyUI + pipeline) | ~10–12 GB resident, ~16 GB peaks | LTXV/SeedVR2/Qwen-Image models |
+| Copywriter (gemma4:31b) | ~22 GB @ 32K ctx (64K default) | Ollama, unloads after 5 min idle |
+| Both (XOR violation) | — | headroom guard frees ComfyUI VRAM before a copywriter load if <8 GB free |

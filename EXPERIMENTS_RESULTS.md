@@ -463,6 +463,50 @@ decision pending long-context verification (open items below).**
 - **Action (done 2026-11-14):** reran with the CUDA image — valid results above. The 20261113_171630
   numbers are CPU numbers and must not be compared to the NVFP4 vLLM baseline.
 
+## Daily Config Change: Phase 4 bump (2026-11-21, add_card_plan.md)
+
+Not a model experiment — a benchmarked config change to the daily driver
+(same model: unsloth/Qwen3.8-27B-NVFP4). Media pipeline moved to GPU 1 in
+Phase 1, so GPU 0 is dedicated to the daily LLM and the 0.75 PARTIAL config
+(which left ~14 GB for the small GPU-0 media pipeline) is no longer needed.
+
+| Arg | Before | After | Why |
+|---|---|---|---|
+| `--gpu-memory-utilization` | 0.75 | **0.95** | reclaim ~14 GB for KV cache |
+| `--max-num-seqs` | 3 | **5** | user priority: concurrent seqs > context length |
+| `--max-model-len` | 196608 | **262144** | 256K ("okay" per user; 192K was the good baseline) |
+
+**Benchmark (same methodology as the 123.95 baseline — completions, streaming,
+512 tok × 20):** baseline updated 2026-11-21 (`data/benchmarks/baseline/summary.json`,
+run `20261121_171732`):
+
+| Metric | Before (0.75/seqs3/192K) | After (0.95/seqs5/256K) | Δ |
+|---|---|---|---|
+| TTFT (mean) | 35.52 ms | **28.80 ms** | −19 % |
+| Throughput (mean) | 123.95 tok/s | **136.47 tok/s** | +10 % |
+| Stress 4-concurrent | 23.9 req/s | **36.7 req/s** | **+54 %** |
+| VRAM (GPU 0) | 56.6 GB | 69.1 GB | (by design) |
+
+The stress delta is the seqs bump paying off: under 4 concurrent requests
+throughput jumped +54 % (single-stream decode is ~10 %). KV pool:
+42.47 GiB = 1,218,373 tokens (4.65× at full 256K; 20–60× at typical 30–60K
+agent contexts — the pool, not max-num-seqs, is the real concurrency limit).
+The 0.97/seqs-6 step was evaluated and **held** (+~4 % KV for free headroom
+dropping ~2 GB → ~0.6 GB, below the ~1 GB safety target).
+
+**Rollback path (verified 2026-11-21 drill, `state/phase4_drill_20261121.log`):**
+the pre-bump config is archived as `compose/legacy/compose.qwen-coder-075-14gb-media.yml`
+(the PARTIAL config — ~14 GB GPU-0 headroom for the small media pipeline) +
+new profile `models/profiles/matrix-coder-partial.yaml`. `legacy-daily` mode
+now uses it:
+`model-manager mode switch --yes legacy-daily` (drill: 187 s to the partial
+config — max_model_len 196608, GPU 0 56.2 GB, gemma4:26b loaded — 147 s back
+to the bumped config, media stack restored in ~15 s). The LiteLLM alias
+`matrix-coder` serves `qwen38-27b` either way — the rollback is transparent
+to clients.
+
+---
+
 ## Next Steps
 
 1. ~~Update daily driver with MTP~~ (applied 2026-08-14, superseded by the Qwen3.8 NVFP4 promotion on 2026-08-24)
@@ -482,5 +526,12 @@ decision pending long-context verification (open items below).**
 > (Phase 0b, on hold for a Chuck-scheduled window) is the reference for the x8
 > delta. Rollback target for the daily swap = `legacy-daily` mode (verified by the
 > 2026-11-21 drill, `state/phase3_drill_20261121.log`).
+>
+> **2026-11-21 (Phase 4 complete):** the daily is now the **bumped 27B**
+> (0.95/seqs5/256K — see the Phase 4 section above); the QNF experiment
+> compares against this config, and its rollback target is `legacy-daily`
+> (now = the smaller-footprint 0.75 PARTIAL config via
+> `matrix-coder-partial`, verified by the Phase 4 drill,
+> `state/phase4_drill_20261121.log`).
 
 > **2026-09-27 cleanup:** all artifacts for the done/superseded/dropped rounds were removed — 9 experiment compose files, 9 profiles, 7 stopped containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). This file is the permanent record of those results. Kept locally: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver).

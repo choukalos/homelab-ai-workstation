@@ -44,14 +44,18 @@ mkdir -p "$STATE_DIR"
 
 # Mode → profiles mapping (must match preflight.sh and runtime modes doc)
 declare -A MODE_PROFILES
-# 2-GPU modes (add_card_plan.md Phase 3, 2026-11-21):
+# 2-GPU modes (add_card_plan.md Phase 3, 2026-11-21; Phase 4 2026-11-21):
 #   daily        — 2-GPU steady state: GPU 0 daily driver + GPU 1 (media XOR
-#                  copywriter). The GPU 0 profile is swapped in Phase 4/5
-#                  (matrix-coder → bumped 27B, or matrix-coder-flashnext if QNF wins).
-#   legacy-daily — rollback target = the single-card setup (GPU 0 only; media
-#                  reachable via the `images` mode). Guaranteed rollback.
+#                  copywriter). GPU 0 = the bumped 27B (Phase 4: mem-util 0.95,
+#                  seqs 5, 256K ctx); swapped to matrix-coder-flashnext if QNF
+#                  wins Phase 5.
+#   legacy-daily — rollback target: the smaller-footprint daily (matrix-coder-
+#                  partial — the 0.75 PARTIAL config that leaves ~14 GB on GPU 0
+#                  for the small media pipeline) + gemma4 + embeddings.
+#                  `model-manager mode switch --yes legacy-daily` is the path
+#                  back to the pre-Phase-4 vLLM footprint.
 MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
-MODE_PROFILES[legacy-daily]="matrix-coder matrix-gemma4-moe embeddings"
+MODE_PROFILES[legacy-daily]="matrix-coder-partial matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
 MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"

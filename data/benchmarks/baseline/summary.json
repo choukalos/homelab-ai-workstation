@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-25T22:28:44Z",
+  "timestamp": "2026-11-21T17:17:32Z",
   "profile": "matrix-coder",
   "model": "unsloth/Qwen3.8-27B-NVFP4",
   "endpoint": "http://localhost:8000/v1",
@@ -11,26 +11,26 @@
     "tokens": 512
   },
   "gpu": {
-    "vram_used_before_mb": 53747,
-    "vram_used_after_mb": 56575,
-    "gpu_util_before_pct": 0,
-    "gpu_util_after_pct": 92
+    "vram_used_before_mb": 70764,
+    "vram_used_after_mb": 70768,
+    "gpu_util_before_pct": 100,
+    "gpu_util_after_pct": 100
   },
   "latency": {
-    "ttft_ms_mean": 35.52,
-    "ttft_ms_median": 35.25,
-    "ttft_ms_p95": 39.08,
-    "ttft_ms_min": 34.9,
-    "ttft_ms_max": 39.08,
-    "total_ms_mean": 36.49,
-    "total_ms_median": 36.3,
+    "ttft_ms_mean": 28.8,
+    "ttft_ms_median": 28.67,
+    "ttft_ms_p95": 30.88,
+    "ttft_ms_min": 27.63,
+    "ttft_ms_max": 30.88,
+    "total_ms_mean": 29.78,
+    "total_ms_median": 29.61,
     "total_runs": 20
   },
   "throughput": {
-    "tokens_per_sec_mean": 123.95,
-    "tokens_per_sec_median": 123.98,
-    "tokens_per_sec_min": 117.19,
-    "tokens_per_sec_max": 130.7,
+    "tokens_per_sec_mean": 136.47,
+    "tokens_per_sec_median": 136.33,
+    "tokens_per_sec_min": 129.6,
+    "tokens_per_sec_max": 143.47,
     "target_tokens": 512,
     "total_runs": 20
   },
@@ -40,7 +40,7 @@
     "total_requests": 80,
     "success": 80,
     "fail": 0,
-    "avg_time_per_request_s": 0.837,
-    "total_throughput_req_per_s": 23.9
+    "avg_time_per_request_s": 0.545,
+    "total_throughput_req_per_s": 36.67
   }
 }
