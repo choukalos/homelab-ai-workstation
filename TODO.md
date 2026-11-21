@@ -1,7 +1,7 @@
 # TODO
 
 Consolidated open work across the homelab repo. Sources are listed per item.
-Last consolidated: 2026-09-27 (experiment cleanup + backup-chain plan).
+Last consolidated: 2026-11-21 (M1–M5 follow-ups closed; T1–T5 + media-film skill marked live; Experiment 8 consolidated into add_card_plan Phase 5; benchmark plan status corrected to IMPLEMENTED).
 
 ## Active
 
@@ -38,7 +38,7 @@ Detailed reference: `docs/backup_chain_plan.md`.
 
 ### vLLM / model experiments
 
-- [ ] **Experiment 8 follow-up: Flash-Next long-context verification + promotion decision** — rerun 2026-11-14 valid (291.4 tok/s = 2.35× the daily driver, quality 4/5 solid; first 2026-11-13 run invalid — CPU-only image). Pending: (a) long-context quality rerun — harness reads only `message.content`, missing `reasoning_content` (thinking model) + `max_tokens: 64` too small; (b) 2×256K concurrent decode test to verify QSA sparse attention in llama.cpp + the 60–75 tok/s/session estimate. Then decide: promote Flash-Next IQ4_XS as the daily driver, or keep NVFP4 27B. *(EXPERIMENTS_RESULTS.md, Experiment 8)*
+- [x] **Experiment 8 follow-up: Flash-Next long-context verification + promotion decision** — **CONSOLIDATED into `add_card_plan.md` Phase 5 (2026-11-21)**: the x16 baseline is captured (291.4 tok/s, 2026-11-14 rerun — boot-journal proven; first 2026-11-13 run invalid — CPU-only image), and the pending items (long-context quality rerun with `reasoning_content` + larger `max_tokens`; 2×256K → 4×256K concurrent decode at x8 to verify QSA sparse attention; promotion decision vs the bumped 27B) are now Phase 5's gate sequence. *(add_card_plan.md Phase 0b/5, EXPERIMENTS_RESULTS.md Experiment 8)*
 - [ ] **vLLM deferred features** — keep as candidates, revisit later (see the candidate table + evaluation protocol). *(docs/matrix_vllm_features.md)*
 
 ### Media pipeline / MCP follow-ups (from 2026-09-25 verification)
@@ -50,13 +50,14 @@ Detailed reference: `docs/backup_chain_plan.md`.
 ### Media pipeline / MCP follow-ups (2026-11-02 incident)
 
 Context: 2026-11-02 film run — 4 client-side orchestration crashes lost 9 job
-IDs (unrecoverable: in-memory registry only, no log lines, no listing). Matrix
-side fixed 2026-11-04; thor + Mac sides pending. Incident context + environment
-map: `docs/media_film_skill_spec.md` §1–2.
+IDs (unrecoverable: in-memory registry only, no log lines, no listing). All
+sides fixed: Matrix 2026-11-04, thor T1–T5 live (verified 2026-11-21), Mac
+skill implemented (harness `agents-skills/media-film/`). Incident context +
+environment map: `docs/media_film_skill_spec.md` §1–2.
 
 - [x] **Matrix: lost job IDs unrecoverable** — **FIXED 2026-11-04 (matrix `media-pipeline`):** `GET /jobs` (durable `jobs.jsonl` ledger + live registry; filters `status`/`client`/`user`/`flow`/`since`/`limit`), job IDs logged to `docker logs media_pipeline` (submit + finish), structured 404 on unknown job. Verified live incl. ledger durability across a container restart. Evidence: `docs/matrix_validation_log.md` (Run 2026-11-04); contract: `docs/matrix_media_pipeline_api.md` §2 + §7.1. SQLite registry evaluated + deferred (ledger covers it at current volume).
-- [ ] **Thor: mcp_media additions (T1–T5)** — SUBMIT/DONE log lines, `media_list_jobs` tool + `client` passthrough, 60 s MCP timeout in tool descriptions, `media_fetch` basename-collision fix, mcp_vision permission fix. Spec: `docs/thor_media_mcp_handoff.md` (~2 h, all additive).
-- [ ] **Mac: `media-film` orchestration skill** — state file on disk after every submit, retry wrapper on every MCP call, timeboxed chunks, resume protocol (state file + `/health` + `GET /jobs`), queue management, QC gates, publish checklist. Spec: `docs/media_film_skill_spec.md` (~1–2 h; dry-run + kill test to verify).
+- [x] **Thor: mcp_media additions (T1–T5)** — **LIVE (verified 2026-11-21)**: SUBMIT/DONE log lines, `media_list_jobs` tool + `client` passthrough, 60 s MCP timeout in tool descriptions, `media_fetch` basename-collision fix, mcp_vision permission fix — all in the deployed `mcp_media` server (harness repo commit `23a2e79` records "thor_media_mcp_handoff T1-T5 live"; deployed tool list confirms `media_list_jobs` + submit-and-poll). Spec: `docs/thor_media_mcp_handoff.md`. M1–M5 additions (`media_kill_job`, `media_queue_status`) shipped 2026-11-21 (harness `7f2d0d3`, 24/24 live acceptance).
+- [x] **Mac: `media-film` orchestration skill** — **IMPLEMENTED** in the harness repo (`agents-skills/media-film/`: SKILL.md + references + templates + tools) — state file after every submit, retried MCP calls, timeboxed chunks, resume protocol on the durable ledger, QC gates, publish checklist. Extended 2026-11-19 with the SW Holiday Spoof production lessons (C1–C14, A2, D1) and the M1–M5 contract (2026-11-21). Spec: `docs/media_film_skill_spec.md` (superseded by the skill itself).
 
 ### Modes / switching
 

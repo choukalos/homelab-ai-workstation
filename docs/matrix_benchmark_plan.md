@@ -1,7 +1,11 @@
 # Matrix Benchmark Plan
 
 > Created: 2026-07-03
-> Status: Design + script draft
+> Status: **IMPLEMENTED** — `scripts/benchmark.sh` is live (results in
+> `data/benchmarks/` since 2026-07-03; baseline + per-run snapshots). This doc
+> is its design reference. Model-promotion decisions run on top via the
+> experiment system (`EXPERIMENTS_RESULTS.md` — one experiment = one compose
+> file + profile + benchmark + quality review).
 
 ## Purpose
 

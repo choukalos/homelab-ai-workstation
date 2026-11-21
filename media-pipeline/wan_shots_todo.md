@@ -1,7 +1,8 @@
 # Wan 2.2 14B I2V for `/shots` — Plan
 
 > Created: 2026-10-25 · Status: **COMPLETE 2026-10-31** (QA passed; default
-> flipped to `wan14b`; thor MCP handoff pending — see `thor_mcp_shot_model_snippet.md`)
+> flipped to `wan14b`; thor MCP handoff delivered — the deployed `media_generate_shot`
+> carries the `model` param, verified in the live tool list 2026-11-21)
 > Related: `docs/matrix_media_pipeline_api.md` (contract + VRAM budget §6),
 > `docs/matrix_comfyui_media_api.md` (ComfyUI :8188), `docs/matrix_inventory.md` (GPU/models)
 
