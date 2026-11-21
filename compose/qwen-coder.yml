@@ -12,6 +12,30 @@
 #     metrics) and vLLM warns multi-forward on the same MTP layer lowers acceptance;
 #     2 matches the vLLM Qwen3-Next recipe and the old INT4 daily-driver config
 #     (137 tok/s baseline).
+#
+# 2026-11-21 BUMP (Phase 4 — add_card_plan.md): media pipeline moved to GPU 1
+# (Phase 1), so GPU 0 is dedicated to the daily LLM and the 0.75 partial config
+# (which left ~14 GB for the small GPU-0 media pipeline) is no longer needed.
+# Bumped per the plan + user direction (concurrent seqs > context length):
+#   - --gpu-memory-utilization 0.75 -> 0.95  (reclaim ~14 GB for KV cache)
+#   - --max-num-seqs 3 -> 5                 (the "concurrent threads" bump — the
+#     priority; 6 only if 5 concurrent sessions queue)
+#   - --max-model-len 196608 -> 262144      (192K -> 256K context — "okay" per user;
+#     192K remained the good baseline, 256K accepted)
+# APPLIED + VERIFIED 2026-11-21 (Phase 4 gate passed): KV pool 42.47 GiB =
+# 1,218,373 tokens (4.65x at full 256K), tool call PASS, benchmark 136.74 tok/s
+# mean vs 123.95 baseline (+10.3%, data/benchmarks/results/20261121_165352),
+# idle 16.8 W / 56 C, no preemptions. The 0.97/seqs-6 step was evaluated and
+# HELD: +~4% KV for free headroom dropping ~2 GB -> ~0.6 GB (below the ~1 GB
+# safety target — vLLM needs activation headroom).
+# x8-immune: weights + KV all live in VRAM, so the PCIe x16->x8 drop (both cards)
+# has no effect. This is the guaranteed fallback if the Flash-Next (QNF)
+# experiment under-performs at x8 (Phase 5).
+#
+# ROLLBACK (partial 14 GB media config): compose/legacy/compose.qwen-coder-075-14gb-media.yml
+# (mem-util 0.75 + seqs 3 + 192K ctx — leaves ~14 GB on GPU 0 for the small
+# media pipeline; how the stack ran before the 2-GPU config.)
+#
 # If CUDA graph capture OOMs/crashes on restart, fall back to
 # --compilation-config '{"cudagraph_mode":"PIECEWISE"}' instead of full eager.
 
@@ -37,10 +61,10 @@ services:
       --served-model-name qwen38-27b
       --host 0.0.0.0
       --port 8000
-      --max-model-len 196608
-      --max-num-seqs 3
+      --max-model-len 262144
+      --max-num-seqs 5
       --max-num-batched-tokens 8192
-      --gpu-memory-utilization 0.75
+      --gpu-memory-utilization 0.95
       --kv-cache-dtype fp8
       --enable-prefix-caching
       --enable-chunked-prefill

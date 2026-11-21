@@ -202,7 +202,7 @@ more headroom and is faster. Either works; see §7.2.
    (Matrix boundary: no changes without your approval).
 5. **Ping me** → I start Phase 1.
 
-## 6. My phases (agent — card in since 2026-11-14; Phases 1–3 done)
+## 6. My phases (agent — card in since 2026-11-14; Phases 1–4 done)
 
 > **Ordering (decided 2026-11-13):** card in → **metrics** → **modes/ops** (both get
 > us back to parity) → **ramp up the daily** → **QNF experiment** (swap 27B → QNF as
@@ -318,12 +318,30 @@ candidate) *before* install. If good → proceed with confidence.
 - [x] Update `docs/matrix_inventory.md` (append-only snapshot) + `EXPERIMENTS_RESULTS.md`.
 - [x] **Gate: ops parity** — mode switching + rollback work before any model change.
 
-### Phase 4 — ramp up the daily (GPU 0)
-- [ ] Bumped 27B vLLM (mem-util 0.95→0.98, seqs 4–6, ctx 262144) as the working
-      `daily` (**x8-immune** — all-in-VRAM); verify `matrix-coder` (the agent) is
-      healthy on it.
-- [ ] **Gate: agent healthy on the bumped 27B** — the safe daily the QNF experiment
-      compares against.
+### Phase 4 — ramp up the daily (GPU 0) — **DONE 2026-11-21**
+- [x] Bumped 27B vLLM as the working `daily` (**x8-immune** — all-in-VRAM):
+      mem-util 0.75 → **0.95**, max-num-seqs 3 → **5** (user direction:
+      concurrent seqs > context length), max-model-len 196608 → **262144**
+      (256K — "okay" per user; 192K was the good baseline). The 0.75 config is
+      the PARTIAL config that left ~14 GB on GPU 0 for the small media pipeline
+      (queued, pre-2-GPU) — archived as rollback:
+      `compose/legacy/compose.qwen-coder-075-14gb-media.yml`. The
+      `qwen-coder-bumped.yml` draft was promoted to the canonical
+      `compose/qwen-coder.yml` (profile `matrix-coder.yaml` updated to match).
+- [x] **Gate: agent healthy on the bumped 27B — PASSED 2026-11-21.**
+      Startup clean (CUDA graphs captured, no OOM); KV pool **42.47 GiB =
+      1,218,373 tokens** (4.65× at full 256K; 20–60× at typical 30–60K agent
+      contexts — the pool, not max-num-seqs, is the real concurrency limit).
+      Tool call PASS (0.6 s); same-methodology benchmark (completions,
+      streaming, 512 tok × 10): **136.74 tok/s mean (130.25–141.78) vs the
+      123.95 baseline** (benchmark 20260825_222844; results
+      `data/benchmarks/results/20261121_165352`) — +10.3%. Idle verified
+      (16.8 W / 56 °C, no preemption warnings, prefix cache ~88%). The
+      0.97/seqs-6 step was evaluated and **held**: +~4% KV for free headroom
+      dropping ~2 GB → ~0.6 GB (below the ~1 GB safety target); revisit only
+      if 5 concurrent sessions queue. Agent-down window: qwen38 recreated
+      16:47 UTC (the container serving the agent — expected disruption, ~4 min
+      to healthy).
 
 ### Phase 5 — QNF experiment (swap 27B → QNF as daily)
 > Depends on the Phase 0b x16 baseline — **captured 2026-11-14 (291.4 tok/s @ x16,
@@ -453,3 +471,17 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   speed, not width); noted the util-sticks-at-100 %-while-idle monitoring quirk.
   (d) **`qwen3.6:27b` dropped from Ollama** (16 GB disk freed; docs-only refs).
   (e) **Grafana 2-GPU panels imported on Thor (Chuck)** — Phase 2 fully closed.
+- 2026-11-21: v1.1 — **Phase 4 complete (gate passed).** Bumped 27B daily live:
+  mem-util 0.75 → 0.95, max-num-seqs 3 → 5 (user: concurrent seqs > context),
+  max-model-len 196608 → 262144 (256K). The 0.75 config — the PARTIAL config
+  that left ~14 GB on GPU 0 for the small queued media pipeline (pre-2-GPU)
+  — archived as `compose/legacy/compose.qwen-coder-075-14gb-media.yml` (rollback
+  path if the bumped daily misbehaves or media needs GPU 0 again). Draft
+  `qwen-coder-bumped.yml` promoted to canonical `compose/qwen-coder.yml` +
+  `matrix-coder.yaml` profile. Gate: startup clean (KV pool 42.47 GiB =
+  1,218,373 tokens; 4.65× at full 256K), tool call PASS, benchmark 136.74 tok/s
+  mean vs 123.95 baseline (+10.3%, `data/benchmarks/results/20261121_165352`),
+  idle 16.8 W / 56 °C, no preemptions. 0.97/seqs-6 step evaluated + held
+  (headroom ~2 GB → ~0.6 GB, below the ~1 GB target). Agent-down window used:
+  qwen38 recreated 16:47 UTC, ~4 min to healthy. Phase 5 (QNF) is next — it
+  compares against this config.

@@ -12,9 +12,9 @@ model:
   path: unsloth/Qwen3.8-27B-NVFP4
   quantization: NVFP4 (NVIDIA 4-bit, Blackwell native)
   format: modelopt
-  expected_vram: ~58 GB (measured 2026-08-23)
+  expected_vram: ~58 GB (measured 2026-08-23, mem-util 0.75); ~69 GB at the 2026-11-21 bump (mem-util 0.95)
   parameters: 27B dense (hybrid GDN + vision)
-  context: 196608
+  context: 262144
   vision: true
 
 launch:
@@ -36,10 +36,10 @@ launch:
     --served-model-name: qwen38-27b
     --host: 0.0.0.0
     --port: 8000
-    --max-model-len: 196608
-    --max-num-seqs: 3
+    --max-model-len: 262144
+    --max-num-seqs: 5
     --max-num-batched-tokens: 8192
-    --gpu-memory-utilization: 0.75
+    --gpu-memory-utilization: 0.95
     --kv-cache-dtype: fp8
     --enable-prefix-caching: true
     --enable-chunked-prefill: true
@@ -66,4 +66,5 @@ notes:
   - "Served name changed qwen36-27b → qwen38-27b; Thor LiteLLM matrix-coder entry points to openai/qwen38-27b (thor.litellm.config.yml updated 2026-08-25)"
   - "Container renamed qwen36 → qwen38 (2026-08-24); model-manager and all primary-slot compose files updated"
   - "2026-08-25 speed fix (applied + verified): removed --enforce-eager (it disabled torch.compile + CUDA graphs → decode was CPU-launch-bound at 58-63 tok/s @ 56-59% GPU util) and set MTP 3 → 2 (3rd token acceptance ~55%). Result: 123.95 tok/s @ 92% GPU util (benchmark 20260825_222844)"
+  - "2026-11-21 Phase 4 bump (add_card_plan.md): media pipeline on GPU 1 freed the ~14 GB GPU-0 headroom — mem-util 0.75 → 0.95, max-num-seqs 3 → 5 (user priority: concurrent seqs > context), max-model-len 196608 → 262144 (256K). x8-immune (all-in-VRAM). VERIFIED: KV pool 42.47 GiB = 1,218,373 tokens (4.65x at full 256K), tool call PASS, benchmark 136.74 tok/s mean vs 123.95 baseline (+10.3%, data/benchmarks/results/20261121_165352), idle 16.8 W / 56 C, no preemptions; 0.97/seqs-6 step evaluated + held (headroom ~0.6 GB < ~1 GB target). The 0.75 config is the PARTIAL config that left ~14 GB for the small GPU-0 media pipeline — archived as rollback: compose/legacy/compose.qwen-coder-075-14gb-media.yml"
   - "Rollback: point compose/qwen-coder.yml back at Lorbus/Qwen3.6-27b-int4-AutoRound (see compose/legacy/)"

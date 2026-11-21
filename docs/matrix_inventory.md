@@ -461,3 +461,32 @@ Docs-only references (no compose/profile/model-manager callers).
 - **2-GPU panels imported on Thor 2026-11-21 (Chuck)** per
   `docs/thor_2gpu_grafana_handoff.md` + dashboard JSON. Phase 2 is now fully
   complete (exporter + Prometheus + Grafana).
+
+### Phase 4 — bumped 27B daily live (gate passed)
+
+- **`qwen38` recreated 16:47 UTC** with the bumped config (agent-down window —
+  the container serving the agent; ~4 min to healthy):
+  `--gpu-memory-utilization 0.95` (was 0.75), `--max-num-seqs 5` (was 3 —
+  user priority: concurrent seqs > context), `--max-model-len 262144`
+  (was 196608 — 256K, "okay" per user).
+- **Startup (clean):** KV pool **42.47 GiB = 1,218,373 tokens** —
+  "Maximum concurrency for 262,144 tokens per request: 4.65x" (the pool, not
+  max-num-seqs, is the real concurrency limit; at 30–60K agent contexts it's
+  20–60x). Weights 22.54 GiB + activation 2.54 GiB + graphs 0.2 GiB.
+  nvidia-smi ~69.1 GiB (pre-allocated KV pool + CUDA context — expected at
+  0.95; idle usage is 0.0 %).
+- **Gate:** tool call PASS (0.6 s); benchmark (same methodology as the
+  123.95 baseline — completions, streaming, 512 tok × 10): **136.74 tok/s
+  mean, 130.25–141.78** (`data/benchmarks/results/20261121_165352`) = +10.3 %.
+  Idle 16.8 W / 56 °C / 0 % util; no preemption warnings; prefix cache ~88 %.
+- **0.97/seqs-6 step: evaluated, held** — +~4 % KV for free headroom dropping
+  ~2 GB → ~0.6 GB (below the ~1 GB safety target). Revisit only if 5
+  concurrent sessions queue.
+- **Rollback (partial 14 GB media config):**
+  `compose/legacy/compose.qwen-coder-075-14gb-media.yml` — the 0.75 config
+  that left ~14 GB on GPU 0 for the small queued media pipeline (pre-2-GPU).
+  `docker compose -f compose/legacy/compose.qwen-coder-075-14gb-media.yml up -d`
+  (mutually exclusive with the active `compose/qwen-coder.yml`).
+- Draft `compose/qwen-coder-bumped.yml` promoted to canonical
+  `compose/qwen-coder.yml` + `models/profiles/matrix-coder.yaml` (both modes —
+  `daily` and `qwen-coder` — use the profile).

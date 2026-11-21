@@ -50,7 +50,8 @@ MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
 # If Flash-Next (QNF) wins (Phase 5):
 MODE_PROFILES[daily]="matrix-coder-flashnext media-gpu1 ollama-copywriter-gpu1 embeddings"
 ```
-- GPU 0 compose: `compose/qwen-coder-bumped.yml` (bumped 27B) **or**
+- GPU 0 compose: `compose/qwen-coder.yml` (bumped 27B — promoted from the
+  `qwen-coder-bumped.yml` draft in Phase 4, 2026-11-21) **or**
   `compose/experiments/qwen38-flash-next-gguf.yml` (QNF).
 - GPU 1 compose: `compose/comfyui-gpu1.yml` (media) + `compose/ollama-gpu1.yml`
   (copywriter). Both pinned `device_ids: ['1']`.
