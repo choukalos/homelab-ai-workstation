@@ -168,3 +168,22 @@ Goal: pick the best quality/VRAM fit **at 720p on the 24 GB card**.
 - **2026-11-21**: task doc created. Item 1 already done (720p gate PASSED
   19,641 MiB peak; 480p cap lifted; live-verified; commits `abef852`
   workstation + `d47fc1f` harness).
+- **2026-11-21 (21:00 UTC)**: 2b + 2d + 4 code done (rebuild + restart OK,
+  health green, defaults unchanged):
+  - workflows.py: `WAN_HIGHNOISE_MODEL` / `WAN_LOWNOISE_MODEL` env overrides
+    (defaults = Q5_K_M GGUF), `WAN_UNET_LOADER` (gguf|unet — FP8 safetensors
+    use UNETLoader), `WAN_T5_DEVICE` (cpu|cuda) on the CLIPLoader node.
+  - metering.py: wan14b label follows `WAN_METERING_LABEL` env (default
+    `wan2.2-14b-i2v-gguf-q5`).
+  - server.py (Item 3): `_ensure_vram_headroom` now stops the Ollama
+    copywriter first (`docker exec ollama ollama stop gemma4:31b`, model
+    via `OLLAMA_COPYWRITER_MODEL` env) before the ComfyUI-restart path;
+    stale pre-2-GPU comment (vLLM 56 GiB on the same card) fixed.
+  - compose/comfyui.yml: commented env block for the quant experiments.
+- **2026-11-21 (20:49 UTC)**: 2a downloads started in background
+  (Q6_K ×2 12 GB, Q8_0 ×2 15.41 GB, FP8 ×2 ~13.3 GB from Comfy-Org/Wan-2.2
+  `split_files/diffusion_models/wan2.2_i2v_{high,low}_noise_14B_fp8_scaled.safetensors`;
+  ~81 GB total, ~28 MB/s ≈ 50 min). **Note**: the models dir is owned by
+  comfy uid 1024 — downloads go to `/home/chuck/tmp/phase6_models/` then
+  `docker cp` into the container (script: `/tmp/phase6_downloads.sh`, log:
+  `state/phase6_downloads.log`).

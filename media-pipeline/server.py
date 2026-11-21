@@ -460,12 +460,15 @@ def run_worker(worker: str, args: list[str], timeout: float = 3600) -> str:
 # ------------------------------------------------------------------ VRAM headroom
 # ComfyUI retains the last-loaded model resident — after a wan14b shot ~10 GiB
 # stays on the card. Out-of-ComfyUI GPU workers (ACE-Step music ~6.5 GiB, TTS)
-# then OOM: vLLM ~56 GiB + Wan 10 GiB + worker > 71.12 GiB (found in E2E
-# 2026-10-31: music job failed with 10 MiB free). ComfyUI only offloads when
-# *its own* allocation fails, which never happens for a foreign process — so
-# before such a flow, ensure free VRAM by restarting comfyui_backend when
-# headroom is low (only when its queue is idle; the restart costs ~40 s).
+# then OOM against it (found in E2E 2026-10-31: music job failed with 10 MiB
+# free on the GPU 0 co-location layout). ComfyUI only offloads when *its own*
+# allocation fails, which never happens for a foreign process — so before such
+# a flow, ensure free VRAM: (1) if the Ollama copywriter is resident on GPU 1,
+# stop it (instant — plan §4.1.4, Phase 6); (2) else restart comfyui_backend
+# (~40 s, only when its queue is idle).
 VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0, "transcribe": 4.0}
+OLLAMA_CONTAINER = "ollama"
+OLLAMA_COPYWRITER_MODEL = os.environ.get("OLLAMA_COPYWRITER_MODEL", "gemma4:31b")
 
 
 def _gpu_free_gib() -> float | None:
@@ -507,18 +510,50 @@ def _wait_comfyui_ready(timeout_s: float = 300) -> None:
     raise RuntimeError(f"{CONTAINER} did not come back within {timeout_s:.0f}s")
 
 
+def _ollama_copywriter_resident() -> bool:
+    """Is the Ollama copywriter loaded on GPU 1 right now? (Phase 6, plan
+    §4.1.4) True = `ollama ps` lists the configured copywriter model."""
+    try:
+        r = subprocess.run(["docker", "exec", OLLAMA_CONTAINER, "ollama", "ps"],
+                           capture_output=True, text=True, timeout=15)
+        return OLLAMA_COPYWRITER_MODEL in r.stdout
+    except Exception:
+        return False
+
+
+def _ollama_stop_copywriter() -> None:
+    """Unload the copywriter instantly (weights stay on disk; the next copy
+    request reloads in ~10–30 s). Cheaper than restarting ComfyUI (~40 s).
+    No-op if the model isn't loaded."""
+    subprocess.run(["docker", "exec", OLLAMA_CONTAINER, "ollama", "stop",
+                    OLLAMA_COPYWRITER_MODEL], capture_output=True, text=True,
+                   timeout=60)
+
+
 def _ensure_vram_headroom(flow: str, jid: str) -> None:
-    """Free ComfyUI's resident-model VRAM before a non-ComfyUI GPU worker.
+    """Free GPU 1's resident-model VRAM before a non-ComfyUI GPU worker.
 
     No-op when headroom is already sufficient or unmeasurable. When low:
-    wait for an idle ComfyUI queue, re-check, then restart comfyui_backend
-    (frees its resident model) and wait for it to come back (~40 s)."""
+    (1) stop the Ollama copywriter if resident (instant, Phase 6 / plan
+    §4.1.4); (2) re-check; (3) if still low, wait for an idle ComfyUI queue
+    and restart comfyui_backend (frees its resident model) and wait for it
+    to come back (~40 s)."""
     min_gib = VRAM_HEADROOM_GIB.get(flow)
     if min_gib is None:
         return
     free = _gpu_free_gib()
     if free is None or free >= min_gib:
         return
+    if _ollama_copywriter_resident():
+        print(f"[{jid}] {flow}: VRAM headroom {free:.1f} GiB < {min_gib:.0f} GiB — "
+              f"stopping Ollama copywriter ({OLLAMA_COPYWRITER_MODEL}) to free GPU 1",
+              flush=True)
+        _ollama_stop_copywriter()
+        free = _gpu_free_gib()
+        if free is not None and free >= min_gib:
+            print(f"[{jid}] {flow}: copywriter stopped, free {free:.1f} GiB — proceeding",
+                  flush=True)
+            return
     _wait_comfyui_idle()
     free = _gpu_free_gib()
     if free is None or free >= min_gib:

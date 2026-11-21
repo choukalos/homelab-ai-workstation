@@ -180,7 +180,9 @@ def _model_for(flow: str, payload: dict) -> str | None:
     if flow == "shots":
         m = str(payload.get("model") or os.environ.get("MEDIA_SHOT_MODEL", "ltxv2b")).lower()
         if m == "wan14b":
-            return "wan2.2-14b-i2v-gguf-q5"
+            # Phase 6: follows the active Wan quant (WAN_METERING_LABEL env,
+            # set alongside WAN_HIGHNOISE_MODEL when testing Q6_K/Q8_0/FP8).
+            return os.environ.get("WAN_METERING_LABEL", "wan2.2-14b-i2v-gguf-q5")
         return "ltxv-2b-0.9.6-distilled"
     return MODEL_BY_FLOW.get(flow)
 

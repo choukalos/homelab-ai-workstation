@@ -120,8 +120,16 @@ def ltxv_i2v(keyframe: str, prompt: str, width=768, height=512, frames=97,
 # (832x480): 720p OOM'd the Phase 1 VRAM gate (2026-10-25, CUDA free 2.3 MiB).
 # Measured 2026-10-25: 832x480x81f ~10.3 min, peak delta ~13.9 GB
 # (~2.4 GB headroom vs vLLM's stable 56.2 GB on the 72 GB card).
-WAN_HIGHNOISE = "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
-WAN_LOWNOISE = "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
+# Phase 6 (2026-11-21): model files + T5 device are env-overridable so quant
+# experiments (Q6_K / Q8_0 / FP8) can be tested without a rebuild — set
+# WAN_HIGHNOISE_MODEL / WAN_LOWNOISE_MODEL (+ WAN_UNET_LOADER=unet for FP8
+# safetensors, + WAN_T5_DEVICE=cuda) on the media-pipeline service. Defaults
+# = the shipped Q5_K_M GGUF pair, T5 on CPU (the 24 GB GPU 1 card can't hold
+# umt5 fp8 on-GPU at 720p: 19.6 GB peak + 6.7 GB encoder = OOM).
+WAN_HIGHNOISE = os.environ.get("WAN_HIGHNOISE_MODEL", "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf")
+WAN_LOWNOISE = os.environ.get("WAN_LOWNOISE_MODEL", "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf")
+WAN_UNET_LOADER = os.environ.get("WAN_UNET_LOADER", "gguf")  # "gguf" | "unet"
+WAN_T5_DEVICE = os.environ.get("WAN_T5_DEVICE", "cpu")  # "cpu" | "cuda"
 WAN_CLIP = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 WAN_VAE = "wan_2.1_vae.safetensors"
 WAN_RESOLUTIONS = {(832, 480), (1280, 720)}  # 720p admitted 2026-11-21 (Phase 6 gate: peak 19.6 GB on the 24 GB GPU 1 card)
@@ -164,10 +172,11 @@ def wan22_i2v(keyframe: str, prompt: str, width=832, height=480, frames=81,
     assert (frames - 1) % 4 == 0, "frames must be 4k+1"
     assert (width, height) in WAN_RESOLUTIONS, \
         f"wan14b supports {sorted(WAN_RESOLUTIONS)} only"
+    loader = "UnetLoaderGGUF" if WAN_UNET_LOADER == "gguf" else "UNETLoader"
     return {
-        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_HIGHNOISE}},
-        "2": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": WAN_LOWNOISE}},
-        "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": WAN_CLIP, "type": "wan", "device": "cpu"}},
+        "1": {"class_type": loader, "inputs": {"unet_name": WAN_HIGHNOISE}},
+        "2": {"class_type": loader, "inputs": {"unet_name": WAN_LOWNOISE}},
+        "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": WAN_CLIP, "type": "wan", "device": WAN_T5_DEVICE}},
         "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["3", 0]}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 0]}},
         "6": {"class_type": "VAELoader", "inputs": {"vae_name": WAN_VAE}},

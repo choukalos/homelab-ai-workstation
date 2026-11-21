@@ -57,6 +57,16 @@ services:
     environment:
       - PIPELINE_HOST=0.0.0.0
       - PIPELINE_PORT=8189
+      # Phase 6 quant experiments (2026-11-21): uncomment + set to test a
+      # non-default Wan quant (Q6_K / Q8_0 GGUF, or FP8 safetensors with
+      # WAN_UNET_LOADER=unet). Defaults (commented out) = shipped Q5_K_M GGUF.
+      # Files live in /home/chuck/data/comfyui/basedir/models/diffusion_models/.
+      # - WAN_HIGHNOISE_MODEL=Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf
+      # - WAN_LOWNOISE_MODEL=Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf
+      # - WAN_UNET_LOADER=gguf
+      # - WAN_T5_DEVICE=cpu
+      # - WAN_METERING_LABEL=wan2.2-14b-i2v-gguf-q5
+      # After changing: docker compose -f compose/comfyui.yml --profile image up -d
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run
