@@ -71,6 +71,11 @@ Goal: pick the best quality/VRAM fit **at 720p on the 24 GB card**.
 
 ### 2c. Per-candidate test protocol (each ~1 h at 720p)
 
+0. **Pre-flight: GPU 1 must be clean** — `nvidia-smi -i 1` should show < ~1 GB.
+   The Ollama copywriter (KEEP_ALIVE=5m) can be resident for up to 5 min
+   after the last copy request: `docker exec ollama ollama ps` + `ollama stop
+   gemma4:31b` if needed. (Bite 2026-11-21: first Q6_K run started with the
+   copywriter resident — 22 GB baseline → canceled + restarted.)
 1. Set env to the candidate pair (or edit constants as fallback).
 2. `./scripts/model-manager rebuild media-pipeline` (only if code changed) /
    `docker compose -f compose/comfyui.yml --profile image up -d` (env change).

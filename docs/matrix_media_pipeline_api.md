@@ -349,7 +349,10 @@ The pipeline attributes each job to its `user`/`client` and measures the work:
 
 ## 6. VRAM & disk budget (flows run sequentially, never simultaneously)
 
-Free VRAM for media work: ~14 GB (72 GB − vLLM's ~56–66 GB). Per-flow peaks
+Media work runs on the **dedicated 24 GB GPU 1** (RTX PRO 4000, Phase 1+
+layout — vLLM's daily model is on GPU 0 and never shares this card). Free
+VRAM for media work: ~23 GB when the card is idle. The only co-tenant is the
+Ollama copywriter (XOR — see the headroom guard below). Per-flow peaks
 (measured where noted):
 
 | Flow | Peak VRAM | Notes |
@@ -366,23 +369,30 @@ Free VRAM for media work: ~14 GB (72 GB − vLLM's ~56–66 GB). Per-flow peaks
 | Assembly | 0 | ffmpeg (in-container), CPU |
 | Storyboard | 0 (ComfyUI) | vLLM's own share, separate process |
 
-**No flow exceeds the 14 GB limit.** Rule: the pipeline serializes GPU work
-(one flow at a time); ComfyUI unloads models between jobs; separate-process
-workers release VRAM on exit. Per-flow OOM fallbacks: offload text encoder to
-CPU → lower res/frames → (last resort, ask first) lower vLLM
-`gpu-memory-utilization`.
+**No flow exceeds the 24 GB card** (largest measured peak: Wan 720p at
+19.6 GB, 4.8 GB headroom). Rule: the pipeline serializes GPU work (one flow
+at a time); ComfyUI unloads models between jobs; separate-process workers
+release VRAM on exit. Per-flow OOM fallbacks: offload text encoder to CPU →
+lower res/frames → (last resort, ask first) drop the resident Wan model
+(`docker restart comfyui_backend`).
 
-**VRAM headroom guard (2026-10-31):** ComfyUI keeps its last-loaded model
-resident (a wan14b shot leaves ~10 GiB), which starves the out-of-ComfyUI GPU
-workers (ACE-Step music ~6.5 GiB, TTS): vLLM ~56 GiB + Wan 10 GiB + worker
-> 71.12 GiB → CUDA OOM (found in E2E 2026-10-31). `server.py` now measures
-free VRAM (`docker exec comfyui_backend nvidia-smi`) before `music` (≥8 GiB
-required) and `tts`/`voices-add` (≥2 GiB) and `transcribe` (≥4 GiB — demucs
-peak), and, if headroom is low and the
-ComfyUI queue is idle, **restarts `comfyui_backend`** (~40 s) to drop the
-resident model, then waits for it to come back. No-op when headroom is
-sufficient or unmeasurable. Sfx is a ComfyUI flow — ComfyUI's own
-OOM-offload handles it; LTXV shots are small enough not to trigger this.
+**VRAM headroom guard (2026-10-31, Ollama extension 2026-11-21):** ComfyUI
+keeps its last-loaded model resident (a wan14b shot leaves ~10 GiB), which
+starves the out-of-ComfyUI GPU workers (ACE-Step music ~6.5 GiB, TTS): CUDA
+OOM (found in E2E 2026-10-31). `server.py` now measures free VRAM
+(`docker exec comfyui_backend nvidia-smi`) before `music` (≥8 GiB required)
+and `tts`/`voices-add` (≥2 GiB) and `transcribe` (≥4 GiB — demucs peak), and,
+if headroom is low:
+1. **stops the resident Ollama copywriter first** (`docker exec ollama
+   ollama stop gemma4:31b` — model via `OLLAMA_COPYWRITER_MODEL` env; instant,
+   the next copy request reloads it in ~10–30 s) — the 2-GPU-era co-tenant
+   (plan §4.1.4; verified 2026-11-21: 1.9 GiB free → copywriter stopped →
+   music job done in 46 s, ComfyUI never restarted);
+2. **else restarts `comfyui_backend`** (~40 s, only when its queue is idle)
+   to drop the resident model, then waits for it to come back.
+No-op when headroom is sufficient or unmeasurable. Sfx is a ComfyUI flow —
+ComfyUI's own OOM-offload handles it; LTXV shots are small enough not to
+trigger this.
 
 ## 7. End-to-end commercial recipe (what the LLM should call)
 
@@ -456,6 +466,7 @@ dirs are created in the 1024-owned run dir via `docker exec -u comfy`.
 
 | Date | Change |
 |---|---|
+| 2026-11-21 | **§6 VRAM budget refreshed for the 2-GPU era + headroom guard gains the Ollama-stop step** (add_card_plan Phase 6, items 3 + 4): media work runs on the dedicated 24 GB GPU 1 (vLLM's daily model is on GPU 0 and never shares the card); the "14 GB limit" / "lower vLLM `gpu-memory-utilization" fallbacks are gone (largest measured peak is now Wan 720p at 19.6 GB). The VRAM headroom guard (music ≥8 GiB / tts ≥2 GiB / transcribe ≥4 GiB) now, when headroom is low, **first stops the resident Ollama copywriter** (`ollama stop gemma4:31b` — `OLLAMA_COPYWRITER_MODEL` env; instant, ~10–30 s reload on the next copy request) and only falls back to the `comfyui_backend` restart if still low (plan §4.1.4). Verified live 2026-11-21: copywriter resident (22 GB, 1.9 GiB free) → music job → guard stopped the copywriter, job done in 46 s, ComfyUI never restarted; copywriter reloaded in 9.8 s on the next generate. |
 | 2026-11-21 | **wan14b 720p cap lifted** (add_card_plan Phase 6, item 1): `WAN_RESOLUTIONS` is now `{(832, 480), (1280, 720)}` — the 720p gate on the 24 GB GPU 1 card passed (`qa_wan_phase1.py 720 --gpu 1`, 2026-11-21: peak **19,641 MiB** = 4.8 GB headroom, 57 min wall incl. model load; output `wan22_p1_1280x720_00001.mp4`). The original 480p-only gate (2026-10-25) was set against the GPU-0 co-location ceiling; on the dedicated 24 GB card ComfyUI's dynamic VRAM management auto-offloads ~1.8 GB of weights to CPU, which is why 720p fits — and why it's ~5× slower per clip (~55 min vs ~10 min). API 400 message, `wan22_i2v`/`resolve_shot_model` docstrings, §4 + §6 tables, the mcp_media tool descriptions, and the media-film skill contract updated to match. The `assemble` `upscale_each` (SeedVR2 → 1080p) path is unchanged — raw 720p shots still go through the same downstream flows. |
 | 2026-11-21 | **M1–M5 MCP client layer** (Thor-side follow-up to the M1–M5 pipeline work — the `mcp_media` server in the `homelab-ai-harness` repo): new `media_kill_job` (M2 — queued-only kill, client-scoped via `client` param; 409 running / 403 tag mismatch / 404 unknown surfaced as structured errors) + `media_queue_status` (M3 — `/health` + queue summary) tools; `media_assemble`/`media_list_jobs`/`media_job_result` descriptions updated to the new semantics (duration now enforced + `duration_adjustments` in result; `queued`/`killed` statuses; `progress` passthrough on running polls). Companion docs updated: `docs/media-mcp-handoff.md` §4 contract table, `agents-skills/media-film/references/pipeline-contract.md` (C14 rule + tool table), `mcp/servers/media/README.md`. Client-layer acceptance: `mcp/servers/media/test_m1m5_client.py` **24/24 PASS** live against `:8189` (kill semantics incl. 409/403/404, queue summary populated + idle shapes, durable ledger rows, M1 hold through the client: 2×3.88 s clips → 14.0 s final). |
 | 2026-11-21 | **M1–M5 queue/assemble improvements** (spec `docs/media_pipeline_m1_m5_handoff.md`, from the 2026-11-17 SW Holiday Spoof production evidence — C14 root cause, C13 progress, A4 queue visibility). **M1 — `/assemble` object-shot `duration` now frame-holds/trims** (was silently ignored — the C14 root cause: a 36-shot 226 s plan cut to 181.5 s): `in`/`out` window first, then `duration` vs the resulting clip — hold last frame (`tpad=stop_mode=clone`, the production-proven fix-forward) when longer, trim the tail when shorter, 0.1 s tolerance; applied **before** `upscale_each` (one pass); every adjustment reported as `duration_adjustments` in result + ledger (omitted when unused). Fix, not a breaking change (clients passing `duration` before were silently getting natural length). **M2 — `DELETE /jobs/{id}`** (alias `POST /jobs/{id}/kill`): queued-only kill frees the FIFO slot + writes a ledger row (`status=killed`, listable across restarts); running → 409 (GPU work never killed); terminal → 200 no-op; unknown → 404; nominal `?client=` scoping (403 on mismatch). **M3 — `/health` queue summary**: `queue = {counts, queued_jobs: [{job_id, flow, client, created, waited_s}] (FIFO), oldest_queued}` + `features: ["assemble-duration-hold", "job-kill", "queue-summary", "job-progress"]` for feature-detection; invariant `pending == counts.running + counts.queued`. **M4 — accurate `GET /jobs` statuses**: failed submissions (upload/copy errors) now land as `status=error` instead of zombie `queued` (the film-run root cause of phantom in-flight jobs); `?status=running|queued` IDs match `/health` exactly. **M5 — in-flight assemble `progress`**: `GET /jobs/{id}` returns `{stage, completed, total, label}` (stages `normalize`/`upscale` → `concat` → `finalize`; coarse `assemble` per-shot without upscale); terminal `progress` (`stage: "done"`) in result + ledger row; ledger stays one-row-per-job. Additive only — no existing field removed/renamed. QA: `media-pipeline/qa_m1_m5.py` (all acceptance items PASS — see `PIPELINE_CHANGES.md`). |
