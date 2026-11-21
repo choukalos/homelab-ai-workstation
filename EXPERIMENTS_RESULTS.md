@@ -464,4 +464,13 @@ decision pending long-context verification (open items below).**
 7. ~~Rerun experiment 8 (IQ4_XS, llama.cpp `server-cuda`)~~ (done 2026-11-14 — valid GPU run: 291.4 tok/s = 2.35× NVFP4 27B baseline, quality 4/5 solid; first 2026-11-13 run invalid, see Experiment 8 section)
 8. **Experiment 8 follow-up: long-context verification + promotion decision** — (a) fix the benchmark long-context test to capture `reasoning_content` (or `enable_thinking: false`) with `max_tokens ≥ 512` and rerun; (b) 2×256K concurrent decode test to verify QSA sparse attention in llama.cpp + the 60–75 tok/s/session estimate; then decide: promote Flash-Next IQ4_XS as the daily driver or keep NVFP4 27B
 
+> **2026-11-21 (add_card_plan.md Phase 3 context):** item 8 is now executed as
+> **Phase 5 (QNF experiment)** of `add_card_plan.md`, against the new 2-GPU mode
+> machinery: `experiment` mode contract unchanged (candidate on :8000, daily
+> driver stopped), but experiments now get the **full 72 GB** (media + copywriter
+> live on GPU 1) — this unblocks the 4 × 256K config. The x16 Flash-Next baseline
+> (Phase 0b, on hold for a Chuck-scheduled window) is the reference for the x8
+> delta. Rollback target for the daily swap = `legacy-daily` mode (verified by the
+> 2026-11-21 drill, `state/phase3_drill_20261121.log`).
+
 > **2026-09-27 cleanup:** all artifacts for the done/superseded/dropped rounds were removed — 9 experiment compose files, 9 profiles, 7 stopped containers, ~88 GB re-downloadable weights (gemma-4-31b-it 59G, Qwen3.8-27B-FP8 29G, Qwen3-Next-80B 16M, 88plug W8A16 refs). This file is the permanent record of those results. Kept locally: Lorbus INT4 18G (live `qwen-long` mode), cyankiwi gemma-4-26B AWQ 17G (live Ollama), unsloth NVFP4 22G (daily driver).

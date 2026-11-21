@@ -38,7 +38,14 @@ mkdir -p "$STATE_DIR"
 
 # Mode → profiles mapping (must match preflight.sh and runtime modes doc)
 declare -A MODE_PROFILES
-MODE_PROFILES[daily]="matrix-coder matrix-gemma4-moe embeddings"
+# 2-GPU modes (add_card_plan.md Phase 3, 2026-11-21):
+#   daily        — 2-GPU steady state: GPU 0 daily driver + GPU 1 (media XOR
+#                  copywriter). The GPU 0 profile is swapped in Phase 4/5
+#                  (matrix-coder → bumped 27B, or matrix-coder-flashnext if QNF wins).
+#   legacy-daily — rollback target = the single-card setup (GPU 0 only; media
+#                  reachable via the `images` mode). Guaranteed rollback.
+MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
+MODE_PROFILES[legacy-daily]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
 MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
@@ -658,7 +665,7 @@ cmd_mode_switch() {
     if [[ -z "$target_mode" ]]; then
         echo -e "  ${RED}Usage: model-manager mode switch [--yes] <MODE>${NC}"
         echo ""
-        echo "  Modes: daily qwen-coder qwen-long llms experiment images"
+        echo "  Modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
         return 1
     fi
     
@@ -666,7 +673,7 @@ cmd_mode_switch() {
     if [[ -z "${MODE_PROFILES[$target_mode]+x}" ]]; then
         echo -e "  ${RED}Unknown mode: $target_mode${NC}"
         echo ""
-        echo "  Valid modes: daily qwen-coder qwen-long llms experiment images"
+        echo "  Valid modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
         return 1
     fi
     
@@ -714,10 +721,13 @@ cmd_mode_switch() {
     done
     target_ollama_list=$(echo "$target_ollama_list" | xargs)
     
-    # Which ComfyUI profile?
+    # Which ComfyUI profile? (comfyui OR media-pipeline backend — the media
+    # pipeline is the ComfyUI compose's companion service, managed as one stack)
     local target_comfyui=""
     for p in $target_profiles; do
-        if [[ "$(profile_backend "$p")" == "comfyui" ]]; then
+        local pb
+        pb=$(profile_backend "$p")
+        if [[ "$pb" == "comfyui" || "$pb" == "media-pipeline" ]]; then
             target_comfyui="$p"
             break
         fi
@@ -891,7 +901,7 @@ cmd_mode_switch() {
     # NOTE: must pass --profile image, else `down` leaves profile services running.
     if [[ "$comfyui_action" == "stop" ]]; then
         sub_section "Stopping ComfyUI (+ media-pipeline)..."
-        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down --timeout 30 2>&1 | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -1158,6 +1168,22 @@ cmd_profile_validate() {
         w "No compose file defined (manual launch)"
     fi
     
+    # GPU pin check (2-GPU, Phase 3): a profile declaring launch.gpu must have its
+    # compose pin device_ids to that GPU — catch a mis-pin to the wrong card.
+    local gpu_pin
+    gpu_pin=$(profile_get "$profile" "launch.gpu")
+    if [[ -n "$gpu_pin" && "$gpu_pin" != "unknown" && "$gpu_pin" != "0" ]]; then
+        if [[ -n "$compose" && "$compose" != "unknown" && -f "$COMPOSE_DIR/$compose" ]]; then
+            if grep "device_ids" "$COMPOSE_DIR/$compose" | grep -q "$gpu_pin"; then
+                p "GPU pin verified: $compose pins device_ids to GPU $gpu_pin"
+            else
+                f "GPU pin MISMATCH: profile declares gpu: $gpu_pin but $compose has no device_ids pin for GPU $gpu_pin"
+            fi
+        else
+            w "GPU pin: profile declares gpu: $gpu_pin but no compose file to verify against"
+        fi
+    fi
+    
     # Container image
     if [[ -n "$container" ]]; then
         if docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q "$(profile_get "$profile" "launch.image")"; then
@@ -1365,7 +1391,7 @@ cmd_media() {
             ;;
         down)
             section "Stopping media pipeline (+ ComfyUI)"
-            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/  /'
+            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down --timeout 30 2>&1 | sed 's/^/  /'
             echo -e "  ${GREEN}✓ Stopped${NC}"
             ;;
         status)
@@ -1390,6 +1416,100 @@ cmd_media() {
             ;;
         *)
             echo -e "  ${RED}Usage: model-manager media <up|down|status>${NC}"
+            return 1
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------ gpu1 (2-GPU: media ⇄ copywriter)
+# GPU 1 (RTX PRO 4000, 24 GB) hosts two mutually exclusive tenants:
+#   media      — ComfyUI + media-pipeline (compose/comfyui.yml, device_ids ['1'])
+#   copywriter — Ollama gemma4:31b (compose/gemma4-moe.yml, device_ids ['1'])
+# They only conflict when BOTH are resident at once (Wan model ~10 GB post-shot
+# + 31B 20.4 GB > 24 GB). Ollama's idle-unload (OLLAMA_KEEP_ALIVE=5m) + the
+# headroom guard handle the implicit case; this is the explicit manual swap
+# (add_card_plan.md §4.1.4).
+cmd_gpu1() {
+    local action="${1:-status}"
+    local copywriter
+    copywriter=$(profile_get "ollama-copywriter-gpu1" "model.path")
+    case "$action" in
+        status)
+            section "GPU 1 tenants (24 GB — media XOR copywriter)"
+            if container_running "comfyui_backend"; then
+                echo -e "  media:      ${GREEN}● running${NC} (comfyui_backend + media_pipeline)"
+            else
+                echo -e "  media:      ${RED}○ stopped${NC}"
+            fi
+            local loaded_cw
+            loaded_cw=$(docker exec ollama ollama ps 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -c "^${copywriter%%:*}" || true)
+            if [[ "$loaded_cw" -gt 0 ]]; then
+                echo -e "  copywriter: ${GREEN}● loaded${NC} in Ollama ($copywriter)"
+            else
+                echo -e "  copywriter: ${CYAN}○ not loaded${NC} (on-demand; KEEP_ALIVE=5m)"
+            fi
+            local g1
+            g1=$(nvidia-smi -i 1 --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null)
+            if [[ -n "$g1" ]]; then
+                echo "  GPU 1:      $g1"
+            else
+                echo -e "  GPU 1:      ${RED}not visible${NC}"
+            fi
+            ;;
+        swap)
+            local tenant="${2:-}"
+            case "$tenant" in
+                media)
+                    section "gpu1 swap → media (active tenant)"
+                    # 1. Unload the copywriter if resident (free VRAM for media)
+                    if docker exec ollama ollama ps 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -q "^${copywriter%%:*}"; then
+                        echo "  Unloading $copywriter from Ollama..."
+                        docker exec ollama ollama stop "$copywriter" 2>&1 | sed 's/^/    /' || true
+                    else
+                        echo "  Copywriter not loaded — nothing to unload"
+                    fi
+                    # 2. Ensure the media stack is up
+                    if container_running "comfyui_backend"; then
+                        echo "  Media stack already running"
+                    else
+                        echo "  Starting media stack..."
+                        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image up -d 2>&1 | sed 's/^/    /'
+                    fi
+                    local waited=0
+                    while (( waited < 120 )); do
+                        if health_check "http://localhost:8189/health" && health_check "http://localhost:8188"; then
+                            echo -e "    ${GREEN}✓ Media stack healthy${NC}"
+                            break
+                        fi
+                        sleep 5
+                        waited=$((waited + 5))
+                    done
+                    if (( waited >= 120 )); then
+                        echo -e "    ${YELLOW}⚠ Media stack not healthy within 120s — check: docker logs media_pipeline ; docker logs comfyui_backend${NC}"
+                    fi
+                    log_switch "$(current_mode)" "$(current_mode)" "gpu1 swap → media (explicit)"
+                    ;;
+                copywriter)
+                    section "gpu1 swap → copywriter (active tenant)"
+                    # Stop the media stack (frees the 24 GB for the 31B)
+                    if container_running "comfyui_backend" || container_running "media_pipeline"; then
+                        echo "  Stopping media stack..."
+                        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down --timeout 30 2>&1 | sed 's/^/    /'
+                        echo -e "    ${GREEN}✓ Media stack stopped${NC}"
+                    else
+                        echo "  Media stack already stopped"
+                    fi
+                    echo "  Copywriter is on-demand: Ollama loads $copywriter on first request (KEEP_ALIVE=5m)"
+                    log_switch "$(current_mode)" "$(current_mode)" "gpu1 swap → copywriter (explicit)"
+                    ;;
+                *)
+                    echo -e "  ${RED}Usage: model-manager gpu1 swap {media|copywriter}${NC}"
+                    return 1
+                    ;;
+            esac
+            ;;
+        *)
+            echo -e "  ${RED}Usage: model-manager gpu1 {status|swap <media|copywriter>}${NC}"
             return 1
             ;;
     esac
@@ -1482,7 +1602,7 @@ cmd_experiment_start() {
         # RAM wall and can OOM-kill the image services.
         sub_section "Stopping media pipeline + ComfyUI (frees ~14 GB VRAM)..."
         if container_running "comfyui_backend" || container_running "media_pipeline"; then
-            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
+            docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down --timeout 30 2>&1 | sed 's/^/    /' || true
             echo -e "    ${GREEN}✓ Stopped${NC}"
         else
             echo -e "    ${CYAN}Not running — nothing to stop${NC}"
@@ -1620,7 +1740,7 @@ except:
     # Stop the media pipeline + ComfyUI (~14 GB VRAM — see named-profile path above)
     if container_running "comfyui_backend" || container_running "media_pipeline"; then
         sub_section "Stopping media pipeline + ComfyUI (frees ~14 GB VRAM)..."
-        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image --timeout 30 down 2>&1 | sed 's/^/    /' || true
+        docker compose -f "$COMPOSE_DIR/compose/comfyui.yml" --profile image down --timeout 30 2>&1 | sed 's/^/    /' || true
         echo -e "    ${GREEN}✓ Stopped${NC}"
     fi
     
@@ -1955,6 +2075,7 @@ usage() {
     echo "  health                    Check all running services"
     echo "  rebuild [SERVICE]         Rebuild a service image from source + recreate (default: media-pipeline)"
     echo "  media <up|down|status>    Start/stop/check media pipeline (+ ComfyUI)"
+    echo "  gpu1 <status|swap <T>>   GPU 1 tenants: status, or explicit media ⇄ copywriter swap"
     echo "  preflight <MODE>          Run preflight checks without switching"
     echo "  benchmark <PROFILE>       Run benchmark harness"
     echo ""
@@ -1966,7 +2087,7 @@ usage() {
     echo "  experiment show <NAME>                Show experiment profile details"
     echo "  experiment archive                    View experiment history"
     echo ""
-    echo "Modes: daily qwen-coder qwen-long llms experiment images"
+    echo "Modes: daily legacy-daily qwen-coder qwen-long llms experiment images"
 }
 
 # Load env
@@ -2021,6 +2142,9 @@ case "$CMD" in
         ;;
     media)
         cmd_media "$@"
+        ;;
+    gpu1)
+        cmd_gpu1 "$@"
         ;;
     preflight)
         cmd_preflight "$@"

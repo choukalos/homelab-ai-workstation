@@ -1,7 +1,23 @@
-# 2-GPU Mode Definitions — DRAFT (Phase 0a)
+# 2-GPU Mode Definitions — APPLIED (Phase 3, 2026-11-21)
 
-> DRAFT — NOT applied to `scripts/model-manager` yet. Phase 3 applies these.
+> APPLIED to `scripts/model-manager` + `scripts/preflight.sh` in Phase 3 (2026-11-21).
 > Companion: `add_card_plan.md` §4.1 + §6 (Phase 3).
+> Rollback drill verified the same day: `state/phase3_drill_20261121.log`
+> (qwen-coder → legacy-daily → qwen-coder, timed, logged; vLLM `qwen38` container
+> untouched throughout — `State.StartedAt` identical pre/post).
+>
+> **Phase 3 implementation notes (deviations from this draft):**
+> - `cmd_mode_switch` now treats the `media-pipeline` backend as the ComfyUI family
+>   (media-gpu1 is the ComfyUI compose's companion service, managed as one stack),
+>   so `daily` keeps the running media stack instead of stopping it.
+> - `preflight.sh` is 2-GPU aware: both-GPUs-visible check for modes containing
+>   `gpu: 1` profiles; per-GPU VRAM budget (GPU 0 additive; GPU 1 XOR tenants —
+>   media ⇄ copywriter — checked individually against the 24 GB card).
+> - `model-manager gpu1 {status|swap <media|copywriter>}` added (explicit swap).
+> - `profile validate` now verifies `device_ids` pinning for `gpu: 1` profiles.
+> - Pre-existing bug fixed: `docker compose … --profile image --timeout 30 down` →
+>   `--timeout` is a `down` subcommand flag in Compose v5 (was silently no-op'ing
+>   the stop via `|| true`; caught by the Phase 3 drill).
 >
 > Current `MODE_PROFILES` (in `scripts/model-manager`, for reference):
 > ```
@@ -68,4 +84,8 @@ Wherever `homelab.sh` lives, it keeps working by calling:
 ```
 model-manager mode switch --yes {legacy-daily|daily|experiment}
 ```
-(Confirm the exact call shape once `homelab.sh` is located.)
+**Status (2026-11-21):** still not located on matrix (searched /home/chuck, /opt,
+/srv, /usr/local/bin, cron, systemd — none). The call shape above is verified
+working for all three modes (Phase 3 drill exercised `legacy-daily`; `daily` and
+`experiment` verified via plan display + preflight). Awaiting Chuck's answer on
+where the script lives (Thor? dotfiles?) to confirm the exact call site.

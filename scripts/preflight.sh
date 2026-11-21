@@ -33,8 +33,9 @@ section() { echo -e "\n--- $1 ---"; }
 usage() {
     echo "Usage: $0 <MODE|PROFILE>"
     echo ""
-    echo "Modes:    daily  qwen-coder  qwen-long  llms  experiment  images"
+    echo "Modes:    daily  legacy-daily  qwen-coder  qwen-long  llms  experiment  images"
     echo "Profiles: matrix-coder  matrix-gemma4-moe  embeddings  qwen-long  experiment  comfyui"
+    echo "          media-gpu1  ollama-copywriter-gpu1  matrix-coder-flashnext"
     exit 2
 }
 
@@ -75,14 +76,23 @@ if nvidia-smi &>/dev/null; then
     TOTAL_VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 | tr -d ' MiB')
     USED_VRAM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1 | tr -d ' MiB')
     FREE_VRAM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader 2>/dev/null | head -1 | tr -d ' MiB')
+    # 2-GPU (Phase 3): per-GPU totals + count (GPU 0 = index 1, GPU 1 = index 2)
+    GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+    GPU0_VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | sed -n '1p' | tr -d ' MiB')
+    GPU1_VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | sed -n '2p' | tr -d ' MiB')
 
     echo "  GPU: $GPU_NAME"
     echo "  Driver: $DRIVER, CUDA: $CUDA_VER"
     echo "  VRAM: ${USED_VRAM}MiB / ${TOTAL_VRAM}MiB (${FREE_VRAM}MiB free)"
-    pass "GPU online: $GPU_NAME"
+    if (( GPU_COUNT > 1 )); then
+        GPU1_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed -n '2p')
+        echo "  GPU 1: $GPU1_NAME (${GPU1_VRAM_MIB}MiB)"
+    fi
+    pass "GPU online: $GPU_NAME ($GPU_COUNT GPU(s) visible)"
 else
     fail "nvidia-smi returned error — check GPU health"
     GPU_NAME="unknown"; TOTAL_VRAM=0; USED_VRAM=0; FREE_VRAM=0
+    GPU_COUNT=0; GPU0_VRAM_MIB=0; GPU1_VRAM_MIB=0
 fi
 
 # ============================================================
@@ -107,14 +117,15 @@ fi
 # ============================================================
 section "Profiles"
 
-# Map modes to profiles
+# Map modes to profiles (MUST stay in sync with scripts/model-manager MODE_PROFILES)
 declare -A MODE_PROFILES
-MODE_PROFILES[daily]="matrix-coder matrix-gemma4-moe embeddings"
+MODE_PROFILES[daily]="matrix-coder media-gpu1 ollama-copywriter-gpu1 embeddings"
+MODE_PROFILES[legacy-daily]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[qwen-coder]="matrix-coder embeddings"
 MODE_PROFILES[qwen-long]="qwen-long embeddings"
 MODE_PROFILES[llms]="matrix-coder matrix-gemma4-moe embeddings"
 MODE_PROFILES[experiment]="experiment embeddings"
-MODE_PROFILES[images]="comfyui matrix-gemma4-moe embeddings"
+MODE_PROFILES[images]="comfyui media-pipeline matrix-gemma4-moe embeddings"
 
 # Determine if TARGET is a mode or a profile
 if [[ -n "${MODE_PROFILES[$TARGET]+x}" ]]; then
@@ -131,6 +142,22 @@ else
     echo ""
     echo "Summary: PASS=$PASS WARN=$WARN FAIL=$FAIL"
     exit 1
+fi
+
+# 2-GPU visibility (Phase 3): modes containing GPU 1-pinned profiles need BOTH
+# cards visible before switching (a missing GPU 1 breaks the pinned compose).
+NEEDS_GPU1=false
+for _p in $PROFILES; do
+    if [[ -f "$PROFILE_DIR/$_p.yaml" ]] && grep -qE "^[[:space:]]*gpu:[[:space:]]*1" "$PROFILE_DIR/$_p.yaml"; then
+        NEEDS_GPU1=true
+    fi
+done
+if [[ "$NEEDS_GPU1" == true ]]; then
+    if (( GPU_COUNT >= 2 )); then
+        pass "2-GPU mode: both GPUs visible ($GPU_COUNT detected)"
+    else
+        fail "2-GPU mode needs GPU 1 but only $GPU_COUNT GPU(s) visible — use legacy-daily / the single-card setup"
+    fi
 fi
 
 # ============================================================
@@ -155,6 +182,7 @@ fi
 section "Profile Validation"
 
 TOTAL_EXPECTED_VRAM=0
+GPU1_EXPECTED_LIST=""  # "profile:gb profile:gb …" — GPU 1 XOR tenants (Phase 3)
 
 for profile in $PROFILES; do
     PROFILE_FILE="$PROFILE_DIR/$profile.yaml"
@@ -176,6 +204,7 @@ try:
     backend = d.get('backend', 'unknown')
     model = d.get('model', {}).get('path', 'unknown')
     compose = d.get('launch', {}).get('compose', 'unknown')
+    gpu = str(d.get('launch', {}).get('gpu', 0))
     vram_str = str(d.get('model', {}).get('expected_vram', '0'))
     # Parse '48.7 GB', '274 MB', '17 GB', '30-40 GB', '50-55 GB', etc.
     m = re.search(r'([\d.]+)(?:-([\d.]+))?\s*(MB|GB)', vram_str, re.IGNORECASE)
@@ -192,12 +221,14 @@ try:
     print(f'{compose}')
     print(f'yes')
     print(f'{vram_gb:.1f}')
+    print(f'{gpu}')
 except Exception as e:
     print(f'unknown')
     print(f'unknown')
     print(f'unknown')
     print(f'no')
     print(f'0.0')
+    print(f'0')
 " 2>/dev/null)
     BACKEND=$(echo "$PARSED" | sed -n '1p')
     MODEL_PATH=$(echo "$PARSED" | sed -n '2p')
@@ -210,10 +241,13 @@ except Exception as e:
     MODEL_PATH=${MODEL_PATH:-unknown}
     COMPOSE=${COMPOSE:-unknown}
     VRAM_GB=${VRAM_GB:-0.0}
+    PROFILE_GPU=$(echo "$PARSED" | sed -n '6p')
+    PROFILE_GPU=${PROFILE_GPU:-0}
 
     echo "    Backend: $BACKEND"
     echo "    Model: $MODEL_PATH"
     echo "    Compose: $COMPOSE"
+    [[ "$PROFILE_GPU" != "0" ]] && echo "    GPU pin: $PROFILE_GPU"
 
     # Check compose file exists
     case "$COMPOSE" in
@@ -306,9 +340,15 @@ except Exception as e:
         fi
     fi
 
-    # Accumulate VRAM (use awk for float math)
+    # Accumulate VRAM per GPU (2-GPU, Phase 3): GPU 0 is additive (concurrent
+    # tenants); GPU 1 tenants are XOR (media ⇄ copywriter swap) — each is
+    # checked individually against the 24 GB card in the budget section.
     echo "    VRAM: $MODEL_PATH expected ~${VRAM_GB}GB"
-    TOTAL_EXPECTED_VRAM=$(awk "BEGIN {printf \"%d\", $TOTAL_EXPECTED_VRAM + $VRAM_GB}")
+    if [[ "$PROFILE_GPU" == "1" ]]; then
+        GPU1_EXPECTED_LIST="$GPU1_EXPECTED_LIST $profile:${VRAM_GB}"
+    else
+        TOTAL_EXPECTED_VRAM=$(awk "BEGIN {printf \"%d\", $TOTAL_EXPECTED_VRAM + $VRAM_GB}")
+    fi
 done
 
 # ============================================================
@@ -316,29 +356,63 @@ done
 # ============================================================
 section "VRAM Budget"
 
-# Convert to GB for comparison
-TOTAL_VRAM_GB=$((TOTAL_VRAM / 1024))
+# GPU 0 (additive — all gpu-0 tenants run concurrently):
+# the check is total expected VRAM vs the GPU 0 total (not just free VRAM,
+# because we'll stop existing models first).
+GPU0_TOTAL_GB=$(awk "BEGIN {printf \"%.1f\", $GPU0_VRAM_MIB / 1024}")
 USED_VRAM_GB=$((USED_VRAM / 1024))
 FREE_VRAM_GB=$((FREE_VRAM / 1024))
 
-echo "  GPU total: ${TOTAL_VRAM_GB}GB"
-echo "  Currently used: ${USED_VRAM_GB}GB"
-echo "  Currently free: ${FREE_VRAM_GB}GB"
-echo "  Expected for '$TARGET': ~${TOTAL_EXPECTED_VRAM}GB"
+echo "  GPU 0: ${GPU0_TOTAL_GB}GB total, ${USED_VRAM_GB}GB used, ${FREE_VRAM_GB}GB free"
+echo "  Expected on GPU 0 for '$TARGET': ~${TOTAL_EXPECTED_VRAM}GB"
 
-# The check: total expected VRAM must fit on the GPU
-# (not just the free VRAM, because we'll stop existing models first)
-if (( TOTAL_EXPECTED_VRAM <= TOTAL_VRAM_GB )); then
-    pass "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected fits within ${TOTAL_VRAM_GB}GB total GPU"
-    # Additional check: is there enough headroom for OS/host?
-    HEADROOM=$((TOTAL_VRAM_GB - TOTAL_EXPECTED_VRAM))
-    if (( HEADROOM < 5 )); then
-        warn "VRAM budget: tight headroom (${HEADROOM}GB free) — minimal room for error"
+if (( GPU_COUNT >= 2 )); then
+    # 2-GPU: GPU 0 budget vs GPU 0 total; GPU 1 tenants checked individually (XOR).
+    GPU1_TOTAL_GB=$(awk "BEGIN {printf \"%.1f\", $GPU1_VRAM_MIB / 1024}")
+    if (( $(awk "BEGIN {print ($TOTAL_EXPECTED_VRAM <= $GPU0_TOTAL_GB) ? 1 : 0}") )); then
+        pass "VRAM budget GPU 0: ${TOTAL_EXPECTED_VRAM}GB expected fits within ${GPU0_TOTAL_GB}GB"
+        HEADROOM=$(( $(awk "BEGIN {printf \"%d\", $GPU0_TOTAL_GB}") - TOTAL_EXPECTED_VRAM ))
+        if (( HEADROOM < 5 )); then
+            warn "VRAM budget GPU 0: tight headroom (${HEADROOM}GB free) — minimal room for error"
+        fi
+    elif (( $(awk "BEGIN {print ($TOTAL_EXPECTED_VRAM <= $GPU0_TOTAL_GB + 10) ? 1 : 0}") )); then
+        warn "VRAM budget GPU 0: ${TOTAL_EXPECTED_VRAM}GB expected is close to limit — may need tuning"
+    else
+        fail "VRAM budget GPU 0: ${TOTAL_EXPECTED_VRAM}GB expected exceeds GPU 0 total (${GPU0_TOTAL_GB}GB)"
     fi
-elif (( TOTAL_EXPECTED_VRAM <= TOTAL_VRAM_GB + 10 )); then
-    warn "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected is close to limit — may need tuning"
+
+    # GPU 1 (XOR tenants — media ⇄ copywriter swap, NOT additive): each tenant
+    # individually must fit the 24 GB card.
+    if [[ -n "$GPU1_EXPECTED_LIST" ]]; then
+        echo "  GPU 1: ${GPU1_TOTAL_GB}GB total — XOR tenants (each must fit individually):"
+        for entry in $GPU1_EXPECTED_LIST; do
+            g1p="${entry%%:*}"
+            g1v="${entry##*:}"
+            echo "    $g1p: ~${g1v}GB"
+            if (( $(awk "BEGIN {print ($g1v <= $GPU1_TOTAL_GB) ? 1 : 0}") )); then
+                pass "VRAM budget GPU 1: $g1p (${g1v}GB) fits the ${GPU1_TOTAL_GB}GB card"
+            else
+                fail "VRAM budget GPU 1: $g1p (${g1v}GB) exceeds the ${GPU1_TOTAL_GB}GB card"
+            fi
+        done
+        echo "  (GPU 1 tenants are mutually exclusive — the active one is swapped via"
+        echo "   'model-manager gpu1 swap {media|copywriter}' + Ollama idle-unload)"
+    fi
 else
-    fail "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected exceeds GPU total (${TOTAL_VRAM_GB}GB)"
+    # Single-GPU (legacy): the original additive check vs the (single) GPU total.
+    TOTAL_VRAM_GB=$((TOTAL_VRAM / 1024))
+    if (( TOTAL_EXPECTED_VRAM <= TOTAL_VRAM_GB )); then
+        pass "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected fits within ${TOTAL_VRAM_GB}GB total GPU"
+        # Additional check: is there enough headroom for OS/host?
+        HEADROOM=$((TOTAL_VRAM_GB - TOTAL_EXPECTED_VRAM))
+        if (( HEADROOM < 5 )); then
+            warn "VRAM budget: tight headroom (${HEADROOM}GB free) — minimal room for error"
+        fi
+    elif (( TOTAL_EXPECTED_VRAM <= TOTAL_VRAM_GB + 10 )); then
+        warn "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected is close to limit — may need tuning"
+    else
+        fail "VRAM budget: ${TOTAL_EXPECTED_VRAM}GB expected exceeds GPU total (${TOTAL_VRAM_GB}GB)"
+    fi
 fi
 
 # ============================================================
@@ -396,7 +470,7 @@ if curl -sf --max-time 3 http://localhost:11434 &>/dev/null; then
     pass "Ollama health endpoint responding"
 else
     echo "  Ollama (:11434) DOWN"
-    if [[ "$PROFILES" == *"matrix-gemma4-moe"* ]] || [[ "$PROFILES" == *"embeddings"* ]]; then
+    if [[ "$PROFILES" == *"matrix-gemma4-moe"* ]] || [[ "$PROFILES" == *"embeddings"* ]] || [[ "$PROFILES" == *"ollama-copywriter-gpu1"* ]]; then
         warn "Ollama not responding but target mode needs it — will need to start"
     fi
 fi
@@ -407,7 +481,7 @@ if curl -sf --max-time 3 http://localhost:8188 &>/dev/null; then
     pass "ComfyUI health endpoint responding"
 else
     echo "  ComfyUI (:8188) DOWN"
-    if [[ "$PROFILES" == *"comfyui"* ]]; then
+    if [[ "$PROFILES" == *"comfyui"* ]] || [[ "$PROFILES" == *"media-gpu1"* ]] || [[ "$PROFILES" == *"media-pipeline"* ]]; then
         warn "ComfyUI not responding but target mode needs it — will need to start"
     fi
 fi

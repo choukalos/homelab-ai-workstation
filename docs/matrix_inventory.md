@@ -355,3 +355,52 @@ sampling is per-GPU (`nvidia-smi -i`), required for 2-GPU.
   ~30 tok/s decode. **Note:** gemma4:31b is a reasoning model — short `num_predict`
   budgets come back as empty `content` with the text in the `thinking` field; the
   copywriter alias (Phase 3/4) needs a generous budget.
+
+## Snapshot 2026-11-21 — Phase 3 (modes + ops parity, add_card_plan.md)
+
+### Mode machinery is now 2-GPU aware
+
+- `scripts/model-manager` modes: **`daily` redefined** = `matrix-coder
+  media-gpu1 ollama-copywriter-gpu1 embeddings` (the 2-GPU steady state — GPU 0
+  daily driver + GPU 1 media XOR copywriter; the GPU 0 profile swaps in Phase 4/5).
+  **`legacy-daily` added** = `matrix-coder matrix-gemma4-moe embeddings` (the
+  single-card rollback target; media reachable via the `images` mode). Active mode
+  remains `qwen-coder` until Phase 4 switches to the new `daily`.
+- `cmd_mode_switch` treats the `media-pipeline` backend as the ComfyUI family
+  (media-gpu1 is the ComfyUI compose's companion service) — switching to `daily`
+  **keeps** the running media stack instead of stopping it.
+- New `model-manager gpu1 {status|swap <media|copywriter>}` — explicit swap of the
+  two GPU 1 XOR tenants (the implicit case is Ollama idle-unload + headroom guard).
+- `profile validate` now FAILs on a `gpu: 1` profile whose compose lacks the
+  `device_ids` pin (mis-pin catch). Verified: `media-gpu1` + `ollama-copywriter-gpu1`
+  both PASS (compose pins to GPU 1).
+- `preflight.sh` 2-GPU aware: both-GPUs-visible check for modes containing `gpu: 1`
+  profiles; per-GPU VRAM budget — GPU 0 additive (58 GB ≤ 71.7 GB for `daily`),
+  GPU 1 XOR tenants checked individually (media 16 GB / copywriter 21.5 GB ≤ 23.9 GB
+  card). `legacy-daily` / `qwen-coder` / `experiment` preflight all PASS (regression
+  intact).
+- **Pre-existing bug fixed:** `docker compose … --profile image --timeout 30 down`
+  — `--timeout` is a `down` subcommand flag in Compose v5 (v5.8.0); the old position
+  made every ComfyUI stop fail with `unknown flag` (silently swallowed by `|| true`).
+  5 call sites fixed; caught by the Phase 3 drill.
+
+### Rollback drill (timed, logged — `state/phase3_drill_20261121.log`)
+
+- qwen-coder → legacy-daily: 35 s (media stack stopped, gemma4:26b loaded).
+- legacy-daily → qwen-coder: 2 s (gemma4:26b unloaded).
+- `media up` restore: 10 s. `gpu1 swap copywriter` → `gpu1 swap media` cycle
+  verified (media down/up, healthy).
+- **matrix-coder clients: zero disruption** — vLLM `qwen38` container untouched
+  throughout (`State.StartedAt` 2026-11-21T03:35:03Z identical pre/post; vLLM
+  "keep" path when both modes share the `matrix-coder` profile); :8000 served
+  `qwen38-27b` at every check. Media pipeline down ~2 min during the drill
+  (expected — `legacy-daily` has no media tenant), restored.
+- `switch_log.md` gained the drill entries (all "success").
+
+### homelab.sh (§7.1)
+
+- Still not located on matrix (searched /home/chuck, /opt, /srv, /usr/local/bin,
+  cron, systemd — none). Awaiting Chuck's answer (Thor? dotfiles?).
+- Integration contract verified: `model-manager mode switch --yes
+  {legacy-daily|daily|experiment}` works for all three modes (drill exercised
+  `legacy-daily`; `daily`/`experiment` via plan display + preflight).

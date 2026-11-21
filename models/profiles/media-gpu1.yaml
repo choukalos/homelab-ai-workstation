@@ -1,5 +1,5 @@
 # media-gpu1 — Media pipeline (ComfyUI + media-pipeline) pinned to GPU 1
-# Status: DRAFT profile (Phase 3 wires it into the `daily` mode). The compose it
+# Status: ACTIVE (wired into the `daily` mode in Phase 3, 2026-11-21). The compose it
 # points at (compose/comfyui.yml) has been the ACTIVE GPU 1 media compose since
 # Phase 1 (2026-11-14). The media pipeline runs on GPU 1 (RTX 4000 Blackwell,
 # dedicated 24 GB) instead of GPU 0 (shared with vLLM, 14 GB gate).
@@ -7,14 +7,14 @@
 name: media-gpu1
 alias: none  # not an LLM — no LiteLLM alias
 backend: media-pipeline
-status: draft
+status: active
 
 model:
   description: >
     ComfyUI (image/video generation) + media-pipeline orchestrator, pinned to GPU 1
     (RTX 4000 Blackwell, 24 GB). Full 24 GB budget (vs the 14 GB gate on GPU 0).
   docs: docs/matrix_media_pipeline_api.md
-  expected_vram: up to 24 GB (dedicated GPU 1)
+  expected_vram: ~16 GB (480p Wan measured peak 15.6 GB, Phase 1 QA; 720p pending Phase 6)
 
 launch:
   container: comfyui_backend
@@ -31,5 +31,5 @@ notes:
   - "Dedicated 24 GB unlocks Phase 6: 720p Wan, better quants (Q6/Q8/FP8), T5-on-GPU,
     both-experts-resident"
   - "No --reserve-vram (GPU 1 is dedicated; the Ollama copywriter unloads on idle)"
-  - "Mutually exclusive with the GPU 0 media compose (compose/comfyui.yml)"
+  - "XOR tenant with ollama-copywriter-gpu1 on GPU 1 (swap: model-manager gpu1 swap)"
   - "QA gate on GPU 1: qa_wan_phase1.py 480 must match GPU 0 parity (Phase 1)"

@@ -1,19 +1,20 @@
 # ollama-copywriter-gpu1 — Ollama copywriter (Gemma 4 31B) pinned to GPU 1
-# Status: DRAFT profile (Phase 3 wires it into the `daily` mode + adds the Thor
-# LiteLLM alias). The compose it points at (compose/gemma4-moe.yml) has been the
-# ACTIVE GPU 1 Ollama compose since Phase 1 (2026-11-14). The copywriter runs on
-# GPU 1 (dedicated 24 GB) instead of GPU 0 (shared, 14 GB slot).
+# Status: ACTIVE (wired into the `daily` mode in Phase 3, 2026-11-21). The compose it
+# points at (compose/gemma4-moe.yml) has been the ACTIVE GPU 1 Ollama compose since
+# Phase 1 (2026-11-14). The copywriter runs on GPU 1 (dedicated 24 GB) instead of
+# GPU 0 (shared, 14 GB slot).
 
 name: ollama-copywriter-gpu1
 alias: matrix-copywriter  # NEW LiteLLM alias (Phase 3/4 adds the Thor entry)
 backend: ollama
-status: draft
+status: active
 
 model:
   path: gemma4:31b
   quantization: "Q4_K_M (~20.4 GB: 18.7 model + 1.2 vision + 0.5 draft/speculative)"
   format: ollama
   parameters: 31B (dense + vision + draft/speculative)
+  expected_vram: ~21.5 GB (Phase 1 measured 22,021 MiB @ 32K ctx)
   context: 8-16K comfortable (~3.6 GB headroom on 24 GB); 32K tight (q8 KV)
   fast_option: gemma4:26b (17 GB MoE) — already pulled, faster
 
@@ -32,9 +33,10 @@ health:
   expected_model_name: gemma4:31b
 
 notes:
-  - "Swaps with the media pipeline on GPU 1 (keep_alive idle-unload + headroom guard,
-    add_card_plan.md §4.1.4)"
+  - "XOR tenant with media-gpu1 on GPU 1 (keep_alive idle-unload + headroom guard,
+    add_card_plan.md §4.1.4; explicit swap: model-manager gpu1 swap copywriter)"
   - "20.4 GB model + ~3.6 GB context headroom on the 24 GB card"
   - "Mutually exclusive with the GPU 0 Ollama compose (compose/gemma4-moe.yml)"
-  - "Pull in progress (Phase 0a): state/ollama_pull_gemma4_31b.log"
+  - "Pull (Phase 0a): state/ollama_pull_gemma4_31b.log; validated on GPU 1 in Phase 1
+    (46 s load, ~30 tok/s; reasoning model — needs a generous output budget)"
   - "Open question §7.2: 31B (quality ceiling) vs 26B MoE (fast) — 31B pulled, 26B kept"

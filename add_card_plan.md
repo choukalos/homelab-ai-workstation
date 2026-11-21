@@ -191,7 +191,7 @@ more headroom and is faster. Either works; see §7.2.
    (Matrix boundary: no changes without your approval).
 5. **Ping me** → I start Phase 1.
 
-## 6. My phases (agent — card in since 2026-11-14; Phases 1–2 done)
+## 6. My phases (agent — card in since 2026-11-14; Phases 1–3 done)
 
 > **Ordering (decided 2026-11-13):** card in → **metrics** → **modes/ops** (both get
 > us back to parity) → **ramp up the daily** → **QNF experiment** (swap 27B → QNF as
@@ -265,14 +265,22 @@ candidate) *before* install. If good → proceed with confidence.
       every later phase is observable. (Exporter + Prometheus verified; Grafana
       panels are a convenience layer, not a blocker.)
 
-### Phase 3 — modes + ops (right after metrics — parity)
-- [ ] model-manager: add `legacy-daily` + new `daily` modes, `gpu1 swap` command,
-      profile validation for GPU 1 pinning.
-- [ ] Locate + integrate `homelab.sh` (§7.1).
-- [ ] Rollback drill: `legacy-daily` switch + back, timed, logged — done now, while the
-      daily model is still the same 27B, so the drill is pure mode-mechanics.
-- [ ] Update `docs/matrix_inventory.md` (append-only snapshot) + `EXPERIMENTS_RESULTS.md`.
-- [ ] **Gate: ops parity** — mode switching + rollback work before any model change.
+### Phase 3 — modes + ops (right after metrics — parity) — **DONE 2026-11-21**
+- [x] model-manager: add `legacy-daily` + new `daily` modes, `gpu1 swap` command,
+      profile validation for GPU 1 pinning. (Plus: `gpu1 status`, preflight made
+      2-GPU aware — both-GPUs-visible + per-GPU VRAM budget w/ GPU 1 XOR semantics.
+      Pre-existing `--timeout` compose-flag bug fixed — it was silently no-op'ing
+      every ComfyUI stop; caught by the drill.)
+- [x] Locate + integrate `homelab.sh` (§7.1). (**Locate: still open — not on matrix,
+      awaiting Chuck.** Integrate: the call shape `model-manager mode switch --yes
+      {legacy-daily|daily|experiment}` is verified working for all three modes.)
+- [x] Rollback drill: `legacy-daily` switch + back, timed, logged (`state/phase3_drill_20261121.log`).
+      vLLM `qwen38` untouched throughout (container `State.StartedAt` identical
+      pre/post; :8000 served `qwen38-27b` the whole time). Media stack down ~2 min
+      during the drill (expected — legacy-daily has no media tenant), restored via
+      `model-manager media up` (10 s). `gpu1 swap` cycle verified both directions.
+- [x] Update `docs/matrix_inventory.md` (append-only snapshot) + `EXPERIMENTS_RESULTS.md`.
+- [x] **Gate: ops parity** — mode switching + rollback work before any model change.
 
 ### Phase 4 — ramp up the daily (GPU 0)
 - [ ] Bumped 27B vLLM (mem-util 0.95→0.98, seqs 4–6, ctx 262144) as the working
@@ -361,3 +369,18 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   panels = Thor-side handoff (spec in inventory). `qa_wan_phase1.py` gained `--gpu`.
   Docs: `docs/matrix_inventory.md` 2026-11-14 snapshot, `wan_shots_todo.md` GPU 1
   parity section, `state/switch_log.md`.
+- 2026-11-21: v0.8 — **Phase 3 complete (ops-parity gate passed).** `model-manager`
+  gained `legacy-daily` + redefined 2-GPU `daily` modes, `gpu1 {status|swap
+  <media|copywriter>}`, and `device_ids` pin validation in `profile validate`
+  (FAIL on a mis-pin). `cmd_mode_switch` treats the `media-pipeline` backend as the
+  ComfyUI family (so `daily` keeps the running media stack). `preflight.sh` is
+  2-GPU aware: both-GPUs-visible check for `gpu: 1` modes + per-GPU VRAM budget
+  (GPU 0 additive; GPU 1 XOR tenants checked individually vs the 24 GB card).
+  Pre-existing bug fixed: `docker compose … --profile image --timeout 30 down`
+  (flag position) silently no-op'd every ComfyUI stop under Compose v5 — caught by
+  the drill. Rollback drill (qwen-coder → legacy-daily → qwen-coder, timed + logged,
+  `state/phase3_drill_20261121.log`): vLLM `qwen38` container untouched (StartedAt
+  identical), :8000 served `qwen38-27b` throughout, media down ~2 min then restored
+  in 10 s; `gpu1 swap` verified both directions. `homelab.sh` locate still open
+  (§7.1 — not on matrix); its call shape is verified working. Docs:
+  `modes-2gpu-draft.md` → APPLIED, inventory 2026-11-21 snapshot.
