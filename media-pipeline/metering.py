@@ -332,6 +332,12 @@ def record_job(job: dict) -> None:
         }
         if job.get("error"):
             rec["error"] = str(job["error"])[:500]
+        # M1/M5: pass the new additive job-result fields through to the durable
+        # ledger row (one row per job, unchanged).
+        if isinstance(output.get("duration_adjustments"), list):
+            rec["duration_adjustments"] = output["duration_adjustments"]
+        if isinstance(output.get("progress"), dict):
+            rec["progress"] = output["progress"]
         _append_jsonl(rec)
     except Exception:
         pass  # metering must never break a job

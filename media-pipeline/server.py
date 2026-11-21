@@ -20,6 +20,8 @@ Flows (each returns a job_id; poll GET /jobs/{id}):
                       (finished jobs, survives restarts) merged with the live
                       in-memory registry (in-flight + this process's outputs).
                       Filters: status, client, user, flow, since (ISO), limit
+  DELETE /jobs/{id}  kill a QUEUED job (frees its FIFO slot; running -> 409;
+                      terminal -> 200 no-op; alias: POST /jobs/{id}/kill)
   GET  /info         ffprobe metadata (sync, not a job)
   GET  /voices       list the TTS voice library (sync)
   POST /voices       register a TTS voice from a reference clip (job; XTTS
@@ -40,6 +42,7 @@ flows additionally serialize on a single thread lock.
 """
 import asyncio
 import base64
+import faulthandler
 import hashlib
 import hmac
 import json
@@ -47,6 +50,7 @@ import logging
 import re
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -88,6 +92,10 @@ if not logger.handlers:  # make app INFO logs visible in container logs (uvicorn
     logger.setLevel(logging.INFO)
 
 app = FastAPI(title="media-pipeline")
+# Ops: `docker exec media_pipeline kill -USR1 1` dumps every thread's stack to
+# stderr (docker logs) — the hang/deadlock diagnostic (no ptrace in the
+# container, so py-spy can't be used).
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 GPU_LOCK = threading.Lock()  # flows run in worker threads; thread-safe lock
 JOBS: dict[str, dict] = {}
 
@@ -249,6 +257,11 @@ def _worker_loop() -> None:
             while not _queue:
                 _qcond.wait()
             jid, flow, payload, extra = _queue.pop(0)
+            if JOBS.get(jid, {}).get("killed"):
+                # M2: DELETE /jobs/{id} removed this queued job (or the tiny
+                # pre-enqueue window). The killer already released the slot —
+                # skip it without double-releasing.
+                continue
             _running.append(jid)
         try:
             set_status(jid, "running", started=time.time())
@@ -1278,13 +1291,27 @@ def flow_caption(payload: dict, jid: str):
     return {"video": str(out)}
 
 
+# M1: |natural - duration| tolerance for assemble shot duration hold/trim.
+DURATION_TOL_S = 0.1
+
+
 def flow_assemble(payload: dict, jid: str):
-    """ffmpeg (in-container): concat video shots, mix audio tracks, output final mp4.
+    """ffmpeg (in-container): normalize shots, concat, mix audio tracks, output final mp4.
 
     Backward compatible: string-array shots + single sfx path behave exactly as
     before. New: object shots {path, in?, out?, duration?} (still + duration =
     static clip), sfx as a list of {path, at} for timestamped placement, vo_start
     (VO offset from t=0), loudnorm (EBU R128 on the final mix).
+
+    M1: for object shots with `duration`, in/out define the source window first
+    and `duration` then applies to the resulting clip: hold the last frame
+    (tpad=stop_mode=clone) when duration > natural, trim the tail when
+    duration < natural (tolerance 0.1 s). Every adjustment is reported in the
+    job result AND the ledger row as `duration_adjustments` (omitted when no
+    shot requested a duration). With upscale_each the adjustment happens
+    BEFORE upscaling — the held/trimmed clip is upscaled in one pass.
+    M5: in-flight progress (stage/completed/total/label) is exposed on
+    GET /jobs/{id}; the terminal progress lands in the result + ledger row.
     """
     shots = payload["shots"]
     vo, music, sfx = payload.get("vo"), payload.get("music"), payload.get("sfx")
@@ -1294,22 +1321,31 @@ def flow_assemble(payload: dict, jid: str):
     text_overlays = payload.get("text_overlays", []) or []
     out_host = JOB_DIR / jid / "final.mp4"
     out = to_container(out_host)
+    upscale_each = bool(payload.get("upscale_each", False))
+    n_shots = len(shots)
 
-    # 0. Optionally B-upscale (SeedVR2) each shot for 1080p-quality assembly.
-    if payload.get("upscale_each", False):
-        res = int(payload.get("upscale_resolution", 1080))
-        ns = float(payload.get("upscale_noise_scale", 0.0))
-        ufps = int(payload.get("upscale_fps", fps))
-        useed = int(payload.get("upscale_seed", 42))
-        shots = [_upscale_shot(s["path"] if isinstance(s, dict) else s, jid, i, res, ns,
-                               ufps, useed)
-                 for i, s in enumerate(shots)]
+    def _progress(stage, completed, label):
+        """M5: in-memory in-flight progress (dies with the job; the terminal
+        progress in the result/ledger row is the durable record)."""
+        JOBS[jid]["progress"] = {"stage": stage, "completed": completed,
+                                 "total": n_shots, "label": label}
+
+    def _result():
+        r = {"video": _apply_text_overlays(out_host, text_overlays, jid)}
+        if adjustments:
+            r["duration_adjustments"] = adjustments
+        r["progress"] = {"stage": "done", "completed": n_shots, "total": n_shots}
+        return r
 
     def resolve(p):
         p = Path(p)
         return p if p.is_absolute() else RUN_DIR / p
 
+    # 1. Normalize each shot (scale/pad/fps) and apply in/out + M1 duration
+    #    hold/trim. Runs BEFORE the optional per-shot upscale so the
+    #    held/trimmed clip is upscaled in one pass (M1 rule 5).
     norm = []
+    adjustments = []
     for i, s in enumerate(shots):
         spec = _shot_spec(s)
         sp_host = resolve(spec["path"])
@@ -1319,6 +1355,7 @@ def flow_assemble(payload: dict, jid: str):
         n_host = JOB_DIR / jid / f"norm_{i:02d}.mp4"
         n = to_container(n_host)
         cmd = ["-y"]
+        vf_hold = ""
         if not _is_video(sp_host):
             # Still image: no duration keeps today's behavior (1-frame ~0s clip);
             # explicit duration renders a pixel-static clip (M2 logic).
@@ -1327,24 +1364,67 @@ def flow_assemble(payload: dict, jid: str):
             cmd += ["-i", sp]
         else:
             cmd += ["-i", sp]
+            in_s = float(spec["in"]) if spec["in"] is not None else 0.0
             if spec["in"] is not None:
-                cmd += ["-ss", f"{float(spec['in']):.3f}"]
-            trim_dur = None
+                cmd += ["-ss", f"{in_s:.3f}"]
+            # M1: in/out define the source window first; `duration` then applies
+            # to the resulting clip (natural length of that window).
+            window_s = None
             if spec["out"] is not None:
-                trim_dur = float(spec["out"]) - (float(spec["in"]) if spec["in"] is not None else 0.0)
-            elif spec["duration"] is not None:
-                trim_dur = float(spec["duration"]) - (float(spec["in"]) if spec["in"] is not None else 0.0)
-            if trim_dur is not None:
-                if trim_dur <= 0:
+                window_s = float(spec["out"]) - in_s
+                if window_s <= 0:
                     raise ValueError(f"shot {i}: non-positive trim duration")
-                cmd += ["-t", f"{trim_dur:.3f}"]
+            if spec["duration"] is not None:
+                req_s = float(spec["duration"])
+                if req_s <= 0:
+                    raise ValueError(f"shot {i}: non-positive duration")
+                if window_s is None:
+                    window_s = max(0.0, _probe_duration_s(sp_host) - in_s)
+                if abs(window_s - req_s) <= DURATION_TOL_S:
+                    applied, held_s, trimmed_s = "none", None, None
+                elif req_s > window_s:
+                    # Hold the last frame for the shortfall (the
+                    # production-proven tpad=stop_mode=clone fix-forward).
+                    applied, held_s, trimmed_s = "hold", req_s - window_s, None
+                    if spec["out"] is not None:
+                        cmd += ["-t", f"{window_s:.3f}"]
+                    vf_hold = f",tpad=stop_mode=clone:stop_duration={held_s:.3f}"
+                else:
+                    applied, held_s, trimmed_s = "trim", None, window_s - req_s
+                    cmd += ["-t", f"{req_s:.3f}"]
+                adj = {"shot": i, "natural_s": round(window_s, 3),
+                       "requested_s": round(req_s, 3), "applied": applied}
+                if held_s is not None:
+                    adj["held_s"] = round(held_s, 3)
+                if trimmed_s is not None:
+                    adj["trimmed_s"] = round(trimmed_s, 3)
+                adjustments.append(adj)
+            elif spec["out"] is not None:
+                cmd += ["-t", f"{window_s:.3f}"]
         cmd += ["-vf",
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}{vf_hold}",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
                 "-an", n]
         run_ffmpeg(cmd, timeout=1800)
         norm.append(n)
+        _progress("normalize" if upscale_each else "assemble", i + 1,
+                  f"{'normalize ' if upscale_each else ''}shot {i + 1}/{n_shots}")
+
+    # 2. Optionally B-upscale (SeedVR2) each normalized shot for 1080p-quality
+    #    assembly — AFTER the M1 duration adjustment (one pass per clip).
+    if upscale_each:
+        res = int(payload.get("upscale_resolution", 1080))
+        ns = float(payload.get("upscale_noise_scale", 0.0))
+        ufps = int(payload.get("upscale_fps", fps))
+        useed = int(payload.get("upscale_seed", 42))
+        up = []
+        for i, n in enumerate(norm):
+            up.append(_upscale_shot(n, jid, i, res, ns, ufps, useed))
+            _progress("upscale", i + 1, f"upscale shot {i + 1}/{n_shots}")
+        norm = up
+
+    _progress("concat", n_shots, "concat")
     concat_list_host = JOB_DIR / jid / "concat.txt"
     concat_list = to_container(concat_list_host)
     concat_list_host.write_text("".join(f"file '{n}'\n" for n in norm))
@@ -1353,6 +1433,7 @@ def flow_assemble(payload: dict, jid: str):
     run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18", video_only])
 
+    _progress("finalize", n_shots, "finalize")
     vo_start = float(payload.get("vo_start", 0.0) or 0.0)
     loudnorm = str(payload.get("loudnorm", "false")).strip().lower() in ("1", "true", "yes", "on")
 
@@ -1391,7 +1472,7 @@ def flow_assemble(payload: dict, jid: str):
             inputs.append((sp, sfx_vol, f"sfx{k}", e["at"]))
     if not inputs:
         shutil.copy2(video_only_host, out_host)
-        return {"video": _apply_text_overlays(out_host, text_overlays, jid)}
+        return _result()
 
     cmd = ["-y", "-i", video_only]
     filters, labels = [], []
@@ -1413,7 +1494,7 @@ def flow_assemble(payload: dict, jid: str):
     run_ffmpeg(cmd + ["-filter_complex", ";".join(filters + [mix]),
                       "-map", "0:v", "-map", "[aout]", "-c:v", "copy",
                       "-c:a", "aac", "-b:a", "192k", "-shortest", out])
-    return {"video": _apply_text_overlays(out_host, text_overlays, jid)}
+    return _result()
 
 
 # ------------------------------------------------------------------ runner
@@ -1439,10 +1520,22 @@ FLOW_MAP = {
 # ------------------------------------------------------------------ routes
 @app.get("/health")
 def health():
+    now = time.time()
     with _qlock:
         running = list(_running)
         queued = [j for (j, *_r) in _queue]
         pending = _pending
+        # M3: FIFO wait order (oldest first) with per-job wait age.
+        # `running`/`queued` are lists of job IDs (not counts).
+        queued_jobs = [
+            {"job_id": j,
+             "flow": JOBS.get(j, {}).get("flow"),
+             "client": JOBS.get(j, {}).get("client"),
+             "created": _iso(JOBS.get(j, {}).get("created")),
+             "waited_s": round(now - JOBS[j]["created"], 1)
+             if JOBS.get(j, {}).get("created") else None}
+            for j in queued
+        ]
     return {
         "ok": True,
         "gpu_locked": GPU_LOCK.locked(),
@@ -1454,6 +1547,14 @@ def health():
         "running": running,
         "queued": queued,
         "queue_depth": len(queued),
+        "queue": {
+            "counts": {"running": len(running), "queued": len(queued)},
+            "queued_jobs": queued_jobs,
+            "oldest_queued": queued_jobs[0] if queued_jobs else None,
+        },
+        # M3: feature detection for clients.
+        "features": ["assemble-duration-hold", "job-kill", "queue-summary",
+                     "job-progress"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -1549,7 +1650,8 @@ def list_jobs(status: str = None, client: str = None, user: str = None,
     registry (in-flight jobs + this process's outputs). Read-only.
 
     Filters (all optional, combinable):
-      status  comma-separated subset of queued,running,done,error,timeout (or 'all')
+      status  comma-separated subset of queued,running,done,error,timeout,killed
+              (or 'all')
       client  exact match on the client identity (e.g. 'pi', 'siri')
       user    exact match on the user identity
       flow    exact match on the flow (e.g. 'shots', 'tts')
@@ -1567,9 +1669,9 @@ def list_jobs(status: str = None, client: str = None, user: str = None,
     except (TypeError, ValueError):
         raise HTTPException(400, "limit must be an integer 1..200")
     statuses = {s.strip() for s in (status or "").lower().split(",") if s.strip()}
-    if statuses - {"all", "queued", "running", "done", "error", "timeout"}:
+    if statuses - {"all", "queued", "running", "done", "error", "timeout", "killed"}:
         raise HTTPException(400, "status must be a comma-separated subset of "
-                                 "queued,running,done,error,timeout (or 'all')")
+                                 "queued,running,done,error,timeout,killed (or 'all')")
     if "all" in statuses:
         statuses = set()
     since_epoch = None
@@ -1664,6 +1766,70 @@ def job_status(jid: str):
     return j
 
 
+# ------------------------------------------------------------------ M2: job kill
+# Only QUEUED jobs can be killed (frees the FIFO slot so the next job starts).
+# Running jobs are never killed (GPU work in progress) — 409. Terminal jobs
+# (done/error/timeout/killed) are a 200 no-op. Client scoping is nominal
+# (the pipeline is unauthenticated by design): optional ?client= tag check.
+@app.delete("/jobs/{jid}")
+def kill_job(jid: str, client: str = None):
+    return _kill_job(jid, client)
+
+
+@app.post("/jobs/{jid}/kill")
+def kill_job_alias(jid: str, client: str = None):
+    return _kill_job(jid, client)
+
+
+def _kill_job(jid: str, client: str | None) -> dict:
+    with _qcond:  # same lock as the worker pop — no race between kill and start
+        job = JOBS.get(jid)
+        if job is None:
+            # Terminal jobs from before a restart live only in the ledger.
+            for r in reversed(_read_jobs_ledger()):
+                if r.get("job_id") == jid:
+                    job = {"id": jid, "status": r.get("status"),
+                           # "unknown" is the ledger's no-tag placeholder
+                           "client": r.get("client")
+                           if r.get("client") not in (None, "unknown") else None}
+                    break
+        if job is None:
+            raise HTTPException(404, {
+                "error": "unknown_job",
+                "message": f"job {jid} not found",
+                "hint": "list jobs with GET /jobs",
+            })
+        if client and job.get("client") and job["client"] != client:
+            raise HTTPException(403, {
+                "error": "client_mismatch",
+                "message": f"job {jid} belongs to client {job['client']!r}, "
+                           f"not {client!r}",
+            })
+        if jid in _running:
+            raise HTTPException(409, {
+                "error": "job is running (GPU work in progress); kill is queued-only",
+                "status": "running",
+            })
+        if job.get("status") != "queued":
+            # done/error/timeout/killed: nothing to kill (idempotent no-op).
+            return {"job_id": jid, "killed": False, "status": job.get("status")}
+        pos = next((i for i, (j, *_r) in enumerate(_queue) if j == jid), 0)
+        if pos < len(_queue):
+            _queue.pop(pos)
+        job["status"] = "killed"
+        job["killed"] = True
+        job["finished"] = time.time()
+    # Slot release + ledger write happen OUTSIDE the queue lock: release_slot
+    # takes _qlock (a non-reentrant threading.Lock) — calling it while holding
+    # _qcond would deadlock. The job was already popped from _queue above and
+    # the worker's killed-guard skips it, so there is no double release.
+    release_slot()
+    logger.info("job killed: %s (queue position %d freed)", jid, pos)
+    metering.record_job(job)  # durable ledger row (status=killed)
+    return {"job_id": jid, "killed": True, "status": "killed",
+            "queue_position_freed": pos}
+
+
 @app.get("/files/{name:path}")
 def get_file(name: str):
     p = (JOB_DIR / name).resolve()
@@ -1702,8 +1868,12 @@ async def api_images_edit(file: UploadFile = File(...), prompt: str = Form(...),
                    "model": model, "references": references,
                    "user": user, "client": client}
         jid = new_job("images_edit", payload)
-        await save_upload(jid, file)
-        copy_to_comfy_input(jid, file.filename)
+        try:
+            await save_upload(jid, file)
+            copy_to_comfy_input(jid, file.filename)
+        except Exception as e:  # M4: failed submission = error, not zombie "queued"
+            set_status(jid, "error", error=f"submission failed: {type(e).__name__}: {e}")
+            raise
         enqueue_job(jid, "images_edit", payload, {"image_name": file.filename})
     return {"job_id": jid}
 
@@ -1741,8 +1911,12 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
                    "steps": steps, "strength": strength,
                    "user": user, "client": client}
         jid = new_job("shots", payload)
-        await save_upload(jid, file)
-        copy_to_comfy_input(jid, file.filename)
+        try:
+            await save_upload(jid, file)
+            copy_to_comfy_input(jid, file.filename)
+        except Exception as e:  # M4: failed submission = error, not zombie "queued"
+            set_status(jid, "error", error=f"submission failed: {type(e).__name__}: {e}")
+            raise
         enqueue_job(jid, "shots", payload, {"keyframe_name": file.filename})
     return {"job_id": jid}
 
@@ -1861,7 +2035,11 @@ async def api_sfx(file: UploadFile = File(...), duration: float = Form(8.0),
                    "prompt": prompt, "negative_prompt": negative_prompt, "fps": fps,
                    "user": user, "client": client}
         jid = new_job("sfx", payload)
-        await save_upload(jid, file)
+        try:
+            await save_upload(jid, file)
+        except Exception as e:  # M4: failed submission = error, not zombie "queued"
+            set_status(jid, "error", error=f"submission failed: {type(e).__name__}: {e}")
+            raise
         video_rel = f"media_jobs/{jid}/input/{file.filename}"
         enqueue_job(jid, "sfx", payload, {"video_rel": video_rel})
     return {"job_id": jid}
@@ -1877,7 +2055,11 @@ async def api_upscale(file: UploadFile = File(...), pipeline: str = Form("b"),
                    "noise_scale": noise_scale, "fps": fps, "seed": seed,
                    "user": user, "client": client}
         jid = new_job("upscale", payload)
-        await save_upload(jid, file)
+        try:
+            await save_upload(jid, file)
+        except Exception as e:  # M4: failed submission = error, not zombie "queued"
+            set_status(jid, "error", error=f"submission failed: {type(e).__name__}: {e}")
+            raise
         video_rel = f"media_jobs/{jid}/input/{file.filename}"
         enqueue_job(jid, "upscale", payload, {"video_rel": video_rel})
     return {"job_id": jid}
