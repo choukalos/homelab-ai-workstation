@@ -11,14 +11,19 @@ dual-expert graph:
   -> VAEDecode -> VHS_VideoCombine (16 fps)
 
 CLIPLoader device=cpu keeps umt5-xxl (6.74 GB) out of VRAM.
-VRAM metric = nvidia-smi memory.used delta vs pre-run baseline (vLLM holds
-~55-57 GB of the 72 GB card; the delta is the ComfyUI/Wan footprint).
+VRAM metric = nvidia-smi memory.used delta vs pre-run baseline, sampled on a
+single GPU via `nvidia-smi -i <gpu>` (--gpu, default 1). On the dedicated
+GPU 1 (RTX 4000, Phase 1+) the baseline is ~0 MiB, so peak_delta is the full
+ComfyUI/Wan footprint — directly comparable to the GPU 0 deltas (vLLM-held
+baseline, e.g. the 2026-10-25 480p result: 14,266 MiB).
 
 Usage:
   python3 qa_wan_phase1.py 480          # 832x480, 81f @16fps
   python3 qa_wan_phase1.py 720          # 1280x720, 81f @16fps
   python3 qa_wan_phase1.py 480 720
+  python3 qa_wan_phase1.py 480 --gpu 0  # sample VRAM on GPU 0 (legacy-daily)
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -76,10 +81,11 @@ def graph(w: int, h: int) -> dict:
     }
 
 
-def vram_sampler(samples: list, stop: threading.Event) -> None:
-    """Append used-MiB from nvidia-smi at 1 Hz until stop is set."""
+def vram_sampler(gpu: int, samples: list, stop: threading.Event) -> None:
+    """Append used-MiB from nvidia-smi (single GPU via -i) at 1 Hz until stop."""
     p = subprocess.Popen(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits", "-l", "1"],
+        ["nvidia-smi", "-i", str(gpu), "--query-gpu=memory.used",
+         "--format=csv,noheader,nounits", "-l", "1"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         for line in p.stdout:
@@ -93,10 +99,10 @@ def vram_sampler(samples: list, stop: threading.Event) -> None:
         p.terminate()
 
 
-def run(tag: str, w: int, h: int) -> dict:
+def run(tag: str, w: int, h: int, gpu: int = 1) -> dict:
     samples: list = []
     stop = threading.Event()
-    t = threading.Thread(target=vram_sampler, args=(samples, stop), daemon=True)
+    t = threading.Thread(target=vram_sampler, args=(gpu, samples, stop), daemon=True)
     t.start()
     time.sleep(4)  # let the GPU settle
     baseline = samples[-1] if samples else None
@@ -140,7 +146,7 @@ def run(tag: str, w: int, h: int) -> dict:
         msgs = status.get("messages") or [{}]
         err = msgs[-1].get("exception_message")
     result = {
-        "tag": tag, "w": w, "h": h,
+        "tag": tag, "w": w, "h": h, "gpu": gpu,
         "status": status.get("status_str") if status else "unknown",
         "wall_s": round(wall, 1),
         "baseline_mib": baseline, "peak_mib": peak,
@@ -152,9 +158,14 @@ def run(tag: str, w: int, h: int) -> dict:
 
 
 if __name__ == "__main__":
-    tags = sys.argv[1:] or ["480"]
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    ap.add_argument("tags", nargs="*", choices=["480", "720"], default=["480"],
+                    help="resolutions to test (default: 480)")
+    ap.add_argument("--gpu", type=int, default=1,
+                    help="GPU index for VRAM sampling (default 1 = RTX 4000 media card)")
+    args = ap.parse_args()
     results = []
-    for tag in tags:
+    for tag in args.tags:
         w, h = (832, 480) if tag == "480" else (1280, 720)
-        results.append(run(tag, w, h))
+        results.append(run(tag, w, h, args.gpu))
     print("SUMMARY:", json.dumps(results, indent=1))

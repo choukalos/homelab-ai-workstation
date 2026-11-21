@@ -1,7 +1,8 @@
 # ollama-copywriter-gpu1 — Ollama copywriter (Gemma 4 31B) pinned to GPU 1
-# Status: DRAFT (add_card_plan.md Phase 0a) — becomes active after the 2nd card is
-# installed (Phase 1). The copywriter moves from GPU 0 (shared, 14 GB slot) to GPU 1
-# (dedicated 24 GB).
+# Status: DRAFT profile (Phase 3 wires it into the `daily` mode + adds the Thor
+# LiteLLM alias). The compose it points at (compose/gemma4-moe.yml) has been the
+# ACTIVE GPU 1 Ollama compose since Phase 1 (2026-11-14). The copywriter runs on
+# GPU 1 (dedicated 24 GB) instead of GPU 0 (shared, 14 GB slot).
 
 name: ollama-copywriter-gpu1
 alias: matrix-copywriter  # NEW LiteLLM alias (Phase 3/4 adds the Thor entry)
@@ -19,7 +20,7 @@ model:
 launch:
   container: ollama
   image: ollama/ollama:latest
-  compose: compose/ollama-gpu1.yml
+  compose: compose/gemma4-moe.yml  # GPU 1 variant (active since Phase 1; GPU 0 legacy: compose/legacy/compose.gemma4-moe-gpu0.yml)
   port: 11434
   gpu: 1  # device_ids: ['1']
   env:

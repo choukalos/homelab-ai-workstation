@@ -191,7 +191,7 @@ more headroom and is faster. Either works; see §7.2.
    (Matrix boundary: no changes without your approval).
 5. **Ping me** → I start Phase 1.
 
-## 6. My phases (agent — nothing runs until the card is in)
+## 6. My phases (agent — card in since 2026-11-14; Phases 1–2 done)
 
 > **Ordering (decided 2026-11-13):** card in → **metrics** → **modes/ops** (both get
 > us back to parity) → **ramp up the daily** → **QNF experiment** (swap 27B → QNF as
@@ -231,20 +231,39 @@ x16 baseline; (3) Flash-Next's real quality vs the 27B.
 **Gate:** if QSA is broken or quality disappoints → pivot to the bumped 27B (or another
 candidate) *before* install. If good → proceed with confidence.
 
-### Phase 1 — card in, media + copywriter onto GPU 1
-- [ ] Verify 2-GPU visibility (nvidia-smi, docker `--gpus`, `device_ids: ['1']`).
-- [ ] Pin media stack to GPU 1 (comfyui_backend + media_pipeline), run
+### Phase 1 — card in, media + copywriter onto GPU 1 — **DONE 2026-11-14**
+- [x] Verify 2-GPU visibility (nvidia-smi, docker `--gpus`, `device_ids: ['1']`).
+      Both GPUs visible; in-container checks: `comfyui_backend` + `ollama` see only
+      the 4000, `qwen38` only the 5000. GPU 1 idles at PCIe Gen1 (ASPM), Gen5 x8 max.
+- [x] Pin media stack to GPU 1 (comfyui_backend + media_pipeline), run
       `qa_wan_phase1.py 480` on GPU 1 → must match GPU 0 results.
-- [ ] Pin Ollama to GPU 1, verify copywriter + `nomic-embed-text` (embeddings must
+      **PASS** — success, peak 15,961 MiB (7.5 GB headroom), output specs identical
+      to the GPU 0 clip; wall 1055 s vs 615 s (1.7×, 4000 bandwidth — expected).
+      Compose promoted: `compose/comfyui.yml` = GPU 1 variant; GPU 0 variant archived
+      at `compose/legacy/compose.comfyui-gpu0.yml` (legacy-daily, Phase 3).
+- [x] Pin Ollama to GPU 1, verify copywriter + `nomic-embed-text` (embeddings must
       keep working for RAG).
-- [ ] Confirm GPU 0 steady state unchanged while media runs on GPU 1 (no cross-talk).
+      **PASS** — `compose/gemma4-moe.yml` = GPU 1 variant (legacy: `compose/legacy/
+      compose.gemma4-moe-gpu0.yml`). gemma4:31b: 46 s load, 22,021 MiB @ 32K ctx,
+      ~30 tok/s, reasoning model (short budgets → text lands in `thinking`).
+      nomic-embed-text: 768-dim vectors OK.
+- [x] Confirm GPU 0 steady state unchanged while media runs on GPU 1 (no cross-talk).
+      vLLM 56,158 MiB steady through the 17.6-min GPU 1 run; ~92 tok/s probe; :8000
+      healthy. `qa_wan_phase1.py` gained `--gpu N` (per-GPU sampling, default 1).
 
 ### Phase 2 — metrics / observability (right after Phase 1 — parity)
-- [ ] dcgm-exporter multi-GPU check (it was frozen on the old driver — re-verify);
+- [x] dcgm-exporter multi-GPU check (it was frozen on the old driver — re-verify);
       both GPUs export per-index.
+      **PASS** — full DCGM field set (util, FB_USED/FREE, power, temp, clocks, XID)
+      exported per `gpu` index for both cards; live values.
 - [ ] Thor Prometheus/Grafana 2-GPU panels: daily-on-GPU0 / media-on-GPU1 split visible.
-- [ ] **Gate: monitoring parity** — we can see both GPUs before any model change, so
-      every later phase is observable.
+      **Exporter side PASS** — Thor Prometheus target `matrix:9400` UP; `DCGM_FI_DEV_GPU_UTIL`
+      returns series for `gpu="0"` and `gpu="1"`. **Grafana panels pending (Thor-side,
+      Chuck)** — Grafana :3000 not reachable from Matrix; panel spec + suggested
+      queries in `docs/matrix_inventory.md` (2026-11-14 snapshot).
+- [x] **Gate: monitoring parity** — we can see both GPUs before any model change, so
+      every later phase is observable. (Exporter + Prometheus verified; Grafana
+      panels are a convenience layer, not a blocker.)
 
 ### Phase 3 — modes + ops (right after metrics — parity)
 - [ ] model-manager: add `legacy-daily` + new `daily` modes, `gpu1 swap` command,
@@ -332,3 +351,13 @@ single-card ledger (§2). Nothing in this plan deletes models or state.
   `qwen-coder-bumped.yml` + `modes-2gpu-draft.md` + `daily_candidate_bench.sh`
   drafted and validated (compose dry-run w/ `--profile image`, YAML parse,
   `device_ids: ['1']` pin confirmed). No running service changed.
+- 2026-11-14: v0.7 — **Phase 1 + Phase 2 complete.** Card installed (RTX PRO 4000
+  Blackwell 24 GB = GPU 1, both cards x8 as predicted). Media stack + Ollama pinned
+  to GPU 1 via `device_ids: ['1']` (compose promoted; GPU 0 variants archived in
+  `compose/legacy/` for legacy-daily). QA 480 on GPU 1 PASS (peak 15.9 GB, output
+  parity with GPU 0; wall 1055 s vs 615 s). gemma4:31b + nomic-embed-text verified
+  on GPU 1. vLLM steady state on GPU 0 unchanged. dcgm-exporter per-GPU export
+  re-verified (driver 595.91.07); Thor Prometheus shows both GPUs. Grafana 2-GPU
+  panels = Thor-side handoff (spec in inventory). `qa_wan_phase1.py` gained `--gpu`.
+  Docs: `docs/matrix_inventory.md` 2026-11-14 snapshot, `wan_shots_todo.md` GPU 1
+  parity section, `state/switch_log.md`.

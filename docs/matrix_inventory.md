@@ -293,3 +293,65 @@ Supersedes the `media_pipeline` role cell above ("storyboard→shots→assemble"
 - **QA:** `media-pipeline/qa_part1.py` — 38/38 checks passing (fixtures in
   `media_jobs/qa_tests/`). Plan: `media_pipeline_gaps.md` (Part 1 complete;
   Part 2 = thor).
+
+## Snapshot 2026-11-14 — 2-GPU (add_card_plan.md Phase 1/2)
+
+Supersedes the GPU / Media / Ollama rows above for current state.
+
+### GPUs
+
+| GPU | Model | VRAM | PCIe | Tenant |
+|---|---|---|---|---|
+| 0 | NVIDIA RTX PRO 5000 72GB Blackwell | 73,415 MiB | Gen5 x8 (x16 pre-install) | vLLM `qwen38` daily driver (unchanged, `count: 1` → GPU 0) |
+| 1 | NVIDIA RTX PRO 4000 Blackwell | 24,467 MiB | Gen5 x8 (link idles at Gen1) | Media pipeline (ComfyUI + media_pipeline) XOR Ollama copywriter, both `device_ids: ['1']` |
+
+- Driver 595.91.07 (already Blackwell-capable; no driver change needed — verified).
+- Both cards dropped to x8 on 2nd-card install (mobo manual; confirmed by
+  `pcie.link.width.current = 8` on both). No impact on media/copywriter/vLLM
+  (all-in-VRAM workloads); Flash-Next x8 delta measured in Phase 5 vs the Phase 0b
+  x16 baseline.
+- GPU pinning (verified in-container 2026-11-14): `comfyui_backend` and `ollama`
+  see **only** the RTX 4000; `qwen38` sees **only** the RTX PRO 5000.
+
+### Compose layout (Phase 1)
+
+| File | Role |
+|---|---|
+| `compose/comfyui.yml` | **Active** media compose — GPU 1, `device_ids: ['1']`, no `--reserve-vram` (full 24 GB) |
+| `compose/gemma4-moe.yml` | **Active** Ollama compose — GPU 1, `device_ids: ['1']`, copywriter gemma4:31b (26B MoE kept as fast option) |
+| `compose/legacy/compose.comfyui-gpu0.yml` | Archived pre-Phase-1 GPU 0 media variant — `legacy-daily` rollback (Phase 3) |
+| `compose/legacy/compose.gemma4-moe-gpu0.yml` | Archived pre-Phase-1 GPU 0 Ollama variant — `legacy-daily` rollback (Phase 3) |
+
+`scripts/model-manager` unchanged (it hardcodes the canonical paths, which now pin
+GPU 1). `media-pipeline/qa_wan_phase1.py` gained `--gpu N` (default 1) — VRAM
+sampling is per-GPU (`nvidia-smi -i`), required for 2-GPU.
+
+### Observability (Phase 2)
+
+- dcgm-exporter (:9400) re-verified after the driver bump: full DCGM field set
+  (util, FB_USED/FREE, power, temp, clocks, XID) exported **per GPU index** for
+  both cards. Thor Prometheus target `matrix:9400` UP; `DCGM_FI_DEV_GPU_UTIL`
+  returns series for `gpu="0"` and `gpu="1"`.
+- **Thor-side handoff (pending):** Grafana 2-GPU panels — split the single-GPU
+  panels by the `gpu` label (0 = daily LLM, 1 = media/copywriter); suggested
+  queries: `DCGM_FI_DEV_GPU_UTIL{gpu="0"}`, `DCGM_FI_DEV_GPU_UTIL{gpu="1"}`,
+  `DCGM_FI_DEV_FB_USED{gpu="0"}`, `DCGM_FI_DEV_FB_USED{gpu="1"}`,
+  `DCGM_FI_DEV_POWER_USAGE{gpu=~"0|1"}`, `DCGM_FI_DEV_GPU_TEMP{gpu=~"0|1"}`.
+  (Grafana :3000 is not reachable from Matrix — LAN-only on Thor.)
+
+### Phase 1 QA (GPU 1 parity)
+
+- `qa_wan_phase1.py 480 --gpu 1` (Wan 2.2 I2V A14B Q5_K_M dual-expert, 832×480,
+  81f, seed 42): **success** — peak 15,961 MiB / delta 15,617 MiB (15.2 GB) on the
+  dedicated card vs GPU 0 baseline 2026-10-25 (peak delta 14,266 MiB; wall 615 s);
+  GPU 1 wall 1055 s (1.7× — the 4000's lower memory bandwidth; expected per
+  add_card_plan.md §4.3.9). 7.5 GB headroom at peak. Output verified identical
+  specs to the GPU 0 clip: 832×480 h264 16 fps, 81 frames, 5.0625 s, 2.01 MB
+  (`basedir/output/wan22_p1_832x480_00002.mp4`). Log: `state/qa_wan_phase1_gpu1_480.log`.
+- vLLM steady state unchanged during the GPU 1 run: 56,158 MiB on GPU 0,
+  responding on :8000 (~92 tok/s single-stream probe, x8 link).
+- Ollama on GPU 1: `nomic-embed-text` (768-dim vectors) + `gemma4:31b` copywriter
+  verified — 31B loads in ~46 s, 22,021 MiB resident at 32K ctx (2.4 GB headroom),
+  ~30 tok/s decode. **Note:** gemma4:31b is a reasoning model — short `num_predict`
+  budgets come back as empty `content` with the text in the `thinking` field; the
+  copywriter alias (Phase 3/4) needs a generous budget.

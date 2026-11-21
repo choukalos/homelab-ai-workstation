@@ -1,0 +1,58 @@
+# ARCHIVED (Phase 1, 2026-11-14) — pre-Phase-1 GPU 0 media compose (shared 72 GB
+# card, `--reserve-vram 60`, count: 1). Kept for the `legacy-daily` rollback mode
+# (add_card_plan.md §4.1.1, Phase 3). The active media compose is
+# compose/comfyui.yml (GPU 1, device_ids ['1']).
+# ComfyUI — Image generation + editing (Qwen-Image, 12 GB VRAM budget — see docs/matrix_comfyui_media_api.md)
+# Runs ALONGSIDE vLLM: --reserve-vram 60 keeps ~60 GB for vLLM, ComfyUI self-caps at ~12 GB.
+# Usage: docker compose -f compose/comfyui.yml --profile image up -d
+
+services:
+  comfyui:
+    image: mmartial/comfyui-nvidia-docker:latest
+    container_name: comfyui_backend
+    restart: unless-stopped
+    profiles: ["image"]
+    ports:
+      - "8188:8188"
+    shm_size: "4gb"
+    environment:
+      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188 --fp16-vae --reserve-vram 60
+      - CUDA_MALLOC_ASYNC=1
+      - SECURITY_LEVEL=weak
+      - USE_SOCAT=false
+      - USE_UV=true
+      - BASE_DIRECTORY=/basedir
+    volumes:
+      - /home/chuck/data/comfyui/run:/comfy/mnt
+      - /home/chuck/data/comfyui/basedir:/basedir
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # media-pipeline — thin FastAPI orchestrator (port 8189) that drives ComfyUI + VLLM
+  # for the full media pipeline (storyboard/images/shots/TTS/music/SFX/upscale/assemble).
+  # Runs with HOST networking (reaches ComfyUI 127.0.0.1:8188 + VLLM 127.0.0.1:8000 on the
+  # host loopback) and mounts the docker socket so it can `docker exec`/`docker cp` into
+  # comfyui_backend (workers, ffmpeg, job dirs). Started/stopped as a unit with ComfyUI
+  # (same profile "image"). Rebuild after code changes: model-manager rebuild media-pipeline
+  media-pipeline:
+    build:
+      context: ../media-pipeline
+      dockerfile: Dockerfile
+    image: media-pipeline:latest
+    container_name: media_pipeline
+    restart: unless-stopped
+    profiles: ["image"]
+    network_mode: host
+    environment:
+      - PIPELINE_HOST=0.0.0.0   # LAN-reachable for the remote media-mcp client (do NOT expose publicly)
+      - PIPELINE_PORT=8189
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock          # docker exec/cp into comfyui_backend
+      - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run          # job dir (media_jobs)
+      - /home/chuck/data/comfyui/basedir:/home/chuck/data/comfyui/basedir # ComfyUI input/output
+      - /home/chuck/homelab/.env:/home/chuck/homelab/.env:ro              # config (MAX_CONCURRENT_JOBS, ...)

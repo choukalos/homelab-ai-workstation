@@ -1,0 +1,185 @@
+{
+  "title": "Matrix GPUs (2-GPU)",
+  "uid": "matrix-2gpu",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "description": "Matrix homelab — GPU 0 (RTX PRO 5000 72GB, daily LLM) + GPU 1 (RTX 4000 24GB, media pipeline / Ollama copywriter). Data: dcgm-exporter on matrix:9400. Created 2026-11-14 (add_card_plan.md Phase 2).",
+  "tags": ["matrix", "gpu", "dcgm"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "GPU Utilization %",
+      "description": "0 = RTX PRO 5000 (daily LLM), 1 = RTX 4000 (media/copywriter)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_GPU_UTIL{instance=~\"matrix.*\",gpu=\"0\"}",
+          "legendFormat": "GPU 0 — RTX PRO 5000 (daily LLM)",
+          "datasource": { "type": "prometheus", "uid": "" }
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_GPU_UTIL{instance=~\"matrix.*\",gpu=\"1\"}",
+          "legendFormat": "GPU 1 — RTX 4000 (media/copywriter)",
+          "datasource": { "type": "prometheus", "uid": "" }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "VRAM Used (MiB)",
+      "description": "GPU 0: vLLM qwen38 steady ~56 GB. GPU 1: media XOR copywriter (31B ~22 GB when loaded, unloads after 5 min idle).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Mib",
+          "min": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_FB_USED{instance=~\"matrix.*\",gpu=\"0\"}",
+          "legendFormat": "GPU 0 — RTX PRO 5000 (73415 MiB)",
+          "datasource": { "type": "prometheus", "uid": "" }
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_FB_USED{instance=~\"matrix.*\",gpu=\"1\"}",
+          "legendFormat": "GPU 1 — RTX 4000 (24467 MiB)",
+          "datasource": { "type": "prometheus", "uid": "" }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Power (W)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "min": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_POWER_USAGE{instance=~\"matrix.*\",gpu=\"0\"}",
+          "legendFormat": "GPU 0 — RTX PRO 5000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_POWER_USAGE{instance=~\"matrix.*\",gpu=\"1\"}",
+          "legendFormat": "GPU 1 — RTX 4000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Temperature (°C)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "spanNulls": false },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_GPU_TEMP{instance=~\"matrix.*\",gpu=\"0\"}",
+          "legendFormat": "GPU 0 — RTX PRO 5000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_GPU_TEMP{instance=~\"matrix.*\",gpu=\"1\"}",
+          "legendFormat": "GPU 1 — RTX 4000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "XID Errors (last code, 0 = none)",
+      "description": "Non-zero = GPU error — check dmesg on matrix.",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "DCGM_FI_DEV_XID_ERRORS{instance=~\"matrix.*\",gpu=\"0\"}",
+          "legendFormat": "GPU 0 — RTX PRO 5000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        },
+        {
+          "refId": "B",
+          "expr": "DCGM_FI_DEV_XID_ERRORS{instance=~\"matrix.*\",gpu=\"1\"}",
+          "legendFormat": "GPU 1 — RTX 4000",
+          "datasource": { "type": "prometheus", "uid": "" }
+        }
+      ]
+    }
+  ]
+}

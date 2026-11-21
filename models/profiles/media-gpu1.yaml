@@ -1,7 +1,8 @@
 # media-gpu1 — Media pipeline (ComfyUI + media-pipeline) pinned to GPU 1
-# Status: DRAFT (add_card_plan.md Phase 0a) — becomes active after the 2nd card is
-# installed (Phase 1). The media pipeline moves from GPU 0 (shared with vLLM, 14 GB
-# gate) to GPU 1 (RTX 4000 Blackwell, dedicated 24 GB).
+# Status: DRAFT profile (Phase 3 wires it into the `daily` mode). The compose it
+# points at (compose/comfyui.yml) has been the ACTIVE GPU 1 media compose since
+# Phase 1 (2026-11-14). The media pipeline runs on GPU 1 (RTX 4000 Blackwell,
+# dedicated 24 GB) instead of GPU 0 (shared with vLLM, 14 GB gate).
 
 name: media-gpu1
 alias: none  # not an LLM — no LiteLLM alias
@@ -18,7 +19,7 @@ model:
 launch:
   container: comfyui_backend
   image: mmartial/comfyui-nvidia-docker:latest
-  compose: compose/comfyui-gpu1.yml
+  compose: compose/comfyui.yml  # GPU 1 variant (active since Phase 1; GPU 0 legacy: compose/legacy/compose.comfyui-gpu0.yml)
   profile: image
   port: 8188
   gpu: 1  # device_ids: ['1']

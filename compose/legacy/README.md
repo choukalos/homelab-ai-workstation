@@ -97,3 +97,16 @@ When the operator decides to adopt this layout:
 - ✅ Do not run `docker compose up` against these files
 - ✅ Do not delete old compose files
 - ✅ Path changes require updating `preflight.sh` and `models/profiles/*.yaml`
+
+## Phase 1 archives (2026-11-14, add_card_plan.md)
+
+Two pre-Phase-1 GPU 0 variants were archived here when the GPU 1 variants were
+promoted to the canonical names (media + Ollama moved to the RTX 4000):
+
+| File | Was | Used by |
+|---|---|---|
+| `compose.comfyui-gpu0.yml` | `compose/comfyui.yml` (shared 72 GB card, `--reserve-vram 60`, count: 1) | `legacy-daily` rollback mode (Phase 3) |
+| `compose.gemma4-moe-gpu0.yml` | `compose/gemma4-moe.yml` (count: 1, shared 72 GB card) | `legacy-daily` rollback mode (Phase 3) |
+
+The active media/Ollama composes are `compose/comfyui.yml` and
+`compose/gemma4-moe.yml` (both `device_ids: ['1']`).

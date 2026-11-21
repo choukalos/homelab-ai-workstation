@@ -1,6 +1,20 @@
-# Ollama — Gemma4 26B MoE + nomic-embed-text
-# Serves: matrix-gemma4-moe (gemma4:26b) and embeddings (nomic-embed-text)
-# Usage: docker compose -f compose/draft/gemma4-moe.yml up -d
+# Ollama — GPU 1 (RTX 4000 Blackwell, 24 GB) — COPYWRITER (Gemma 4 31B)
+#
+# ACTIVE since Phase 1 (2026-11-14). The pre-Phase-1 GPU 0 variant (count: 1,
+# shared 72 GB card) is archived at compose/legacy/compose.gemma4-moe-gpu0.yml —
+# used by the `legacy-daily` mode (Phase 3). Mutually exclusive with that legacy
+# file: same container_name (ollama) + port (11434). Only ONE of the two up at a
+# time.
+#
+# Differences vs the legacy GPU 0 variant:
+#   - device_ids: ['1'] — pin to GPU 1 (the 24 GB card).
+#   - Copywriter = gemma4:31b (20.4 GB: 18.7 model + 1.2 vision + 0.5 draft/speculative).
+#     Fits the 24 GB card with ~3.6 GB for context (8–16K comfortable, 32K tight).
+#     gemma4:26b (17 GB MoE) remains available as the fast option.
+#   - OLLAMA_KEEP_ALIVE=5m (unchanged) — idle-unload frees VRAM for the media pipeline
+#     (the swap mechanism, add_card_plan.md §4.1.4).
+#
+# Usage: docker compose -f compose/ollama-gpu1.yml up -d
 
 services:
   ollama:
@@ -21,5 +35,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['1']
               capabilities: [gpu]

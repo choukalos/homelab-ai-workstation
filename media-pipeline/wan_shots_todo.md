@@ -137,6 +137,28 @@ sampling; keyframe `c1_k11_edited.png`; seed 42; base-mode sampling 20+20 steps)
   error-extraction line when history `messages` entries are lists); run data
   is still valid. Fix before reusing.
 
+### Phase 1 GPU 1 parity (measured 2026-11-14, add_card_plan.md Phase 1)
+
+2nd card installed (RTX PRO 4000 Blackwell 24 GB = GPU 1); media stack pinned
+via `device_ids: ['1']` (`compose/comfyui.yml` GPU 1 variant). Harness updated:
+`qa_wan_phase1.py` gained `--gpu N` (per-GPU `nvidia-smi -i` sampling; default 1).
+
+| Test | Status | Wall | Baseline | Peak | Peak delta | Headroom at peak |
+|---|---|---|---|---|---|---|
+| 480p 832×480×81f (GPU 1) | **success** | 1055 s (17.6 min) | 344 MiB (idle card) | 15,961 MiB | 15,617 MiB (15.2 GB) | ~7.5 GB (24,467−15,961) |
+
+- **GPU 1 parity: PASS.** Output specs identical to the GPU 0 clip (832×480,
+  h264, 16 fps, 81 f, 5.0625 s; 2.01 MB vs 2.03 MB) — `wan22_p1_832x480_00002.mp4`.
+- Peak delta 15.2 GB vs 13.9 GB on GPU 0: on a free card ComfyUI's allocator
+  takes more; still 7.5 GB headroom at peak (vs ~2.4 GB on the shared 72 GB card).
+- **Wall 1055 s vs 615 s (1.7×)** — the 4000's lower memory bandwidth; expected
+  (add_card_plan.md §4.3.9 "comparable or slightly slower" — measured slower;
+  first run on the card, cold caches). Quality unlocks (720p, Q6/Q8/FP8) remain
+  the win; Phase 6 re-measures at 720p.
+- vLLM on GPU 0 untouched during the run: 56,158 MiB steady, ~92 tok/s probe
+  (x8 link — vLLM is all-in-VRAM, x8-immune per plan).
+- Log: `state/qa_wan_phase1_gpu1_480.log`.
+
 ## 4. Phase 2 — Code changes (after Phase 1 gate passes)
 
 | File | Change |
