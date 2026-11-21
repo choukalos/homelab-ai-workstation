@@ -69,7 +69,7 @@ model paths; the script rsyncs exactly those, same `--link-dest` rotation.
 | Path | Size | Role |
 |---|---|---|
 | `data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4` | 22 GB | **daily driver** — `compose/qwen-coder.yml` runs `--model unsloth/Qwen3.8-27B-NVFP4` |
-| `data/comfyui/basedir/models/diffusion_models` | 39 GB | Qwen-Image 2.1 int8 + GGUF (image gen/edit) |
+| `data/comfyui/basedir/models/diffusion_models` | 39 GB | Qwen-Image 2.1 int8 + GGUF (image gen/edit) + Wan 2.2 I2V experts (Q5_K_M default; Phase 6 quant candidates Q6_K/Q8_0/FP8 land here too — see note below) |
 | `data/comfyui/basedir/models/text_encoders` | 23 GB | Qwen3-VL-8B, T5-XXL (Qwen-Image encoders) |
 | `data/comfyui/basedir/models/acestep` | 9.4 GB | music (ACE-Step) |
 | `data/comfyui/basedir/models/checkpoints` | 6 GB | misc checkpoints — **included** (safe-side, 2026-09-26) |
@@ -93,6 +93,17 @@ gemma-4-26B AWQ 17 GB — live Ollama light model; both re-pullable from HF),
 `animatediff_*`, `controlnet`, etc. The Inferact NVFP4 duplicate (25 GB) and
 the experiment weights gemma-4-31b-it (59 GB) + Qwen3.8-27B-FP8 (29 GB) were
 deleted 2026-09-27 (see Decisions).
+
+**Phase 6 Wan quant candidates (2026-11-21)**: the Q6_K/Q8_0 GGUF + FP8
+expert downloads (~55–81 GB while all candidates are on disk) land in
+`diffusion_models/` — a Track 2 manifest path — so they are **covered
+automatically** by the on-demand model run; no manifest change needed. They
+are re-downloadable (QuantStack + Comfy-Org on HF), so after the quant
+decision the losing candidates get deleted from disk (winner + Q5_K_M
+fallback stay), keeping the manifest at its pre-experiment size plus the
+winner. The host download staging dir `/home/chuck/tmp/phase6_models/` is
+NOT backed up (re-downloadable; cleaned after the docker cp into the
+container).
 
 ## Verification
 

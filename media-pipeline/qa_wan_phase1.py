@@ -22,9 +22,17 @@ Usage:
   python3 qa_wan_phase1.py 720          # 1280x720, 81f @16fps
   python3 qa_wan_phase1.py 480 720
   python3 qa_wan_phase1.py 480 --gpu 0  # sample VRAM on GPU 0 (legacy-daily)
+
+Phase 6 quant candidates (env, same names as the pipeline service):
+  WAN_HIGHNOISE_MODEL / WAN_LOWNOISE_MODEL (file names in diffusion_models/),
+  WAN_UNET_LOADER=gguf|unet (FP8 safetensors), WAN_T5_DEVICE=cpu|cuda,
+  WAN_QUANT_TAG (result label, e.g. q6k / q80 / fp8)
+  e.g.: WAN_HIGHNOISE_MODEL=...-Q6_K.gguf WAN_LOWNOISE_MODEL=...-Q6_K.gguf
+        WAN_QUANT_TAG=q6k python3 qa_wan_phase1.py 720 --gpu 1
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -32,6 +40,14 @@ import time
 import urllib.request
 
 COMFY = "http://127.0.0.1:8188"
+# Phase 6 (2026-11-21): same env knobs as the media-pipeline service, so a
+# quant candidate can be VRAM-gated without touching the pipeline container.
+WAN_HIGHNOISE = os.environ.get("WAN_HIGHNOISE_MODEL", "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf")
+WAN_LOWNOISE = os.environ.get("WAN_LOWNOISE_MODEL", "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf")
+WAN_UNET_LOADER = ("UnetLoaderGGUF" if os.environ.get("WAN_UNET_LOADER", "gguf") == "gguf"
+                   else "UNETLoader")
+WAN_T5_DEVICE = os.environ.get("WAN_T5_DEVICE", "cpu")
+WAN_QUANT_TAG = os.environ.get("WAN_QUANT_TAG", "q5km")  # result label
 KEYFRAME = "c1_k11_edited.png"
 PROMPT = ("Cinematic shot, subtle ambient motion, very slow gentle camera push-in, "
           "soft natural lighting, photorealistic, high detail, sharp focus.")
@@ -43,13 +59,13 @@ LENGTH = 81  # 4n+1; 81f @ 16fps ~= 5.1s
 
 def graph(w: int, h: int) -> dict:
     return {
-        "1": {"class_type": "UnetLoaderGGUF",
-              "inputs": {"unet_name": "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"}},
-        "2": {"class_type": "UnetLoaderGGUF",
-              "inputs": {"unet_name": "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"}},
+        "1": {"class_type": WAN_UNET_LOADER,
+              "inputs": {"unet_name": WAN_HIGHNOISE}},
+        "2": {"class_type": WAN_UNET_LOADER,
+              "inputs": {"unet_name": WAN_LOWNOISE}},
         "3": {"class_type": "CLIPLoader",
               "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-                         "type": "wan", "device": "cpu"}},
+                         "type": "wan", "device": WAN_T5_DEVICE}},
         "4": {"class_type": "CLIPTextEncode", "inputs": {"text": PROMPT, "clip": ["3", 0]}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"text": NEG, "clip": ["3", 0]}},
         "6": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
@@ -146,7 +162,7 @@ def run(tag: str, w: int, h: int, gpu: int = 1) -> dict:
         msgs = status.get("messages") or [{}]
         err = msgs[-1].get("exception_message")
     result = {
-        "tag": tag, "w": w, "h": h, "gpu": gpu,
+        "tag": tag, "quant": WAN_QUANT_TAG, "w": w, "h": h, "gpu": gpu,
         "status": status.get("status_str") if status else "unknown",
         "wall_s": round(wall, 1),
         "baseline_mib": baseline, "peak_mib": peak,

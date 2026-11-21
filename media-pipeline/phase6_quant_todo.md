@@ -187,3 +187,17 @@ Goal: pick the best quality/VRAM fit **at 720p on the 24 GB card**.
   comfy uid 1024 — downloads go to `/home/chuck/tmp/phase6_models/` then
   `docker cp` into the container (script: `/tmp/phase6_downloads.sh`, log:
   `state/phase6_downloads.log`).
+- **2026-11-21 (21:05 UTC)**: qa_wan_phase1.py parameterized with the same
+  env knobs (WAN_HIGHNOISE_MODEL / WAN_LOWNOISE_MODEL / WAN_UNET_LOADER /
+  WAN_T5_DEVICE / WAN_QUANT_TAG) — quant VRAM gates run without touching the
+  pipeline container.
+- **2026-11-21 (21:05 UTC)**: **Item 3 VERIFIED end-to-end**: freed GPU 1
+  (ComfyUI restart dropped the 9.5 GB Wan model) → loaded gemma4:31b
+  (22,021 MiB resident, ~1.9 GiB free) → music job `240a7671faea` (15 s
+  track): guard logged `VRAM headroom 1.9 GiB < 8 GiB — stopping Ollama
+  copywriter (gemma4:31b) to free GPU 1`, job done in 46 s, ComfyUI never
+  restarted. Copywriter reload on next generate: **9.8 s** (weights in page
+  cache — beats the 10–30 s estimate).
+- **2026-11-21 (21:05 UTC)**: Item 5 done — docs/matrix_backup.md: quant
+  candidates land in the manifest's diffusion_models path (covered
+  automatically; losers deleted post-decision, staging dir not backed up).
