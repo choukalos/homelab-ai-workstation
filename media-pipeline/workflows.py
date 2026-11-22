@@ -19,12 +19,19 @@ def _uid():
 
 
 # ---------------------------------------------------------------- images
+# Phase 7 (2026-11-22): 2512/2511 GGUF filenames env-overridable so a higher
+# quant (e.g. Q6_K) can be tested/promoted without a rebuild. Defaults = the
+# shipped Q4_0 pair.
+QWEN_IMAGE_2512 = os.environ.get("QWEN_IMAGE_2512_MODEL", "qwen-image-2512-Q4_0.gguf")
+QWEN_IMAGE_EDIT_2511 = os.environ.get("QWEN_IMAGE_EDIT_2511_MODEL", "qwen-image-edit-2511-Q4_0.gguf")
+
+
 def qwen_image_t2i(prompt: str, width=1280, height=720, seed=42,
                    lora="Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors",
                    steps=4, negative=NEG_IMAGE, prefix="img"):
     """Qwen-Image-2512 GGUF text-to-image with Lightning LoRA."""
     return {
-        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "qwen-image-2512-Q4_0.gguf"}},
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": QWEN_IMAGE_2512}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
         "4": {"class_type": "EmptySD3LatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
@@ -44,7 +51,7 @@ def qwen_image_edit(prompt: str, image: str, seed=42,
                     steps=8, prefix="img_edit"):
     """Qwen-Image-Edit-2511 GGUF image editing. `image` = ComfyUI input filename."""
     return {
-        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "qwen-image-edit-2511-Q4_0.gguf"}},
+        "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": QWEN_IMAGE_EDIT_2511}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
         "4": {"class_type": "LoadImage", "inputs": {"image": image}},

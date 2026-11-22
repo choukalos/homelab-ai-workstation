@@ -1,6 +1,6 @@
 # Add Card Plan — RTX 4000 Blackwell (24 GB) → Matrix as GPU 1
 
-> **Status: IN PROGRESS — card installed 2026-11-14, Phases 1–4 + 6 DONE, Phase 5 (QNF daily experiment) pending.**
+> **Status: IN PROGRESS — card installed 2026-11-14, Phases 1–4 + 6 DONE; Phase 5 (QNF daily experiment) + Phase 7 (media QoL) pending.**
 > Created 2026-11-13. Owners: **Chuck** (hardware actions, §5) · **agent** (phases, §6).
 > Companion docs: `docs/matrix_inventory.md`, `EXPERIMENTS_RESULTS.md` (Exp 7/8),
 > `media-pipeline/wan_shots_todo.md`, `docs/matrix_media_pipeline_api.md` §6.
@@ -401,6 +401,22 @@ candidate) *before* install. If good → proceed with confidence.
       **DONE 2026-11-21**: quants land in the manifest's diffusion_models path
       (covered automatically); losers deleted post-decision (2026-11-22),
       staging dir not backed up; noted in `docs/matrix_backup.md` OUT list.
+
+### Phase 7 — media QoL (longer clips, sharper keyframes, 720p drafts) + workspace hygiene
+> Task doc: `media-pipeline/phase7_qol_todo.md` (self-contained; started
+> 2026-11-22). All three §4.3 QoL items approved by Chuck 2026-11-22.
+- [x] **Workspace hygiene**: scratch convention = `/home/chuck/workspace/<task>/`
+      (never `/home/chuck/tmp` — removed 2026-11-22); `scripts/workspace-cleanup.sh`
+      (30-day file age + empty-dir sweep) on daily cron 04:30; harness clone
+      now at `/home/chuck/workspace/homelab-ai-harness`.
+- [ ] **QoL-1: 129f wan14b clips** (~8.1 s) — QA gate 129f @720p (VRAM/wall) +
+      docs (API §4/§6, harness mcp_media + media-film).
+- [ ] **QoL-2: Qwen-Image-2512 Q6_K keyframes** — download (17.95 GB, unsloth),
+      `QWEN_IMAGE_2512_MODEL` env override (done), 3-way QA (qwen21 vs 2512-Q4
+      vs 2512-Q6 @1280×720) + vision compare → promote-or-document decision.
+- [ ] **QoL-3: LTXV 720p fast lane** — QA gate 1280×720/97f (VRAM/wall) + docs.
+- [ ] **Thor**: harness commit (mcp_media descriptions + media-film contract) →
+      Chuck pushes.
 
 ## 7. Open questions (need your answers)
 

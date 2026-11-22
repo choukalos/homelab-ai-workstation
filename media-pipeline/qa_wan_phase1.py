@@ -54,7 +54,7 @@ PROMPT = ("Cinematic shot, subtle ambient motion, very slow gentle camera push-i
 NEG = ("low quality, blurry, distorted, deformed, jittery, flickering, watermark, "
        "text, logo, static camera when motion is described")
 SEED = 42
-LENGTH = 81  # 4n+1; 81f @ 16fps ~= 5.1s
+LENGTH = int(os.environ.get("WAN_QA_LENGTH", "81"))  # 4n+1; 81f @ 16fps ~= 5.1s (Phase 7: 129f ~= 8.1s)
 
 
 def graph(w: int, h: int) -> dict:
