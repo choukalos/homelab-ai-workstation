@@ -58,11 +58,17 @@ LENGTH = 81  # 4n+1; 81f @ 16fps ~= 5.1s
 
 
 def graph(w: int, h: int) -> dict:
+    # UNETLoader (this ComfyUI version) requires weight_dtype; "default"
+    # loads the fp8_scaled model as-is.
+    unet_inputs = {"unet_name": WAN_HIGHNOISE}
+    if WAN_UNET_LOADER == "UNETLoader":
+        unet_inputs["weight_dtype"] = "default"
+    unet_inputs_lo = {"unet_name": WAN_LOWNOISE}
+    if WAN_UNET_LOADER == "UNETLoader":
+        unet_inputs_lo["weight_dtype"] = "default"
     return {
-        "1": {"class_type": WAN_UNET_LOADER,
-              "inputs": {"unet_name": WAN_HIGHNOISE}},
-        "2": {"class_type": WAN_UNET_LOADER,
-              "inputs": {"unet_name": WAN_LOWNOISE}},
+        "1": {"class_type": WAN_UNET_LOADER, "inputs": unet_inputs},
+        "2": {"class_type": WAN_UNET_LOADER, "inputs": unet_inputs_lo},
         "3": {"class_type": "CLIPLoader",
               "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
                          "type": "wan", "device": WAN_T5_DEVICE}},

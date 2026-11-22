@@ -373,13 +373,29 @@ candidate) *before* install. If good → proceed with confidence.
       Docs updated: API contract §2/§4/§6 + changelog, wan_shots_todo header,
       mcp_media tool descriptions + README, media-film SKILL.md +
       pipeline-contract.md (harness repo).
-- [ ] Try Q6_K / Q8_0 / FP8 Wan experts + T5-on-GPU + both-experts-resident; pick the
+- [x] Try Q6_K / Q8_0 / FP8 Wan experts + T5-on-GPU + both-experts-resident; pick the
       best quality/VRAM fit at 720p.
-- [ ] Adapt the VRAM headroom guard for the Ollama-resident case (§4.1.4).
-- [ ] Update `docs/matrix_media_pipeline_api.md` §6 (VRAM budget), metering labels,
+      **DONE 2026-11-22 — Q8_0 promoted** (detail: `media-pipeline/phase6_quant_todo.md`):
+      all 3 candidates passed the 720p gate (Q6_K 19,769 MiB / Q8_0 19,577 MiB /
+      FP8 17,579 MiB + fastest at 43.9 min); quality (vision-subagent compare vs
+      Q5_K_M baseline): Q8_0 best, Q6_K close, FP8 mixed (dark-bg banding).
+      T5-on-GPU + both-experts-resident rejected by math (OOM at 720p).
+      Live via compose env (Q8_0 GGUF pair + `WAN_METERING_LABEL=…-q8`);
+      losers deleted, Q5_K_M kept as fallback.
+- [x] Adapt the VRAM headroom guard for the Ollama-resident case (§4.1.4).
+      **DONE 2026-11-21** (verified end-to-end: copywriter resident → guard
+      `ollama stop`'d it, music job OK, ComfyUI never restarted; reload 9.8 s).
+- [x] Update `docs/matrix_media_pipeline_api.md` §6 (VRAM budget), metering labels,
       MCP tool docs (720p option).
-- [ ] Backup notes: new model downloads (Q6/Q8/FP8 quants) covered by the existing
+      **DONE**: 720p option 2026-11-21 (commit `abef852` + harness `d47fc1f`);
+      Q8_0 promotion 2026-11-22 (§4 model row, §6 Wan row 19,577 MiB, changelog,
+      metering label env-driven `wan2.2-14b-i2v-gguf-q8`, harness mcp_media
+      client docstring + README + media-film contract).
+- [x] Backup notes: new model downloads (Q6/Q8/FP8 quants) covered by the existing
       backup chain?
+      **DONE 2026-11-21**: quants land in the manifest's diffusion_models path
+      (covered automatically); losers deleted post-decision (2026-11-22),
+      staging dir not backed up; noted in `docs/matrix_backup.md` OUT list.
 
 ## 7. Open questions (need your answers)
 

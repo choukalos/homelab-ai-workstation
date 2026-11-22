@@ -31,7 +31,7 @@
 - **Queue state**: `curl -s http://localhost:8188/queue` → `queue_running`
   (not `running` — the old key). Pipeline: `GET :8189/health` → `queue.counts`.
 
-## Item 2 — quant experiments (Q6_K / Q8_0 / FP8 + T5-on-GPU + both-experts-resident)
+## Item 2 — quant experiments (Q6_K / Q8_0 / FP8 + T5-on-GPU + both-experts-resident) — **DONE 2026-11-22, Q8_0 promoted**
 
 Goal: pick the best quality/VRAM fit **at 720p on the 24 GB card**.
 
@@ -206,3 +206,67 @@ Goal: pick the best quality/VRAM fit **at 720p on the 24 GB card**.
 - **2026-11-21 (21:05 UTC)**: Item 5 done — docs/matrix_backup.md: quant
   candidates land in the manifest's diffusion_models path (covered
   automatically; losers deleted post-decision, staging dir not backed up).
+- **2026-11-21 (21:22 UTC)**: all downloads complete (Q6_K ×2 12.00 GB,
+  Q8_0 ×2 15.41 GB, FP8 ×2 **14.29 GB** — bigger than the ~13.3 GB estimate;
+  all docker-cp'd, ComfyUI lists them: UnetLoaderGGUF + UNETLoader).
+- **2026-11-21 (22:15 UTC)**: **Q6_K 720p test PASSED**: status success,
+  wall **3401 s (56.7 min** — same as Q5_K_M's 57 min), peak **19,769 MiB**
+  (+128 MiB vs Q5_K_M's 19,641; 4.8 GB headroom). Output
+  `wan22_p1_1280x720_00002.mp4`. Quality vs baseline (same seed 42, frames
+  5/20/40/60 compared): ≈ Q5_K_M or slightly cleaner (cleaner mouth/teeth
+  region at f40), fur micro-texture marginally softer. No regression.
+  Frames: /tmp/phase6_frames/{baseline,q6k}/f{5,20,40,60}.png.
+- **2026-11-21 (22:20 UTC)**: Q8_0 720p test started (pid 75592, prompt
+  93f11e15, clean baseline 923 MiB after ComfyUI restart). Prediction:
+  peak ≈ 24.3 GB → borderline OOM or heavy CPU offload (slow).
+- **2026-11-21 (22:57 UTC)**: **Q8_0 720p test PASSED**: status success,
+  wall **3410.7 s (56.8 min** — same as the other two), peak **19,577 MiB**
+  (−64 MiB vs Q5_K_M's 19,641 — the pre-test prediction of 24.3 GB was
+  wrong: ComfyUI offloads enough to fit, at no speed cost). Output
+  `wan22_p1_1280x720_00003.mp4`. Quality vs baseline (same seed 42,
+  frames 5/20/40/60): ≈ Q5_K_M or slightly better (cleaner teeth at f20/f40,
+  marginally sharper fur micro-texture; f40 focus-pull frame soft in both).
+  No artifacts. Frames: /tmp/phase6_frames/{baseline,q80}/f{5,20,40,60}.png.
+- **2026-11-21 (22:59 UTC)**: FP8 720p test started (pid 78451, prompt
+  0eea2f84, clean baseline 923 MiB, UNETLoader path, T5 on CPU).
+- **2026-11-21 (23:35 UTC)**: session crash + resume. FP8 run confirmed
+  still alive (queue_running, GPU 1 100%). Q8_0 quality verdict recorded
+  above. Remaining: FP8 result + quality compare → 2f decision/promotion
+  → Item 4 metering label + API doc §6 → commit.
+- **2026-11-22 (00:15 UTC)**: **FP8 720p test PASSED**: status success,
+  wall **2635.6 s (43.9 min — ~13 min faster than the GGUF runs)**, peak
+  **17,579 MiB (−2,062 MiB vs Q5_K_M's 19,641** — fp8 experts are smaller
+  and offload less; 7 GB headroom). Output `wan22_p1_1280x720_00004.mp4`.
+  (Crash cause: too many images in one turn — 5-image cap. Fix: 3 parallel
+  codemode "subagents", each calling mcp_vision `vision_analyze_image` on
+  side-by-side montages (baseline left / candidate right, t=1.5s & 3.5s,
+  hstack via comfyui_backend ffmpeg) served over LAN HTTP
+  (http://192.168.4.55:8799, throwaway python http.server; mcp_vision is on
+  the ai-harness host so local paths fail — URL source works). Montages:
+  /tmp/phase6_frames/m_0000{2,3,4}_{1.5,3.5}.png.)
+- **2026-11-22 (00:15 UTC)**: **Vision-subagent quality verdicts**
+  (matrix-coder via mcp_vision, 2 montage frames per candidate, vs Q5_K_M
+  baseline 00001; note: more aggressive than the manual f5/20/40/60
+  verdicts above — vision model tends to pick a winner):
+  - **Q6_K**: better on both frames — sharper fur/eyes/nose, less
+    smearing around mouth/teeth (1.5s: "clearly superior"; 3.5s: slight
+    edge, both soft at that focus-pull moment).
+  - **Q8_0**: better on both frames — noticeably sharper face + fur,
+    cleaner edges, better rim-light color fidelity, no artifacts
+    (1.5s "clearly superior"; 3.5s "significantly better").
+  - **FP8**: MIXED — 1.5s: cleaner, higher contrast, more neutral color
+    (baseline grainier/yellower); 3.5s: slightly WORSE — visible banding
+    in dark background, softer edge definition, grainier mid-tones.
+  - Speed/VRAM: FP8 wins both (43.9 min, 17.6 GB) vs Q6_K/Q8_0
+    (~57 min, ~19.6–19.8 GB). Quality: Q8_0 ≥ Q6_K > Q5_K_M; FP8
+    ≈ Q5_K_M (mixed).
+- **2026-11-22 (00:30 UTC)**: **2f DECISION + PROMOTION (Q8_0)** — Chuck's
+  call: Q8_0 on quality despite FP8's speed/VRAM edge. Live: compose env set
+  (Q8_0 GGUF pair + `WAN_METERING_LABEL=wan2.2-14b-i2v-gguf-q8`),
+  `media_pipeline` recreated (queue idle), health green. Loser models deleted
+  from diffusion_models (Q6_K ×2 12.00 GB, FP8 ×2 14.29 GB — ~52.6 GB freed;
+  re-downloadable per Item 5 note). Q5_K_M pair kept (documented fallback).
+  Docs: API §4/§6 + changelog, add_card_plan Phase 6 boxes, harness
+  (media_pipeline_client docstring, mcp media README, media-film contract).
+  T5-on-GPU + both-experts-resident: rejected by math (2d/2e — OOM at 720p);
+  no empirical test needed. Item 2 complete.

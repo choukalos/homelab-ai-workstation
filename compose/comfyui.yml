@@ -57,15 +57,21 @@ services:
     environment:
       - PIPELINE_HOST=0.0.0.0
       - PIPELINE_PORT=8189
-      # Phase 6 quant experiments (2026-11-21): uncomment + set to test a
-      # non-default Wan quant (Q6_K / Q8_0 GGUF, or FP8 safetensors with
-      # WAN_UNET_LOADER=unet). Defaults (commented out) = shipped Q5_K_M GGUF.
-      # Files live in /home/chuck/data/comfyui/basedir/models/diffusion_models/.
-      # - WAN_HIGHNOISE_MODEL=Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf
-      # - WAN_LOWNOISE_MODEL=Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf
-      # - WAN_UNET_LOADER=gguf
-      # - WAN_T5_DEVICE=cpu
-      # - WAN_METERING_LABEL=wan2.2-14b-i2v-gguf-q5
+      # Phase 6 quant decision (2026-11-22): Q8_0 promoted — best quality at
+      # 720p (vision-subagent compare vs Q5_K_M baseline: sharper face/fur,
+      # cleaner edges, no artifacts) at ~baseline VRAM (19,577 MiB peak,
+      # 4.9 GB headroom). Q6_K ≈ similar but Q8_0 consistently ahead; FP8
+      # was faster (43.9 min vs ~57 min) and lighter (17.6 GB) but showed
+      # dark-bg banding on one frame — rejected on quality. To fall back:
+      # set the *_MODEL lines to the Q5_K_M pair + WAN_METERING_LABEL to
+      # wan2.2-14b-i2v-gguf-q5 (loser models Q6_K/FP8 deleted post-decision;
+      # Q5_K_M pair kept). Files in
+      # /home/chuck/data/comfyui/basedir/models/diffusion_models/.
+      - WAN_HIGHNOISE_MODEL=Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf
+      - WAN_LOWNOISE_MODEL=Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf
+      - WAN_UNET_LOADER=gguf
+      - WAN_T5_DEVICE=cpu
+      - WAN_METERING_LABEL=wan2.2-14b-i2v-gguf-q8
       # After changing: docker compose -f compose/comfyui.yml --profile image up -d
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

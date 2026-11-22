@@ -173,9 +173,16 @@ def wan22_i2v(keyframe: str, prompt: str, width=832, height=480, frames=81,
     assert (width, height) in WAN_RESOLUTIONS, \
         f"wan14b supports {sorted(WAN_RESOLUTIONS)} only"
     loader = "UnetLoaderGGUF" if WAN_UNET_LOADER == "gguf" else "UNETLoader"
+    # UNETLoader (this ComfyUI version) requires weight_dtype; "default"
+    # loads the fp8_scaled model as-is.
+    hi_inputs = {"unet_name": WAN_HIGHNOISE}
+    lo_inputs = {"unet_name": WAN_LOWNOISE}
+    if loader == "UNETLoader":
+        hi_inputs["weight_dtype"] = "default"
+        lo_inputs["weight_dtype"] = "default"
     return {
-        "1": {"class_type": loader, "inputs": {"unet_name": WAN_HIGHNOISE}},
-        "2": {"class_type": loader, "inputs": {"unet_name": WAN_LOWNOISE}},
+        "1": {"class_type": loader, "inputs": hi_inputs},
+        "2": {"class_type": loader, "inputs": lo_inputs},
         "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": WAN_CLIP, "type": "wan", "device": WAN_T5_DEVICE}},
         "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["3", 0]}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 0]}},
