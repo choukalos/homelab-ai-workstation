@@ -8,6 +8,10 @@
 > card (peak 19.6 GB, 4.8 GB headroom) and `WAN_RESOLUTIONS` now admits both.
 > 720p is ~55 min/clip (CPU offload) vs ~10 min at 480p. See
 > `docs/matrix_media_pipeline_api.md` changelog 2026-11-21.
+> **2026-11-22 (Phase 6):** the quant is now **Q8_0 GGUF** (promoted — best
+> quality at 720p; was Q5_K_M). Env-overridable via `WAN_HIGHNOISE_MODEL` /
+> `WAN_LOWNOISE_MODEL` in `compose/comfyui.yml`; Q5_K_M kept as fallback.
+> See `phase6_quant_todo.md` + API changelog 2026-11-22.
 > Related: `docs/matrix_media_pipeline_api.md` (contract + VRAM budget §6),
 > `docs/matrix_comfyui_media_api.md` (ComfyUI :8188), `docs/matrix_inventory.md` (GPU/models)
 

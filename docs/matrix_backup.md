@@ -69,7 +69,7 @@ model paths; the script rsyncs exactly those, same `--link-dest` rotation.
 | Path | Size | Role |
 |---|---|---|
 | `data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4` | 22 GB | **daily driver** — `compose/qwen-coder.yml` runs `--model unsloth/Qwen3.8-27B-NVFP4` |
-| `data/comfyui/basedir/models/diffusion_models` | 39 GB | Qwen-Image 2.1 int8 + GGUF (image gen/edit) + Wan 2.2 I2V experts (Q5_K_M default; Phase 6 quant candidates Q6_K/Q8_0/FP8 land here too — see note below) |
+| `data/comfyui/basedir/models/diffusion_models` | 87 GB | Qwen-Image 2.1 int8 + Qwen-Image-2512/edit GGUF (image gen/edit) + Wan 2.2 I2V experts (Q8_0 default — promoted 2026-11-22; Q5_K_M fallback; Phase 6 losers deleted — see note below) |
 | `data/comfyui/basedir/models/text_encoders` | 23 GB | Qwen3-VL-8B, T5-XXL (Qwen-Image encoders) |
 | `data/comfyui/basedir/models/acestep` | 9.4 GB | music (ACE-Step) |
 | `data/comfyui/basedir/models/checkpoints` | 6 GB | misc checkpoints — **included** (safe-side, 2026-09-26) |
@@ -79,7 +79,7 @@ model paths; the script rsyncs exactly those, same `--link-dest` rotation.
 | `data/comfyui/basedir/models/loras` | 2.4 GB | LoRAs |
 | `data/comfyui/basedir/models/tts` | 1.8 GB | voice-over (trailer voice, XTTS) |
 
-≈ **115 GB source** (~200 GB on-NAS: HF-hub `snapshots/*/model.safetensors`
+≈ **163 GB source** (on-NAS ≈ 1.7× source as before — HF-hub `snapshots/*/model.safetensors`
 are symlinks into `blobs/` and rsync `-L` materializes them because CIFS
 can't store symlinks — so the 22 GB unsloth weights exist as 5 full copies.
 Expected, not bloat.) Retention: keep last 2 model snapshots (rollback to the
@@ -94,16 +94,16 @@ gemma-4-26B AWQ 17 GB — live Ollama light model; both re-pullable from HF),
 the experiment weights gemma-4-31b-it (59 GB) + Qwen3.8-27B-FP8 (29 GB) were
 deleted 2026-09-27 (see Decisions).
 
-**Phase 6 Wan quant candidates (2026-11-21)**: the Q6_K/Q8_0 GGUF + FP8
-expert downloads (~55–81 GB while all candidates are on disk) land in
-`diffusion_models/` — a Track 2 manifest path — so they are **covered
-automatically** by the on-demand model run; no manifest change needed. They
-are re-downloadable (QuantStack + Comfy-Org on HF), so after the quant
-decision the losing candidates get deleted from disk (winner + Q5_K_M
-fallback stay), keeping the manifest at its pre-experiment size plus the
-winner. The host download staging dir `/home/chuck/tmp/phase6_models/` is
-NOT backed up (re-downloadable; cleaned after the docker cp into the
-container).
+**Phase 6 Wan quant candidates (2026-11-21, decided 2026-11-22)**: the
+Q6_K/Q8_0 GGUF + FP8 expert downloads (~55–81 GB while all candidates were on
+disk) landed in `diffusion_models/` — a Track 2 manifest path — so they are
+**covered automatically** by the on-demand model run; no manifest change
+needed. They are re-downloadable (QuantStack + Comfy-Org on HF). Decision
+2026-11-22: **Q8_0 promoted** (best quality at 720p, 19,577 MiB peak) — the
+losing candidates (Q6_K ×2, FP8 ×2, ~52.6 GB) were deleted from disk and the
+host download staging dir `/home/chuck/tmp/phase6_models/` (78 GB, never
+backed up — re-downloadable) was cleaned; Q8_0 (winner) + Q5_K_M (fallback)
+stay, so the manifest carries the pre-experiment set plus the winner.
 
 ## Verification
 

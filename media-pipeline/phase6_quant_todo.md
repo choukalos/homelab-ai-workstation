@@ -1,6 +1,7 @@
 # Phase 6 — Wan quant experiments + headroom guard + docs — TASK
 
-> Created: 2026-11-21 · Status: **IN PROGRESS** (pi long task)
+> Created: 2026-11-21 · Status: **COMPLETE 2026-11-22** (Q8_0 promoted —
+> decision + promotion logged below; all items done) · **pi long task**
 > Parent: `add_card_plan.md` Phase 6 — items 2–5 (item 1 — 720p gate + 480p cap
 > lift — DONE 2026-11-21, commit `abef852`).
 > **This file is the compact task doc — self-contained, survives context

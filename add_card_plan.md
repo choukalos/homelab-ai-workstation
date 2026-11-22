@@ -1,6 +1,6 @@
 # Add Card Plan — RTX 4000 Blackwell (24 GB) → Matrix as GPU 1
 
-> **Status: PLANNING** — card not yet installed. Plan only; nothing has been changed.
+> **Status: IN PROGRESS — card installed 2026-11-14, Phases 1–4 + 6 DONE, Phase 5 (QNF daily experiment) pending.**
 > Created 2026-11-13. Owners: **Chuck** (hardware actions, §5) · **agent** (phases, §6).
 > Companion docs: `docs/matrix_inventory.md`, `EXPERIMENTS_RESULTS.md` (Exp 7/8),
 > `media-pipeline/wan_shots_todo.md`, `docs/matrix_media_pipeline_api.md` §6.
@@ -81,7 +81,7 @@ Grafana util panel.)
 
 | Workload | Impact at x8 |
 |---|---|
-| GPU 1 media pipeline | **None** — dedicated 24 GB means everything resident; no host↔device streaming mid-inference. Model load is NVMe-bound (~0.4 s for 10 GB). Expert swap at the Wan midpoint loads from NVMe (disk-bound, not PCIe-bound); with Q5_K_M both experts (21.6 GB + VAE) even fit resident → swap is GPU-internal |
+| GPU 1 media pipeline | **None** — dedicated 24 GB means everything resident; no host↔device streaming mid-inference. Model load is NVMe-bound (~0.4 s for 10 GB). Expert swap at the Wan midpoint loads from NVMe (disk-bound, not PCIe-bound); with the promoted Q8_0 both experts (30.8 GB) do NOT fit resident — the swap streams one 15.4 GB expert from NVMe per midpoint (with the Q5_K_M fallback, 21.6 GB + VAE, both experts fit resident → swap is GPU-internal) |
 | GPU 1 Ollama copywriter | **None** — 31B Q4 (~19 GB) fully resident; PCIe only at load/unload |
 | GPU 0 vLLM daily (27B) | **None** — weights + KV in VRAM; PCIe only at startup |
 | GPU 0 Flash-Next (llama.cpp) | **The one real sensitivity** — ~34 GB weights RAM-resident (mmap); active experts + PLE rows cross PCIe per token. Two mitigating factors: (a) the 72 GB card holds ~63.5 GB on-GPU → only **~35% RAM-resident vs the anchor's ~75%** (24 GB GPU, 70 tok/s) — we push ~2× less traffic per token over the link; (b) the PLE table is designed for async row prefetch, which hides most latency when the per-token fetch is sparse. Halving the link (x16→x8) still *could* cost decode throughput if prefetch can't hide it — **the Phase 2 first benchmark measures this directly** (compare vs the 70 tok/s anchor, normalized for RAM-resident %). Unaffected fallback = bumped 27B vLLM (all-in-VRAM, x8-immune) |
@@ -161,15 +161,20 @@ Current 14 GB gate → 24 GB dedicated. Ranked by impact:
 1. **Wan 2.2 at 720p (1280×720)** — the headline unlock. 720p OOM'd the 14 GB gate by
    2.3 MiB (needs ~16–17 GB) → fits 24 GB with margin. Native 720p shots instead of
    480p + SeedVR2 upscale. Re-run `qa_wan_phase1.py 720` on GPU 1 to confirm.
+   **DONE 2026-11-21** (Phase 6 item 1 — gate passed 19,641 MiB, cap lifted).
 2. **Longer clips**: 97 f (~6.1 s) → 129 f (~8.1 s) (frames must be 4n+1) at 720p.
+   (Still open — not in Phase 6 scope.)
 3. **Better quants**: Q5_K_M → **Q6_K** (~12.3 GB/expert) or **Q8_0/FP8** (~13.3–14.5
    GB/expert). Peak = 1 expert resident (ComfyUI swaps at the step-10 midpoint) + VAE
    + activations ≈ 19–20 GB < 24 GB → near-FP16 quality (Q5 was chosen *only* because
    FP8 "would eat the whole 14 GB budget").
+   **DONE 2026-11-22** (Phase 6 item 2 — Q8_0 promoted; Q6_K/FP8 tested, losers deleted).
 4. **umt5-xxl text encoder on GPU** (fp8 ~5.6 GB, today on CPU) — faster encoding,
    frees CPU; still fits alongside a Q5/Q6 expert.
+   **Rejected 2026-11-22 by math** (Phase 6 2d: 19.6 + 6.7 ≈ 26 GB → OOM at 720p).
 5. **Both experts resident** (Q5: 10.8 × 2 + VAE 0.25 ≈ 21.9 GB < 24) — removes the
    expert-swap churn at the schedule midpoint (modest speed win, simpler behavior).
+   **Rejected 2026-11-22 by math** (Phase 6 2e: Q8_0 30.8 GB + VAE + activations → OOM at 720p).
 6. **No more contention or guards**: ACE-Step (6 GB) + XTTS (2 GB) can run *alongside*
    a resident Wan model (10.2 + 6 + 2 ≈ 18.2 GB < 24) → music/TTS in parallel with
    video gen → faster end-to-end assembly; the comfyui auto-restart guard becomes a
