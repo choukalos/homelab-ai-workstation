@@ -69,7 +69,7 @@ model paths; the script rsyncs exactly those, same `--link-dest` rotation.
 | Path | Size | Role |
 |---|---|---|
 | `data/models/hub/models--unsloth--Qwen3.8-27B-NVFP4` | 22 GB | **daily driver** — `compose/qwen-coder.yml` runs `--model unsloth/Qwen3.8-27B-NVFP4` |
-| `data/comfyui/basedir/models/diffusion_models` | 87 GB | Qwen-Image 2.1 int8 + Qwen-Image-2512/edit GGUF (image gen/edit) + Wan 2.2 I2V experts (Q8_0 default — promoted 2026-11-22; Q5_K_M fallback; Phase 6 losers deleted — see note below) |
+| `data/comfyui/basedir/models/diffusion_models` | 104 GB | Qwen-Image 2.1 int8 + Qwen-Image-2512/edit GGUF (image gen/edit; 2512 Q6_K staged 2026-11-22 as the `QWEN_IMAGE_2512_MODEL` opt-in — 17.95 GB) + Wan 2.2 I2V experts (Q8_0 default — promoted 2026-11-22; Q5_K_M fallback; Phase 6 losers deleted — see note below) |
 | `data/comfyui/basedir/models/text_encoders` | 23 GB | Qwen3-VL-8B, T5-XXL (Qwen-Image encoders) |
 | `data/comfyui/basedir/models/acestep` | 9.4 GB | music (ACE-Step) |
 | `data/comfyui/basedir/models/checkpoints` | 6 GB | misc checkpoints — **included** (safe-side, 2026-09-26) |
@@ -79,7 +79,7 @@ model paths; the script rsyncs exactly those, same `--link-dest` rotation.
 | `data/comfyui/basedir/models/loras` | 2.4 GB | LoRAs |
 | `data/comfyui/basedir/models/tts` | 1.8 GB | voice-over (trailer voice, XTTS) |
 
-≈ **163 GB source** (on-NAS ≈ 1.7× source as before — HF-hub `snapshots/*/model.safetensors`
+≈ **181 GB source** (on-NAS ≈ 1.7× source as before — HF-hub `snapshots/*/model.safetensors`
 are symlinks into `blobs/` and rsync `-L` materializes them because CIFS
 can't store symlinks — so the 22 GB unsloth weights exist as 5 full copies.
 Expected, not bloat.) Retention: keep last 2 model snapshots (rollback to the

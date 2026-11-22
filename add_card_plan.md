@@ -163,7 +163,10 @@ Current 14 GB gate → 24 GB dedicated. Ranked by impact:
    480p + SeedVR2 upscale. Re-run `qa_wan_phase1.py 720` on GPU 1 to confirm.
    **DONE 2026-11-21** (Phase 6 item 1 — gate passed 19,641 MiB, cap lifted).
 2. **Longer clips**: 97 f (~6.1 s) → 129 f (~8.1 s) (frames must be 4n+1) at 720p.
-   (Still open — not in Phase 6 scope.)
+   **QA'd 2026-11-22 (Phase 7): rejected as recommended** — fits easily (13.5 GB
+   delta, 115 min/clip) but quality degrades vs 81f (vision: softer detail, texture
+   noise, dark-bg banding). 129f stays API-legal (no cap) and is documented as
+   experimental; 81f remains the recommended max.
 3. **Better quants**: Q5_K_M → **Q6_K** (~12.3 GB/expert) or **Q8_0/FP8** (~13.3–14.5
    GB/expert). Peak = 1 expert resident (ComfyUI swaps at the step-10 midpoint) + VAE
    + activations ≈ 19–20 GB < 24 GB → near-FP16 quality (Q5 was chosen *only* because
@@ -181,7 +184,15 @@ Current 14 GB gate → 24 GB dedicated. Ranked by impact:
    no-op (kept, adapted for the Ollama-resident case from §4.1.4).
 7. **Sharper keyframes**: Qwen-Image-2512 Q4_0 → Q6/fp8 (~15–16 GB) or higher-res
    output → better Wan conditioning (keyframe quality is the I2V ceiling).
+   **QA'd 2026-11-22 (Phase 7): qwen21 confirmed as the best keyframe** — 3-way
+   vision compare (qwen21 vs 2512-Q4_0 vs 2512-Q6_K @1280×720, same prompt/seed):
+   qwen21 > Q6_K > Q4_0. Q6_K (17.95 GB, unsloth) staged + `QWEN_IMAGE_2512_MODEL`
+   env opt-in (marginal legacy upgrade); `MEDIA_IMAGE_MODEL` unchanged (qwen21
+   default).
 8. **LTXV fast lane at 720p** for quick drafts (today 768×512).
+   **DONE 2026-11-22 (Phase 7): promoted** — 1280×720 measured 18 s/clip, peak
+   18,335 MiB; output 1280×704 (height snapped to ×32); vision: sharper than the
+   512p draft, no new artifacts. Documented as a supported draft option.
 9. **Speed caveat**: the 4000 has less memory bandwidth than the 5000, so single-clip
    wall-time is comparable or slightly slower — but zero contention + the quality
    unlocks (1–3) are the real win.
@@ -409,14 +420,17 @@ candidate) *before* install. If good → proceed with confidence.
       (never `/home/chuck/tmp` — removed 2026-11-22); `scripts/workspace-cleanup.sh`
       (30-day file age + empty-dir sweep) on daily cron 04:30; harness clone
       now at `/home/chuck/workspace/homelab-ai-harness`.
-- [ ] **QoL-1: 129f wan14b clips** (~8.1 s) — QA gate 129f @720p (VRAM/wall) +
-      docs (API §4/§6, harness mcp_media + media-film).
-- [ ] **QoL-2: Qwen-Image-2512 Q6_K keyframes** — download (17.95 GB, unsloth),
-      `QWEN_IMAGE_2512_MODEL` env override (done), 3-way QA (qwen21 vs 2512-Q4
-      vs 2512-Q6 @1280×720) + vision compare → promote-or-document decision.
-- [ ] **QoL-3: LTXV 720p fast lane** — QA gate 1280×720/97f (VRAM/wall) + docs.
-- [ ] **Thor**: harness commit (mcp_media descriptions + media-film contract) →
-      Chuck pushes.
+- [x] **QoL-1: 129f wan14b clips** (~8.1 s) — QA gate 129f @720p (VRAM/wall) +
+      docs. **Result: rejected as recommended** (quality degrades vs 81f;
+      documented as experimental, no cap added).
+- [x] **QoL-2: Qwen-Image-2512 Q6_K keyframes** — download (17.95 GB, unsloth),
+      `QWEN_IMAGE_2512_MODEL` env override, 3-way QA (qwen21 vs 2512-Q4 vs
+      2512-Q6 @1280×720) + vision compare. **Result: keep qwen21 default**
+      (it's the best keyframe); Q6_K staged as opt-in legacy upgrade.
+- [x] **QoL-3: LTXV 720p fast lane** — QA gate 1280×720/97f (VRAM/wall) + docs.
+      **Result: promoted** (18 s/clip, 18,335 MiB peak, 1280×704 out).
+- [ ] **Thor**: harness commit `6fd88ca` (mcp_media descriptions + media-film
+      contract) — committed 2026-11-22 → **Chuck pushes + rebuilds mcp_media**.
 
 ## 7. Open questions (need your answers)
 
