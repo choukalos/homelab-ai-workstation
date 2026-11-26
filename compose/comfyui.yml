@@ -55,7 +55,11 @@ services:
     profiles: ["image"]
     network_mode: host
     environment:
-      - PIPELINE_HOST=0.0.0.0
+      # Phase 17 (2026-11-26, post-P12-A): LAN-only bind. Public file routes
+      # now relay via mcp_filebridge on thor (ai-net), so 8189 no longer needs
+      # a public bind. Runbook: homelab-ai-harness docs/thor_manual_tasks.md
+      # Phase 17. Rollback: set back to 0.0.0.0 + up -d media-pipeline.
+      - PIPELINE_HOST=192.168.4.55
       - PIPELINE_PORT=8189
       # Phase 6 quant decision (2026-11-22): Q8_0 promoted — best quality at
       # 720p (vision-subagent compare vs Q5_K_M baseline: sharper face/fur,
