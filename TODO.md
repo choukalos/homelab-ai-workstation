@@ -38,8 +38,6 @@ Detailed reference: `docs/backup_chain_plan.md`.
 
 ### vLLM / model experiments
 
-- [ ] **Experiment 9: Inkling-2-Mini (Thinking Machines, 2026-11-20)** — 26.4B looped MoE (5.4B effective active/token), multimodal, 1M ctx, Apache 2.0; single ~20 GB NVFP4+MXFP8 checkpoint — fits the 72 GB card with wide margin. Files ready: `models/profiles/experiment-inkling2-mini.yaml` + `compose/experiments/inkling2-mini.yml` (validated PASS); weights downloading to `/home/chuck/data/models/inkling2-mini` (log: `inkling2-mini-download.log`). **To run in an open window:** `docker pull vllm/vllm-openai:latest` (new model — local image almost certainly predates support) → `model-manager experiment start --profile experiment-inkling2-mini` → `benchmark.sh --profile experiment-inkling2-mini` → quality pass (esp. tool-calling — no Qwen parsers) → `model-manager mode rollback`. Companion candidates researched + ruled out (do not fit): tencent/Hy4-flash (220B total; smallest quant ~135 GB) and thinkingmachines/Inkling-2-Small (594B; 500 GB+ VRAM). *(EXPERIMENTS_RESULTS.md Experiment 9)*
-
 - [x] **Experiment 8 follow-up: Flash-Next long-context verification + promotion decision** — **CONSOLIDATED into `add_card_plan.md` Phase 5 (2026-11-21)**: the x16 baseline is captured (291.4 tok/s, 2026-11-14 rerun — boot-journal proven; first 2026-11-13 run invalid — CPU-only image), and the pending items (long-context quality rerun with `reasoning_content` + larger `max_tokens`; 2×256K → 4×256K concurrent decode at x8 to verify QSA sparse attention; promotion decision vs the bumped 27B) are now Phase 5's gate sequence. *(add_card_plan.md Phase 0b/5, EXPERIMENTS_RESULTS.md Experiment 8)*
 - [x] **vLLM deferred features** — **CLOSED 2026-11-21 (all 3 rejected — not interesting):** external draft-model speculative decoding, NVFP4 KV cache, and TensorRT-LLM are all dropped (user decision). Recorded in the rejection log; the candidate list is now empty. *(docs/matrix_vllm_features.md — Rejection Log + Next Evaluation Priority)*
 
@@ -75,6 +73,7 @@ environment map: `docs/media_film_skill_spec.md` §1–2.
 
 ## Dropped
 
+- ~~Experiment 9: Inkling-2-Mini (Thinking Machines)~~ (2026-11-27) — closed without running: the model is running on the M1 Mac Studio as the backup model (~30 tok/s, ~64k context ≈ 2×32k threads), so the GPU experiment is no longer needed. Compose file + profile deleted; 19 GB weights removed from `/home/chuck/data/models/inkling2-mini` (re-downloadable from HF). Research table kept in EXPERIMENTS_RESULTS.md (Experiment 9).
 - ~~Rerun experiments 4 & 5~~ (2026-08-28) — Qwen3.6 W8A16 128K and Qwen-long W8A16 262K superseded by Qwen3.8 (current NVFP4 daily driver + Qwen3.8-Flash-Next candidate). *(EXPERIMENTS_RESULTS.md, Next Steps)*
 - ~~Run experiment 6: Nemotron-3-Puzzle-75B NVFP4~~ (2026-09-27) — old model; Experiment 7 (Qwen3.8-Flash-Next 125B) is a far better next candidate. *(EXPERIMENTS_RESULTS.md, Experiment 6)*
 - ~~Qwen3-Next-80B FP8 experiment~~ (2026-09-27) — old model, never run; Flash-Next supersedes it. *(EXPERIMENTS_RESULTS.md, Experiment 3)*

@@ -1,5 +1,23 @@
 # Experiment Results
 
+## Experiment 9 (CLOSED, 2026-11-27): Inkling-2-Mini — Thinking Machines
+
+> Status: **CLOSED 2026-11-27 without running** — the model is running on the M1
+> Mac Studio as the backup model (~30 tok/s, ~64k total context ≈ 2×32k threads),
+> so the GPU experiment is no longer needed. Compose file + profile deleted;
+> the 19 GB weights at `/home/chuck/data/models/inkling2-mini` removed
+> (re-downloadable from HF). Research table kept for the record.
+
+New-model research pass 2026-11-25 (three candidates, one fits):
+
+| Candidate | Params (active/total) | Min footprint | Verdict |
+|---|---|---|---|
+| tencent/Hy4-flash | 11.3B / 220B MoE | NVFP4 161 GB; Q4_K_M GGUF ~135 GB; smallest (IQ2_AH) ~135 GB | ❌ ~2x the 72 GB card — MoE active params cut compute, not the weight footprint; all 220B (incl. 63.5B Engram table) must be resident |
+| thinkingmachines/Inkling-2-Mini | 5.4B eff / 26.4B looped MoE | ~20 GB single checkpoint (NVFP4+MXFP8 native) | ✅ fits with wide margin — **Experiment 9** |
+| thinkingmachines/Inkling-2-Small | 17B / 594B MoE | 500 GB+ aggregated VRAM (NVFP4, vendor-min 2xB300/4xH200); 800 GB MXFP8 | ❌ cluster-scale, not a single card |
+
+Plan: fresh `docker pull vllm/vllm-openai:latest` first (new model — local image almost certainly predates looped-transformer / mixed-precision support), then vLLM (`compose/experiments/inkling2-mini.yml`, alias `qwen38-27b` on :8000, 256K ctx, 0.95 mem-util, fp8 KV) → `benchmark.sh --profile experiment-inkling2-mini` → quality review (tool-calling manually — no Qwen parsers) → rollback. If the fresh image still can't load the mixed-precision looped-transformer checkpoint, use the SGLang recipe.
+
 ## Round 2026-07-05 — Summary
 
 Ran 5 experiments on vLLM 0.24.0 (latest) against the daily driver. **2 succeeded, 3 failed** due to a vLLM CLI change.
