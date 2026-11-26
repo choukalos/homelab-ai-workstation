@@ -1,7 +1,7 @@
 # Matrix — Thor Integration Contract
 
 > Created: 2026-07-03
-> Version: 1.1
+> Version: 1.5
 > Maintainer: Chuck (homelab operator)
 
 **This document defines the interface between Thor (application/orchestration layer)
@@ -63,6 +63,9 @@ Thor's `thor.litellm.config.yml` defines these aliases that route to Matrix:
 | `matrix-coder` | `openai/qwen38-27b` → `http://matrix:8000/v1` | vLLM port 8000 | `daily`, `qwen-coder`, `llms`, `experiment` |
 | `matrix-gemma4-moe` | `ollama/gemma4:26b` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms` |
 | `embeddings` | `ollama/nomic-embed-text` → `http://matrix:11434` | Ollama port 11434 | `daily`, `llms`, `qwen-coder`, `experiment` |
+| `matrix-copywriter` | `ollama/gemma4:31b` → `http://matrix:11434` | Ollama port 11434 (GPU 1) | `daily`, `llms` — XOR-tenant with media-gpu1; falls back to `matrix-coder` when GPU 1 is media-held |
+
+> **Note (v1.5):** `matrix-copywriter` has `model_group_fallbacks → [matrix-coder]` (2026-11-26, live in Thor LiteLLM — `docs/thor_copywriter_litellm_plan.md`).
 
 ### Critical Rule: The `matrix-coder` Alias Is Stable
 
@@ -298,3 +301,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | 1.2 | 2026-09-06 | Media-pipeline metering live: added `http://matrix:8189/metrics` as a Thor Prometheus scrape target (`media_*` metrics; 404 when the `image` profile is down or metering disabled); :8189 added to the auth table; new cross-ref `docs/matrix_media_pipeline_api.md` |
 | 1.3 | 2026-09-07 | Media-pipeline Part 1 build (matrix side of the gap-fill plan): 3 new job flows (`/trim`, `/freeze`, `/caption` — CPU ffmpeg), `/assemble` extensions (object shots, timestamped SFX, `vo_start`, `loudnorm`), 6 new sync endpoints (`/info`, `/upload_local`, `/download`, `/upload`, `/dl_token`, `/dl/{token}` — signed pull URLs for off-LAN clients). **No auth change** — :8189 stays unauthenticated (LAN trust); public auth remains the Caddy layer on thor. Contract updated in `docs/matrix_media_pipeline_api.md`; QA 38/38 (`media-pipeline/qa_part1.py`) |
 | 1.4 | 2026-11-04 | Media-pipeline job visibility (post-incident): new read-only `GET /jobs` on :8189 (durable `jobs.jsonl` ledger + live registry; filters `status`/`client`/`user`/`flow`/`since`/`limit`), job IDs logged to `docker logs media_pipeline`, structured 404 on unknown job. **No auth change** — :8189 stays unauthenticated (LAN trust); `GET /jobs` stays LAN-only (off-LAN clients reach it via the thor MCP proxy). Thor-side MCP additions pending — `docs/thor_media_mcp_handoff.md`. Contract: `docs/matrix_media_pipeline_api.md` |
+| 1.5 | 2026-11-26 | Added `matrix-copywriter` alias (`ollama/gemma4:31b` → `http://matrix:11434`, GPU 1 copywriter) with `model_group_fallbacks → [matrix-coder]` — live in Thor LiteLLM, verified end-to-end. Closes `docs/thor_copywriter_litellm_plan.md` |

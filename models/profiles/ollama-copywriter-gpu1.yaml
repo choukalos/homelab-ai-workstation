@@ -5,7 +5,7 @@
 # GPU 0 (shared, 14 GB slot).
 
 name: ollama-copywriter-gpu1
-alias: matrix-copywriter  # NEW LiteLLM alias (Phase 3/4 adds the Thor entry)
+alias: matrix-copywriter  # LIVE in Thor LiteLLM since 2026-11-26 (fallback → matrix-coder)
 backend: ollama
 status: active
 
