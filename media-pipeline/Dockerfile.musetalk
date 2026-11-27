@@ -1,0 +1,29 @@
+# media-pipeline / Films B4 — MuseTalk v1.5 lip-sync worker (dedicated GPU 1).
+#
+# The `media_pipeline` orchestrator drives MuseTalk inference by `docker exec`
+# into this container (same pattern as the TTS/ACE-Step workers in
+# comfyui_backend). The model stack — MuseTalk clone + self-contained venv
+# (torch 2.8.0+cu128, mmcv 2.2.0, mmpose 1.3.2, diffusers 0.30.2,
+# transformers 4.39.2) + weights (musetalkV15, sd-vae, whisper-tiny, dwpose,
+# face-parse-bisent) + a static ffmpeg — lives on the host at
+# /home/chuck/workspace/films-plan/b4 and is mounted at /b4. NOTHING is
+# installed in this image and no media-pipeline deps are touched (plan §7:
+# "B4 may add deps inside its own worker container").
+#
+# The venv's interpreter symlinks resolve to the host layout
+# (/usr/bin/python3, stdlib /usr/lib/python3.12). python:3.12-slim keeps the
+# same CPython 3.12 ABI under /usr/local, so we bridge those two paths and the
+# venv works as-is: /b4/venv/bin/python.
+FROM python:3.12-slim
+# The venv's cv2 (opencv-python GUI build) needs the standard X11/GL library
+# set at import time; the python:3.12-slim base ships none of it. (Worker-
+# container-only deps — plan §7.)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libxcb1 libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* \
+ && ln -sfn /usr/local/bin/python3 /usr/bin/python3 \
+ && ln -sfn /usr/local/lib/python3.12 /usr/lib/python3.12
+# Idle worker: the container just sleeps; media_pipeline `docker exec`s into
+# it with `docker exec -w /b4/MuseTalk /b4/venv/bin/python -m scripts.inference …`.
+CMD ["sleep", "infinity"]

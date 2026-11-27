@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 Phase-0 GATE PASS (MuseTalk v1.5 peak 9079 MiB, 15.4 GB headroom) → /lipsync next** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 DONE (/lipsync, QA 23/23) → final summary next** (long task running 2026-11-27)
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -80,7 +80,31 @@
 >       mid-run) discarded — per-run 1 Hz samples logged in the result JSON to detect this.
 >       LatentSync (heavier) not measured (optional record only; gate already passed with
 >       15.4 GB headroom). **B4 implementation (/lipsync) is next.**
-> - [ ] B4: /lipsync implementation (gate passed — see above)
+> - [x] **B4 DONE (2026-11-27 23:55)**: `/lipsync` (MuseTalk v1.5, dedicated GPU 1).
+>       Integration: new `musetalk` compose service (idle `python:3.12-slim` host,
+>       GPU 1 pinned `device_ids ['1']`, b4 worker area mounted at `/b4`, job dirs at
+>       the same host path) — the orchestrator `docker exec`s `scripts.inference`
+>       with the host venv + weights; **no new deps in media-pipeline proper**
+>       (plan §7). API: `POST /lipsync {video, audio, face_box?, save_coord?}` → clip
+>       with the **lower face re-animated to the audio** (upper face untouched; source
+>       audio muxed unchanged; output duration ≈ audio length — keep the line shorter
+>       than the shot). Submit-time 400s: missing `video`/`audio`, malformed
+>       `face_box`. `lipsync` in `/health` features; headroom guard extended (≥10 GiB,
+>       stops the Ollama copywriter if resident); metering `flow=lipsync,
+>       model=musetalk-v1.5, kind=mpix_frames` (one diffusion frame per output frame).
+>       **QA 23/23 PASS** (`media-pipeline/qa_films_b4.py`, log
+>       `/home/chuck/workspace/films-plan/logs/qa_b4.log`): TTS line (voice
+>       `trailer`) + talking-head clip (yongen.mp4, the gate demo pair) →
+>       **deterministic** lip-motion alignment at 3 timestamps (no vision): face
+>       boxes from the per-run `--saved_coord` pkl; lower face (below the eye line)
+>       re-rendered MSE 180–240 vs upper face preserved MSE 8–11; mouth-region MAD
+>       2.4–6.8 across frames (thresholds calibrated on the gate demo pair);
+>       audio pass-through intact (`/info`: h264 704×1216 + aac, duration ≈ TTS
+>       wav); all 400 paths; metering row; regression `/health` + `/montage` done.
+>       Docs updated (`matrix_media_pipeline_api.md` contract + changelog;
+>       `matrix_validation_log.md` evidence). Committed: `media: add /lipsync
+>       (Films B4)`.
+> - [x] B4: /lipsync implementation (DONE 2026-11-27 — see above)
 > - [ ] Final summary + docs + commits
 > Source: `gemini-insights.md` (AI-filmmaking workflow analysis) + Chuck's decisions 2026-11-27:
 > 1. Every film project's references/shots/storyboard stored on the NAS — durable, never removed, kept for all time.

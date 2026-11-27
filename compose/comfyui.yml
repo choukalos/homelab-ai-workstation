@@ -87,3 +87,32 @@ services:
       # an unmounted share degrades to nas_sync.pending, never a bad write.
       - /mnt/lego:/mnt/lego
       - /home/chuck/homelab/.env:/home/chuck/homelab/.env:ro
+
+  # Films B4 (2026-11-27): MuseTalk v1.5 lip-sync worker — the /lipsync GPU 1
+  # inference host. Idle container (sleeps); media_pipeline `docker exec`s
+  # into it with the host venv + weights (b4 worker area, mounted at /b4).
+  # GPU 1 reservation (device_ids ['1'] — the dedicated 24 GB media card; the
+  # reserved device appears as cuda:0 inside the container). No new deps in
+  # media-pipeline proper (plan §7: B4 may add deps inside its own worker
+  # container). VRAM gate PASS 2026-11-27: peak 9079 MiB (15.4 GB headroom).
+  musetalk:
+    build:
+      context: ../media-pipeline
+      dockerfile: Dockerfile.musetalk
+    image: musetalk:latest
+    container_name: musetalk
+    restart: unless-stopped
+    profiles: ["image"]
+    volumes:
+      # MuseTalk clone + venv + weights + static ffmpeg (scratch worker area).
+      - /home/chuck/workspace/films-plan/b4:/b4
+      # Job dirs (inputs staged + outputs written) — same host path as seen
+      # by the orchestrator and comfyui_backend.
+      - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]

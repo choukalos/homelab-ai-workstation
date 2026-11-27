@@ -74,6 +74,7 @@ MODEL_BY_FLOW = {
     "freeze": "ffmpeg",
     "caption": "ffmpeg",
     "transcribe": "basic-pitch+whisper-large-v3",
+    "lipsync": "musetalk-v1.5",
 }
 KIND_RATE = {
     "mpix_steps": PRICE_MPPIX_STEP,
@@ -111,22 +112,28 @@ def _cpath(p) -> str:
 
 
 def _ffprobe_media(path) -> dict:
-    """{duration, width, height} of a media file via ffprobe in the comfyui
-    container (ffprobe is not installed on the host)."""
+    """{duration, width, height, fps} of a media file via ffprobe in the
+    comfyui container (ffprobe is not installed on the host)."""
     cmd = ["docker", "exec", "-u", "comfy", CONTAINER, "ffprobe", "-v", "error",
-           "-show_entries", "format=duration:stream=width,height", "-of", "json",
-           _cpath(path)]
+           "-show_entries", "format=duration:stream=width,height,avg_frame_rate",
+           "-of", "json", _cpath(path)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {r.stderr[-300:]}")
     d = json.loads(r.stdout or "{}")
     dur = float((d.get("format") or {}).get("duration") or 0)
-    w = h = None
+    w = h = fps = None
     for s in d.get("streams") or []:
         if s.get("width") and s.get("height"):
             w, h = int(s["width"]), int(s["height"])
+            num, _, den = (s.get("avg_frame_rate") or "").partition("/")
+            try:
+                if float(den) > 0:
+                    fps = float(num) / float(den)
+            except ValueError:
+                pass
             break
-    return {"duration": dur, "width": w, "height": h}
+    return {"duration": dur, "width": w, "height": h, "fps": fps}
 
 
 def _image_dimensions(path) -> tuple[int, int]:
@@ -222,6 +229,14 @@ def _work_units(jid: str, flow: str, payload: dict, output: dict):
             if not m["duration"]:
                 raise ValueError("no audio duration")
             return m["duration"], "transcribe"
+        if flow == "lipsync":
+            # Films B4: GPU work = one MuseTalk diffusion frame per output
+            # frame (per-frame lower-face re-render), like shots/upscale.
+            m = _ffprobe_media(output["video"])
+            if not (m["width"] and m["height"]):
+                raise ValueError("no video dimensions")
+            frames = int((m["duration"] or 0) * (m["fps"] or 25.0))
+            return (frames * _mp(m["width"], m["height"]), "mpix_frames")
         if flow == "assemble" and payload.get("upscale_each"):
             # GPU work = the per-shot SeedVR2 upscases; sum frames×MP over them.
             total = 0.0

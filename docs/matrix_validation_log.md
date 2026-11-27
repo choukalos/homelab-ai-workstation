@@ -487,3 +487,69 @@ on a clean card).
   re-verified everything fresh on the rebuilt container before committing.
 - **B5 DONE (2026-11-27):** committed per batch convention (`media: add /montage
   generic video montage grid (Films B5)`).
+
+# Run: 2026-11-27 — Films B4: `/lipsync` (MuseTalk v1.5, dedicated GPU 1 worker)
+
+Plan: `media-pipeline/films_plan_matrix.md` §5 (B4). Phase-0 VRAM gate PASSED
+2026-11-27 22:54 (MuseTalk v1.5 peak **9,079 MiB** on GPU 1, 15.4 GB headroom vs
+the 20 GB gate — `logs/b4_gate_result.json` + `b4_gate_run.log`). Integration:
+new `musetalk` compose service (idle `python:3.12-slim` host, GPU 1 pinned
+`device_ids ['1']`, b4 worker area mounted at `/b4`, job dirs at the same host
+path) — the orchestrator `docker exec`s `scripts.inference` with the host venv
++ weights; **no new deps in media-pipeline proper** (plan §7). QA:
+`media-pipeline/qa_films_b4.py`, log `logs/qa_b4.log` (fresh run on the rebuilt
+container, 2026-11-27 23:5x).
+
+## Results — 23/23 checks passing
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/health` ok + `lipsync` in `features` | ✅ |
+| 2 | TTS line (voice `trailer`) via `/tts` → done, wav 3..15 s | ✅ |
+| 3 | `/lipsync` {video: talking-head clip (yongen.mp4, the gate demo pair), audio: TTS wav, `save_coord=true`} → done (GPU 1, ~90 s) | ✅ |
+| 4 | Output `/info`: h264 704×1216 + aac audio stream; duration ≈ TTS wav duration (±0.6 s) — audio pass-through intact | ✅ |
+| 5 | Lip-motion alignment at 3 timestamps (deterministic, no vision) | ✅ (see below) |
+| 6 | 400 paths: missing `video` / missing `audio` / `face_box` len 3 / non-int / inverted | ✅ (5/5) |
+| 7 | Metering row: `flow=lipsync`, `model=musetalk-v1.5`, `work_unit_kind=mpix_frames`, units > 0 | ✅ |
+| 8 | Regression (cheap): `/health` still ok + `/montage` n=4 on the lipsync output → done | ✅ |
+
+## Lip-motion alignment at 3 timestamps (deterministic)
+
+Method: per-run face boxes from the MuseTalk `--saved_coord` pkl (list of
+(x1,y1,x2,y2) per source frame). Regions: upper face = top 45% of the box
+(forehead/eyes), lower face = bottom 55% (nose/mouth/chin), mouth = central
+60% width × bottom 40% height. 96×96 crops compared in raw RGB. Thresholds
+calibrated on the Phase-0 gate demo pair (yongen.mp4 + yongen.wav): upper MSE
+8.5–10.2, lower MSE 180.9–238.2, mouth MAD 2.4–6.8 → QA thresholds: lower
+MSE > 30 (≥2 of 3 ts), upper MSE < 40 (all 3), mouth MAD > 1.5 (≥2 of 3).
+
+| t (s) | face box | upper MSE (out vs in) | lower MSE (out vs in) | mouth MAD (t vs t+0.2 s) |
+|---|---|---|---|---|
+| 1.63 | [223,278,466,526] | 7.8 (preserved) | 214.6 (re-rendered) | 3.2 (moving) |
+| 2.72 | [225,278,464,526] | 11.2 (preserved) | 184.7 (re-rendered) | 4.6 (moving) |
+| 3.80 | [223,276,464,524] | 10.9 (preserved) | 247.6 (re-rendered) | 8.2 (moving) |
+
+Interpretation: the lower face is re-animated to the TTS line (MSE 185–248 ≫
+encode noise), the upper face is untouched (MSE 8–11 ≈ encode noise), and the
+mouth region moves across frames in step with the speech — lip motion aligned
+at all 3 timestamps. No vision calls (deterministic checks only — Qwen image
+budget).
+
+## Notes
+
+- **Audio pass-through:** MuseTalk re-renders the video frames and muxes the
+  original wav in (`/info`: aac stereo, output duration ≈ TTS wav duration) —
+  the source audio is never re-encoded/modified.
+- **Metering:** one diffusion frame per output frame → `mpix_frames` (demo
+  8 s pair: 171.2 units, $0.000993 — `jobs.jsonl`).
+- **Headroom guard:** extended to `lipsync` (≥10 GiB on the media card; stops
+  the Ollama copywriter if resident — same pattern as music/tts/transcribe).
+- **Known behavior:** output duration ≈ audio length (one frame per audio
+  chunk at the source fps); audio longer than the video cycles the face —
+  documented in the API contract (keep the line shorter than the shot).
+- **Session incident:** the previous worker session (attempt 1, 2026-11-27)
+  timed out at 900 s after implementing the flow + compose service + metering
+  and completing one full reference run (gate demo pair, job 69113402d792,
+  72.3 s wall). This run re-verified fresh (QA 23/23) before closing out.
+- **B4 DONE (2026-11-27):** commit pending `media: add /lipsync (Films B4)`
+  (worker session runs with commits disabled).

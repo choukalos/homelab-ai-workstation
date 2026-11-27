@@ -83,6 +83,18 @@ WORKER_PY = {
     "acestep_worker.py": "/comfy/mnt/ACE-Step-1.5/.venv/bin/python",
     "transcribe_worker.py": "/comfy/mnt/venvs/venv-transcribe/bin/python",
 }
+# Films B4: MuseTalk v1.5 lip-sync worker. The model stack (clone + venv +
+# weights + static ffmpeg) lives on the host at the b4 worker area, mounted
+# into the dedicated `musetalk` container at /b4 (GPU 1, device_ids ['1'] —
+# the reserved card appears as cuda:0 inside the container). The orchestrator
+# drives it via `docker exec` — no GPU, no new deps in the pipeline container.
+MUTETALK_CONTAINER = os.environ.get("MUTETALK_CONTAINER", "musetalk")
+MUTETALK_CWD = os.environ.get("MUTETALK_CWD", "/b4/MuseTalk")
+MUTETALK_PY = os.environ.get("MUTETALK_PY", "/b4/venv/bin/python")
+MUTETALK_FFMPEG_DIR = os.environ.get("MUTETALK_FFMPEG_DIR", "/b4/bin")
+MUTETALK_UNET = os.environ.get("MUTETALK_UNET", "./models/musetalkV15/unet.pth")
+MUTETALK_UNET_CFG = os.environ.get("MUTETALK_UNET_CFG", "./models/musetalkV15/musetalk.json")
+MUTETALK_TIMEOUT_S = float(os.environ.get("MUTETALK_TIMEOUT_S", "3600"))
 FFMPEG = "ffmpeg"
 logger = logging.getLogger("media-pipeline")
 if not logger.handlers:  # make app INFO logs visible in container logs (uvicorn
@@ -538,15 +550,19 @@ def run_worker(worker: str, args: list[str], timeout: float = 3600) -> str:
 # a flow, ensure free VRAM: (1) if the Ollama copywriter is resident on GPU 1,
 # stop it (instant — plan §4.1.4, Phase 6); (2) else restart comfyui_backend
 # (~40 s, only when its queue is idle).
-VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0, "transcribe": 4.0}
+VRAM_HEADROOM_GIB = {"music": 8.0, "tts": 2.0, "transcribe": 4.0, "lipsync": 10.0}
 OLLAMA_CONTAINER = "ollama"
 OLLAMA_COPYWRITER_MODEL = os.environ.get("OLLAMA_COPYWRITER_MODEL", "gemma4:31b")
 
 
 def _gpu_free_gib() -> float | None:
-    """Free GPU memory in GiB, via comfyui_backend's nvidia-smi (the pipeline
-    container has the docker socket but no nvidia-smi itself). None =
-    unmeasurable — callers proceed as-is (never block a job on a probe)."""
+    """Free VRAM (GiB) on the media card (physical GPU 1 — the dedicated 24 GB
+    card), via comfyui_backend's nvidia-smi (the pipeline container has the
+    docker socket but no nvidia-smi itself; comfyui_backend is pinned to the
+    media card, so its first nvidia-smi line IS the media card — Films B4:
+    the musetalk worker container is pinned to the same card, so this is the
+    right measurement for lipsync too). None = unmeasurable — callers
+    proceed as-is (never block a job on a probe)."""
     try:
         r = subprocess.run(["docker", "exec", CONTAINER, "nvidia-smi",
                             "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
@@ -603,13 +619,15 @@ def _ollama_stop_copywriter() -> None:
 
 
 def _ensure_vram_headroom(flow: str, jid: str) -> None:
-    """Free GPU 1's resident-model VRAM before a non-ComfyUI GPU worker.
+    """Free the media card's (physical GPU 1) resident-model VRAM before a
+    non-ComfyUI GPU worker.
 
     No-op when headroom is already sufficient or unmeasurable. When low:
     (1) stop the Ollama copywriter if resident (instant, Phase 6 / plan
     §4.1.4); (2) re-check; (3) if still low, wait for an idle ComfyUI queue
     and restart comfyui_backend (frees its resident model) and wait for it
-    to come back (~40 s)."""
+    to come back (~40 s). Applies to all media-card GPU flows incl. Films B4
+    lipsync (the musetalk container shares the same card)."""
     min_gib = VRAM_HEADROOM_GIB.get(flow)
     if min_gib is None:
         return
@@ -640,6 +658,17 @@ def _ensure_vram_headroom(flow: str, jid: str) -> None:
         print(f"[{jid}] {flow}: {CONTAINER} back up (free {free2:.1f} GiB)", flush=True)
     else:
         print(f"[{jid}] {flow}: {CONTAINER} back up", flush=True)
+
+
+def _musetalk_running() -> bool:
+    """Is the Films B4 musetalk worker container up? (docker inspect probe.)"""
+    try:
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}",
+                            MUTETALK_CONTAINER],
+                           capture_output=True, text=True, timeout=15)
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
 # ------------------------------------------------------------------ flows
@@ -1703,6 +1732,94 @@ def flow_montage(payload: dict, jid: str):
             "timestamps": [round(t, 3) for t in times]}
 
 
+def flow_lipsync(payload: dict, jid: str):
+    """Films B4: lip-sync (MuseTalk v1.5, dedicated GPU 1 worker container).
+    video + wav (+ face_box optional [x1,y1,x2,y2]) -> clip with the lower
+    face re-animated to the audio (upper face untouched; the source audio is
+    muxed in unchanged). Output duration ~= audio length (MuseTalk generates
+    one frame per audio chunk; audio longer than the video cycles the face —
+    keep the line shorter than the shot)."""
+    video = _resolve_src(payload["video"])
+    audio = _resolve_src(payload["audio"])
+    vi = _probe_summary(video)
+    if not vi["duration_s"] or not vi["width"]:
+        raise ValueError("video has no video stream")
+    ai = _probe_summary(audio)
+    if not ai["audio_codecs"]:
+        raise ValueError("audio has no audio stream")
+    face_box = payload.get("face_box")
+    fb = None
+    if face_box is not None:
+        try:
+            fb = [int(x) for x in face_box]
+        except (TypeError, ValueError):
+            raise ValueError("face_box must be [x1,y1,x2,y2] pixel ints")
+        if len(fb) != 4 or any(x < 0 for x in fb) or fb[2] <= fb[0] or fb[3] <= fb[1]:
+            raise ValueError("face_box must be [x1,y1,x2,y2] with x2>x1 and y2>y1")
+    save_coord = bool(payload.get("save_coord", False))
+    if not _musetalk_running():
+        raise RuntimeError(
+            f"musetalk worker container is not running "
+            f"(docker compose -f compose/comfyui.yml --profile image up -d {MUTETALK_CONTAINER})")
+    job = JOB_DIR / jid
+    # Stage the inputs under stable names (the job dir is 777 and mounted into
+    # the musetalk container at the same host path) so the run is deterministic
+    # and all MuseTalk outputs land in the job dir.
+    vid_in = job / "input" / "lipsync_src.mp4"
+    aud_in = job / "input" / "lipsync_audio.wav"
+    shutil.copy2(video, vid_in)
+    shutil.copy2(audio, aud_in)
+    cfg = job / "musetalk_config.yaml"
+    lines = ["task_0:",
+             f'  video_path: "{vid_in}"',
+             f'  audio_path: "{aud_in}"']
+    if fb is not None:
+        lines.append(f"  face_box: [{fb[0]},{fb[1]},{fb[2]},{fb[3]}]")
+    cfg.write_text("\n".join(lines) + "\n")
+    with GPU_LOCK:
+        _ensure_vram_headroom("lipsync", jid)
+        result_dir = job / "musetalk_results"
+        cmd = ["docker", "exec", "-w", MUTETALK_CWD,
+               "-e", "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1",
+               MUTETALK_CONTAINER, MUTETALK_PY, "-m", "scripts.inference",
+               "--inference_config", str(cfg),
+               "--result_dir", str(result_dir),
+               "--unet_model_path", MUTETALK_UNET,
+               "--unet_config", MUTETALK_UNET_CFG,
+               "--version", "v15",
+               "--ffmpeg_path", MUTETALK_FFMPEG_DIR,
+               "--batch_size", "8",
+               "--output_vid_name", "lipsync.mp4"]
+        if save_coord:
+            cmd.append("--saved_coord")
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=MUTETALK_TIMEOUT_S)
+        # MuseTalk swallows per-task exceptions (prints the error, exits 0) —
+        # surface it in the job error instead of an opaque "no output".
+        err_line = next((l for l in r.stdout.splitlines()
+                         if l.startswith("Error occurred during processing")), None)
+        if r.returncode != 0:
+            raise RuntimeError(f"musetalk inference failed: "
+                               f"{(r.stderr or r.stdout)[-2000:]}")
+        for line in r.stdout.strip().splitlines()[-12:]:
+            logger.info("musetalk: %s", line)
+    out = result_dir / "v15" / "lipsync.mp4"
+    if not out.is_file():
+        raise RuntimeError(f"musetalk produced no output (expected {out})"
+                           + (f" — {err_line}" if err_line else ""))
+    final = job / "lipsync.mp4"
+    shutil.copy2(out, final)
+    info = _probe_summary(final)
+    res = {"video": str(final), "duration_s": info["duration_s"],
+           "width": info["width"], "height": info["height"],
+           "audio_codecs": info["audio_codecs"]}
+    if save_coord:
+        pkl = job / "lipsync_src.pkl"
+        if pkl.is_file():
+            res["face_boxes"] = str(pkl)
+    return res
+
+
 def flow_assemble(payload: dict, jid: str):
     """ffmpeg (in-container): normalize shots, concat, mix audio tracks, output final mp4.
 
@@ -1930,6 +2047,7 @@ FLOW_MAP = {
     "extract_frame": flow_extract_frame,
     "qc_montage": flow_qc_montage,
     "montage": flow_montage,
+    "lipsync": flow_lipsync,
     "transcribe": flow_transcribe,
 }
 
@@ -1974,7 +2092,7 @@ def health():
         "features": ["assemble-duration-hold", "job-kill", "queue-summary",
                      "job-progress", "projects", "storyboard-pages",
                      "animatic", "extract-frame", "assemble-grade",
-                     "qc-montage", "montage"],
+                     "qc-montage", "montage", "lipsync"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -2623,6 +2741,30 @@ async def api_montage(payload: dict):
     with job_slot():
         jid = new_job("montage", payload)
         enqueue_job(jid, "montage", payload, {})
+    return {"job_id": jid}
+
+
+@app.post("/lipsync")
+async def api_lipsync(payload: dict):
+    # Films B4: MuseTalk v1.5 lip-sync (dedicated GPU 1 worker container).
+    # video + wav (+ face_box optional [x1,y1,x2,y2]) -> clip with the lower
+    # face synced to the audio. Submit-time validation: presence + face_box
+    # shape (bad file paths surface as job errors, like the other flows).
+    if "video" not in payload:
+        raise HTTPException(400, "video is required")
+    if "audio" not in payload:
+        raise HTTPException(400, "audio is required")
+    fb = payload.get("face_box")
+    if fb is not None:
+        try:
+            fb = [int(x) for x in fb]
+        except (TypeError, ValueError):
+            raise HTTPException(400, "face_box must be [x1,y1,x2,y2] pixel ints")
+        if len(fb) != 4 or any(x < 0 for x in fb) or fb[2] <= fb[0] or fb[3] <= fb[1]:
+            raise HTTPException(400, "face_box must be [x1,y1,x2,y2] with x2>x1 and y2>y1")
+    with job_slot():
+        jid = new_job("lipsync", payload)
+        enqueue_job(jid, "lipsync", payload, {})
     return {"job_id": jid}
 
 
