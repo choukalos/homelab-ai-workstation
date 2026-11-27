@@ -221,6 +221,64 @@ def wan22_i2v(keyframe: str, prompt: str, width=832, height=480, frames=81,
     }
 
 
+def wan22_flf2v(start_keyframe: str, end_keyframe: str, prompt: str,
+                width=832, height=480, frames=81, fps=16.0, seed=42,
+                negative=NEG_VIDEO, prefix="shot"):
+    """Wan 2.2 I2V-A14B first-last-frame (FLF2V): interpolate a clip that starts
+    on `start_keyframe` and lands on `end_keyframe` (exact end-pose control —
+    e.g. a lightsaber block). Official Comfy-Org `video_wan2_2_14B_flf2v`
+    base-mode graph (no 4-step LoRA): `WanFirstLastFrameToVideo` (start + end
+    image conditioning), dual-expert sampling (high-noise steps 0-10 with
+    return_with_leftover_noise=enable, low-noise steps 10-10000), **shift 8.0**,
+    **cfg 4.0**, euler/simple — the FLF2V-specific sampling (vs i2v's shift
+    5.0 / cfg 5.0). Same GGUF Q5_K_M dual experts + umt5-xxl fp8 (CPU) +
+    wan_2.1_vae as wan22_i2v. frames must be 4k+1; 480p/720p per the i2v gate.
+    `start_keyframe`/`end_keyframe` = ComfyUI input filenames.
+    """
+    assert (frames - 1) % 4 == 0, "frames must be 4k+1"
+    assert (width, height) in WAN_RESOLUTIONS, \
+        f"wan14b supports {sorted(WAN_RESOLUTIONS)} only"
+    loader = "UnetLoaderGGUF" if WAN_UNET_LOADER == "gguf" else "UNETLoader"
+    hi_inputs = {"unet_name": WAN_HIGHNOISE}
+    lo_inputs = {"unet_name": WAN_LOWNOISE}
+    if loader == "UNETLoader":
+        hi_inputs["weight_dtype"] = "default"
+        lo_inputs["weight_dtype"] = "default"
+    return {
+        "1": {"class_type": loader, "inputs": hi_inputs},
+        "2": {"class_type": loader, "inputs": lo_inputs},
+        "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": WAN_CLIP, "type": "wan", "device": WAN_T5_DEVICE}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["3", 0]}},
+        "5": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["3", 0]}},
+        "6": {"class_type": "VAELoader", "inputs": {"vae_name": WAN_VAE}},
+        "7": {"class_type": "LoadImage", "inputs": {"image": start_keyframe}},
+        "8": {"class_type": "LoadImage", "inputs": {"image": end_keyframe}},
+        "9": {"class_type": "WanFirstLastFrameToVideo",
+             "inputs": {"positive": ["4", 0], "negative": ["5", 0], "vae": ["6", 0],
+                        "width": width, "height": height, "length": frames, "batch_size": 1,
+                        "start_image": ["7", 0], "end_image": ["8", 0]}},
+        "10": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": 8.0}},
+        "11": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["2", 0], "shift": 8.0}},
+        "12": {"class_type": "KSamplerAdvanced",
+               "inputs": {"model": ["10", 0], "add_noise": "enable", "noise_seed": seed,
+                          "steps": 20, "cfg": 4.0, "sampler_name": "euler",
+                          "scheduler": "simple", "positive": ["9", 0], "negative": ["9", 1],
+                          "latent_image": ["9", 2], "start_at_step": 0, "end_at_step": 10,
+                          "return_with_leftover_noise": "enable"}},
+        "13": {"class_type": "KSamplerAdvanced",
+               "inputs": {"model": ["11", 0], "add_noise": "disable", "noise_seed": seed,
+                          "steps": 20, "cfg": 4.0, "sampler_name": "euler",
+                          "scheduler": "simple", "positive": ["9", 0], "negative": ["9", 1],
+                          "latent_image": ["12", 0], "start_at_step": 10, "end_at_step": 10000,
+                          "return_with_leftover_noise": "disable"}},
+        "14": {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["6", 0]}},
+        "15": {"class_type": "VHS_VideoCombine", "inputs": {"images": ["14", 0], "frame_rate": fps,
+                                                            "filename_prefix": prefix, "format": "video/h264-mp4",
+                                                            "pix_fmt": "yuv420p", "crf": 19, "save_metadata": False,
+                                                            "save_output": True, "pingpong": False, "loop_count": 0}},
+    }
+
+
 def upscale_seedvr2(video_path_host: str, resolution=1080, noise_scale=0.0,
                     batch_size=5, fps=24, seed=42, prefix="upscale_b"):
     """Pipeline B: SeedVR2 3B fp8 video upscaling (temporally consistent, ~2min/5s@1080p).

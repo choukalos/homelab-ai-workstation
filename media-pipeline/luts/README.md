@@ -35,8 +35,10 @@ Equivalent standalone ffmpeg: `-vf "lut3d=/path/to/lut.cube"`.
 
 - **`cinematic_teal_amber.cube`** — the classic teal-and-orange look. A mild
   S-curve adds contrast, then luminance-weighted shifts push shadows toward
-  teal (R down, G/B up) and highlights toward amber (R up, B down). Use it as
-  the default "film" grade for narrative/dramatic footage. *Starting point.*
+  teal (R down ~8%, B up ~6%, G untouched) and highlights toward amber
+  (R up ~8%, B down ~6%). The crossover sits just above mid-gray, so
+  midtones read slightly teal. Use it as the default "film" grade for
+  narrative/dramatic footage. *Starting point.*
 
 - **`warm_neutral.cube`** — a gentle, near-neutral warm lift: R up ~4% of the
   full range, B down ~4%, G untouched, plus a very mild contrast lift. Safe

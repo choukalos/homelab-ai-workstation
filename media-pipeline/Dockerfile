@@ -36,16 +36,6 @@ COPY server.py workflows.py comfy_client.py metering.py projects.py .
 # at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
 COPY luts/ /app/luts/
 
-# Films B2: bundled starting-point LUTs (33^3 Iridas .cube). Staged into
-# RUN_DIR/luts/ at startup so comfyui_backend's ffmpeg lut3d can read them
-# at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
-COPY luts/ /app/luts/
-
-# Films B2: bundled starting-point LUTs (33^3 Iridas .cube). Staged into
-# RUN_DIR/luts/ at startup so comfyui_backend's ffmpeg lut3d can read them
-# at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
-COPY luts/ /app/luts/
-
 # Default bind 0.0.0.0 so the remote media-mcp client can reach <gpu-host>:8189 (LAN-only).
 ENV PIPELINE_HOST=0.0.0.0 \
     PIPELINE_PORT=8189

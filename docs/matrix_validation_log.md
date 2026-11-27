@@ -287,3 +287,91 @@ pipeline since the MCP client aborts long tool calls (see Findings).
   triples (Iridas), NOT the 3-section R/G/B layout** — verified empirically (identity test
   maxdiff=1; channel-swap test exact). 3× 33³ `.cube` starting points in
   `media-pipeline/luts/` + README.
+
+# Run: 2026-11-27 — Films B2: FLF2V `end_keyframe`, `/animatic`, `/extract_frame`, `/assemble` LUT/grain
+
+> Plan: `media-pipeline/films_plan_matrix.md` (batch B2 of the films plan).
+> QA: `media-pipeline/qa_films_b2.py` (CPU tools) + `qa_films_b2_flf2v.py` /
+> `qa_films_b2_flf2v_part2.py` (FLF2V GPU).
+> Logs: `/home/chuck/workspace/films-plan/logs/qa_b2.log`, `qa_b2_flf2v.log`,
+> `qa_b2_flf2v_p2.log`.
+> Container `media_pipeline` rebuilt via `model-manager rebuild media-pipeline`;
+> `/health` ok after every rebuild. **No other container touched**
+> (comfyui_backend / qwen38 / ollama untouched; only `docker exec` ffmpeg).
+> API strictly additive — existing flows unchanged; submit-time validation added for
+> the new B2 flows (bad move / exactly-one-of / bad lut / grain>1 → clean 400).
+
+## Results — CPU tools 24/24 + FLF2V GPU 5/5 (all passing)
+
+### `/animatic`, `/extract_frame`, `/assemble` grade — `qa_films_b2.py` 24/24
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/animatic` submit (3 shots, push_in/pull_out/shake) → 200 job_id | ✅ |
+| 2 | `/animatic` done; video path on disk | ✅ |
+| 3 | `/animatic` duration ≈ sum of shot durations | ✅ |
+| 4 | `/animatic` dims 1280×720 | ✅ |
+| 5 | `/animatic` frames differ (zoompan motion present) | ✅ |
+| 6 | `/animatic` bad `move` → 400 (submit-time) | ✅ |
+| 7 | `/extract_frame` `frame` index → 1 frame, pixel-identical to ffmpeg-direct | ✅ |
+| 8 | `/extract_frame` `time` (s) → 1 frame | ✅ |
+| 9 | `/extract_frame` `positions` [first,middle,last] → 3 frames | ✅ |
+| 10 | `/extract_frame` `n=5` even spacing → 5 frames | ✅ |
+| 11 | `/extract_frame` `frame`+`time` both → 400 (exactly-one-of) | ✅ |
+| 12 | `/extract_frame` none → 400 | ✅ |
+| 13 | `/assemble` (no grade) submit → done | ✅ |
+| 14 | `/assemble` (graded: lut+grain) submit → done | ✅ |
+| 15 | `/assemble` grade: duration identical to ungraded | ✅ |
+| 16 | `/assemble` grade: LUT shifts color (U/V differ) | ✅ |
+| 17 | `/assemble` bad `lut` → 400 (submit-time) | ✅ |
+| 18 | `/assemble` `grain>1` → 400 (submit-time) | ✅ |
+
+### FLF2V GPU — `qa_films_b2_flf2v*.py`
+
+| # | Check | Result |
+|---|---|---|
+| 19 | 480p FLF2V (start+end) done; video on disk; `end_keyframe:true` | ✅ |
+| 20 | 480p FLF2V metered (ledger: `model=wan2.2-14b-i2v-gguf-q8`, `cost>0`) | ✅ |
+| 21 | **End-pose landing:** last frame closer to END than START (MSE 43.6 vs 29244.8; first≈start, last≈end visually) | ✅ |
+| 22 | i2v 480p (same start + seed, NO end_keyframe) done; video; no `end_keyframe` flag | ✅ |
+| 23 | **720p FLF2V (start+end) done → 720p ADMITTED** (peak 23349 MiB total on the 24 GB card) | ✅ |
+| 24 | `end_keyframe` + `model=ltxv2b` → 400 (wan14b only) | ✅ |
+
+## VRAM gate (GPU 1, 24 GB card) — FLF2V fits at 480p AND 720p
+
+| Render | Peak (total on card, MiB) | Wall | Note |
+|---|---|---|---|
+| 480p FLF2V (start+end) | 23066 | 1068 s (~17.8 min) | slowed by early Ollama offload |
+| 480p i2v (start only) | 23028 | ~12 min | existing path, unchanged |
+| **720p FLF2V (start+end)** | **23349** | 3377 s (~56 min) | ≈ i2v 720p precedent (19.6 GB clean) + Ollama share |
+
+**Decision: 720p FLF2V is ADMITTED** (not 480p-restricted). The absolute peaks include
+Ollama's transient co-residency; ComfyUI's own footprint ≈ the i2v precedent (same model +
+one extra end-frame latent).
+
+## Caveat — Ollama co-residency on GPU 1 during QA
+
+Ollama's copywriter (`gemma4:31b`, ~14 GB) was repeatedly loaded on GPU 1 (the
+ComfyUI-dedicated card) during this QA window, unloading/reloading on its ~5 min idle
+timeout. Effect: (1) early CPU offload slowed the renders (480p FLF2V 17.8 min vs the
+i2v ~10 min precedent); (2) the VRAM baseline was contaminated (absolute peaks include
+Ollama's share). The pipeline's existing VRAM headroom guard stops the copywriter for
+music/tts/transcribe but **not** for `/shots` (adding it would change existing flow
+behavior — out of scope for the additive B2). All renders completed without OOM; the
+720p gate result is valid (it fit with the copywriter co-resident, so it fits a fortiori
+on a clean card).
+
+## Notes
+
+- **FLF2V sampling:** `WanFirstLastFrameToVideo` uses **shift 8.0 / cfg 4.0** (the
+  FLF2V-specific sampling) vs i2v's shift 5.0 / cfg 5.0 — from the official Comfy-Org
+  `video_wan2_2_14B_flf2v` template. Dual-expert (high+low noise), 20+20 steps split at 10.
+- **`/animatic` 3× pre-scale:** pre-scale to 3× before `zoompan` to avoid jittery
+  pixel-stepping on the camera moves.
+- **`/extract_frame` `n` is an independent mode** (even spacing across the duration), not
+  part of `positions` — exactly one of `frame`/`time`/`positions`/`n`.
+- **`signalstats` output format** (ffmpeg 6.1): `lavfi.signalstats.YAVG=<v>` (requires
+  `,metadata=print` in the filter chain), not `YAVG:<v>`.
+- **LUT delivery:** bundled `.cube` names resolve via `resolve_lut()` (bundled name /
+  `.cube` filename / RUN_DIR-relative / absolute); staged into `RUN_DIR/luts/` at startup
+  so comfyui_backend's ffmpeg reads them at `/comfy/mnt/luts/<name>.cube`.

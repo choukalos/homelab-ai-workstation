@@ -167,25 +167,30 @@ def stage_luts() -> list[str]:
 
 
 def resolve_lut(lut: str) -> Path:
-    """Resolve a /assemble lut= value to a file path readable by comfyui_backend.
+    """Resolve a /assemble lut= value to a .cube file readable by comfyui_backend.
     Accepts a bundled name ('cinematic_teal_amber'), a bare filename with .cube,
+    a RUN_DIR-relative path (e.g. 'luts/x.cube' or 'media_projects/<slug>/grade.cube'),
     or an absolute path. Raises ValueError if it can't be resolved to an existing
     .cube file."""
     lut = (lut or "").strip()
     if not lut:
         raise ValueError("lut is empty")
-    candidates = []
     p = Path(lut)
     if p.is_absolute():
-        candidates.append(p)
-    else:
-        # name without extension -> bundled staged LUT
-        candidates.append(STAGED_LUTS / (lut if lut.endswith(".cube") else lut + ".cube"))
-        candidates.append(BUNDLED_LUTS / (lut if lut.endswith(".cube") else lut + ".cube"))
-    for c in candidates:
+        if p.is_file() and p.suffix == ".cube":
+            return p
+        raise ValueError(f"lut not found: {p}")
+    name = lut if lut.endswith(".cube") else lut + ".cube"
+    for base in (STAGED_LUTS, BUNDLED_LUTS, RUN_DIR):
+        c = base / name
         if c.is_file() and c.suffix == ".cube":
             return c
-    raise ValueError(f"lut not found (looked for: {', '.join(str(c) for c in candidates)})")
+    # RUN_DIR-relative path with a subdir (e.g. media_projects/<slug>/grade.cube)
+    c = RUN_DIR / lut
+    if c.is_file() and c.suffix == ".cube":
+        return c
+    raise ValueError(f"lut not found (looked for '{name}' in {STAGED_LUTS}, "
+                     f"{BUNDLED_LUTS}, {RUN_DIR})")
 
 # ------------------------------------------------------------------ job queue
 # Bounded FIFO queue + fixed worker pool. At most MAX_CONCURRENT_JOBS media jobs
@@ -1327,6 +1332,40 @@ def _apply_text_overlays(video_host, overlays, jid):
     return str(out_host)
 
 
+# Films B2: animatic camera moves (zoompan expressions from gemini-insights.md
+# "Build a Talking/Moving Animatic First" — pre-scale to 3x before zoompan to
+# avoid jittery pixel-stepping). {frames} is substituted per shot.
+ANIMATIC_MOVES = {
+    "push_in":   "z='min(zoom+0.0015,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+    "pull_out":  "z='if(lte(zoom,1.0),1.12,max(1.001,zoom-0.0015))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+    "pan_left":  "z='1.1':x='(iw-iw/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)'",
+    "pan_right": "z='1.1':x='(iw-iw/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)'",
+    "shake":     "z='1.08':x='iw/2-(iw/zoom/2)+sin(on*2.5)*18':y='ih/2-(ih/zoom/2)+cos(on*3.1)*18'",
+    "static":    "z='1.0':x='0':y='0'",
+}
+
+
+def _grade_filter(payload: dict) -> str:
+    """Films B2: build the /assemble grade filter (3D LUT + temporal film grain).
+    Returns '' when no grade is requested (backward compatible — params absent
+    = today's behavior). `lut` resolves via resolve_lut(); `grain` in [0,1]
+    maps to a subtle temporal noise amplitude."""
+    parts = []
+    lut = payload.get("lut")
+    if lut:
+        lp = resolve_lut(str(lut))
+        parts.append(f"lut3d={to_container_any(lp)}")
+    grain = payload.get("grain")
+    if grain is not None:
+        g = float(grain)
+        if not (0.0 <= g <= 1.0):
+            raise ValueError("grain must be in [0.0, 1.0]")
+        if g > 0:
+            alls = max(1, round(g * 8))  # subtle: 1.0 -> alls=8
+            parts.append(f"noise=alls={alls}:allf=t")
+    return ",".join(parts)
+
+
 def flow_trim(payload: dict, jid: str):
     """M1: cut a clip to a time range (frame-accurate reencode by default)."""
     src = _resolve_src(payload["source"])
@@ -1426,6 +1465,125 @@ def flow_caption(payload: dict, jid: str):
 
 # M1: |natural - duration| tolerance for assemble shot duration hold/trim.
 DURATION_TOL_S = 0.1
+
+
+def flow_animatic(payload: dict, jid: str):
+    """Films B2: Tier-0 pacing gate (ffmpeg only, no GPU). Stitch storyboard
+    keyframes into a preview cut with simulated camera moves (zoompan) + shot
+    labels, so you can 'watch the whole scene in 20 s before burning 11 min/
+    clip'. Per-shot: pre-scale to 3x (anti-jitter) -> zoompan move -> drawtext
+    label; then concat + optional audio mux (-shortest)."""
+    manifest = payload.get("shots") or payload.get("manifest")
+    if not isinstance(manifest, list) or not manifest:
+        raise ValueError("shots: non-empty list of {image, duration, move} required")
+    width = int(payload.get("width", 1280))
+    height = int(payload.get("height", 720))
+    fps = int(payload.get("fps", 24))
+    font = payload.get("font", FONT_BOLD)
+    pre_w, pre_h = width * 3, height * 3  # 3x pre-scale (anti-jitter)
+    job = JOB_DIR / jid
+    segs = []
+    total_s = 0.0
+    for i, shot in enumerate(manifest):
+        if not isinstance(shot, dict) or not shot.get("image"):
+            raise ValueError(f"shots[{i}]: {{image, duration, move}} object required")
+        img = _resolve_src(shot["image"])
+        dur = float(shot.get("duration", 2.0))
+        if dur <= 0:
+            raise ValueError(f"shots[{i}].duration must be positive")
+        move = str(shot.get("move", "static")).strip().lower()
+        if move not in ANIMATIC_MOVES:
+            raise ValueError(f"shots[{i}].move: unknown move '{move}' "
+                             f"(valid: {', '.join(ANIMATIC_MOVES)})")
+        frames = max(1, round(dur * fps))
+        zoom = ANIMATIC_MOVES[move].format(frames=frames)
+        label = f"Shot {i + 1} · {dur:.1f}s"
+        lt = job / f"label_{i:02d}.txt"
+        lt.write_text(label)
+        seg = job / f"seg_{i:03d}.mp4"
+        fs = max(16, height // 24)
+        vf = (f"scale={pre_w}:{pre_h}:force_original_aspect_ratio=increase,"
+              f"crop={pre_w}:{pre_h},"
+              f"zoompan={zoom}:d={frames}:s={width}x{height}:fps={fps},"
+              f"drawtext=fontfile={font}:textfile={to_container(lt)}:fontsize={fs}:"
+              f"fontcolor=white:borderw=2:bordercolor=black:x=24:y=24")
+        run_ffmpeg(["-y", "-i", to_container_any(img), "-vf", vf,
+                    "-frames:v", str(frames), "-c:v", "libx264", "-crf", "18",
+                    "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", str(fps),
+                    to_container(seg)], timeout=900)
+        segs.append(seg)
+        total_s += dur
+    # concat (identical-encode segments -> demuxer + stream copy)
+    lst = job / "concat.txt"
+    lst.write_text("".join(f"file '{to_container(s)}'\n" for s in segs))
+    out = job / f"mp_{jid}_00001.mp4"
+    cmd = ["-y", "-f", "concat", "-safe", "0", "-i", to_container(lst)]
+    audio = payload.get("audio")
+    if audio:
+        ap = _resolve_src(audio)
+        cmd += ["-i", to_container_any(ap), "-c:a", "aac", "-b:a", "192k", "-shortest"]
+    cmd += ["-c:v", "copy", to_container(out)]
+    run_ffmpeg(cmd, timeout=900)
+    return {"video": str(out), "shots": len(segs),
+            "duration_s": round(total_s, 3), "width": width, "height": height, "fps": fps}
+
+
+def flow_extract_frame(payload: dict, jid: str):
+    """Films B2: extract frame(s) from a video (ffmpeg only). Exactly one of:
+    `frame` (int index), `time` (seconds), `positions` (list of
+    'first'/'middle'/'last'), or `n` (int -> n frames evenly spaced across the
+    duration). Returns PNG path(s). Used for frame-chaining (last clean frame
+    -> next shot's start) and QC."""
+    src = _resolve_src(payload["source"])
+    job = JOB_DIR / jid
+    frame = payload.get("frame")
+    t = payload.get("time")
+    positions = payload.get("positions")
+    n = payload.get("n")
+    if sum(x is not None for x in (frame, t, positions, n)) != 1:
+        raise ValueError("provide exactly one of: frame (int), time (s), "
+                         "positions (list), n (int even-spacing)")
+    dur = _probe_summary(src)["duration_s"] or 0.0
+    if not dur:
+        raise ValueError("source has no video duration")
+    outs = []
+    if frame is not None:
+        fi = int(frame)
+        out = job / f"frame_{fi:05d}.png"
+        run_ffmpeg(["-y", "-i", to_container_any(src), "-vf", f"select=eq(n\\,{fi})",
+                    "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+        outs.append(out)
+    elif t is not None:
+        ts = float(t)
+        out = job / f"frame_t{ts:08.3f}.png"
+        run_ffmpeg(["-y", "-ss", f"{ts:.3f}", "-i", to_container_any(src),
+                    "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+        outs.append(out)
+    else:
+        # positions: list of 'first'/'middle'/'last', or n for even spacing
+        if positions is not None:
+            pts = []
+            for p in positions:
+                p = str(p).strip().lower()
+                if p == "first":
+                    pts.append(0.0)
+                elif p == "middle":
+                    pts.append(dur / 2.0)
+                elif p == "last":
+                    pts.append(max(0.0, dur - 0.04))
+                else:
+                    raise ValueError(f"positions: unknown '{p}' (first/middle/last)")
+        else:
+            # n: even spacing — n frames across the duration (inclusive ends)
+            n = max(2, int(n))
+            pts = [dur * k / (n - 1) for k in range(n)]
+            pts[-1] = max(0.0, dur - 0.04)
+        for k, ts in enumerate(pts):
+            out = job / f"frame_{k:02d}_{ts:08.3f}.png"
+            run_ffmpeg(["-y", "-ss", f"{ts:.3f}", "-i", to_container_any(src),
+                        "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+            outs.append(out)
+    return {"frames": [str(o) for o in outs], "count": len(outs)}
 
 
 def flow_assemble(payload: dict, jid: str):
@@ -1563,8 +1721,14 @@ def flow_assemble(payload: dict, jid: str):
     concat_list_host.write_text("".join(f"file '{n}'\n" for n in norm))
     video_only_host = JOB_DIR / jid / "video_only.mp4"
     video_only = to_container(video_only_host)
-    run_ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18", video_only])
+    # Films B2: optional grade (3D LUT + temporal grain) applied to the final
+    # concat in the same re-encode pass (no extra generation pass).
+    grade = _grade_filter(payload)
+    concat_cmd = ["-y", "-f", "concat", "-safe", "0", "-i", concat_list]
+    if grade:
+        concat_cmd += ["-vf", grade]
+    concat_cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "18", video_only]
+    run_ffmpeg(concat_cmd, timeout=1800)
 
     _progress("finalize", n_shots, "finalize")
     vo_start = float(payload.get("vo_start", 0.0) or 0.0)
@@ -1645,6 +1809,8 @@ FLOW_MAP = {
     "trim": flow_trim,
     "freeze": flow_freeze,
     "caption": flow_caption,
+    "animatic": flow_animatic,
+    "extract_frame": flow_extract_frame,
     "transcribe": flow_transcribe,
 }
 
@@ -1687,7 +1853,8 @@ def health():
         },
         # M3: feature detection for clients.
         "features": ["assemble-duration-hold", "job-kill", "queue-summary",
-                     "job-progress", "projects", "storyboard-pages"],
+                     "job-progress", "projects", "storyboard-pages",
+                     "animatic", "extract-frame", "assemble-grade"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -2017,6 +2184,7 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
                     frames: int = Form(None), fps: float = Form(None),
                     seed: int = Form(42), steps: int = Form(8),
                     strength: float = Form(0.7), model: str = Form(None),
+                    end_keyframe: UploadFile = File(None),
                     project: str = Form(None), shot_id: str = Form(None),
                     user: str = Form(None), client: str = Form(None)):
     # model: 'ltxv2b' (fast, ~8 s) | 'wan14b' (Wan 2.2 14B quality, ~10 min,
@@ -2026,10 +2194,14 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
     # steps/strength are LTXV-only (Wan sampling is fixed: 20+20 steps, cfg 5).
     # project/shot_id (Films B1): optional — register the finished take in the
     # project's takes.json + production/clips/. Absent = legacy behavior.
+    # end_keyframe (Films B2): optional second keyframe -> FLF2V (wan14b only);
+    # the clip interpolates from `file` to `end_keyframe` (exact end-pose).
     try:
         m = wf.resolve_shot_model({"model": model})
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if end_keyframe is not None and m == "ltxv2b":
+        raise HTTPException(400, "end_keyframe is wan14b-only (FLF2V); omit it for ltxv2b")
     if project and not projects.exists(project):
         raise HTTPException(400, f"project not found: {project}")
     d = wf.SHOT_MODEL_DEFAULTS[m]
@@ -2042,16 +2214,26 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
             raise HTTPException(400, f"wan14b supports {sorted(wf.WAN_RESOLUTIONS)} only")
         if (f - 1) % 4 != 0:
             raise HTTPException(400, "wan14b frames must be 4k+1 (e.g. 49, 81, 121)")
+    # collision-free name for the end keyframe (the start keyframe keeps its
+    # own filename; both land in ComfyUI input/ under distinct names).
+    end_name = None
+    if end_keyframe is not None:
+        end_name = "end_" + Path(end_keyframe.filename or "end_keyframe.png").name
     with job_slot():
         payload = {"prompt": prompt, "model": m, "width": w, "height": h,
                    "frames": f, "fps": r, "seed": seed,
                    "steps": steps, "strength": strength,
+                   "end_keyframe_name": end_name,
                    "project": project, "shot_id": shot_id,
                    "user": user, "client": client}
         jid = new_job("shots", payload)
         try:
             await save_upload(jid, file)
             copy_to_comfy_input(jid, file.filename)
+            if end_name:
+                data = await end_keyframe.read()
+                (JOB_DIR / jid / "input" / end_name).write_bytes(data)
+                copy_to_comfy_input(jid, end_name)
         except Exception as e:  # M4: failed submission = error, not zombie "queued"
             set_status(jid, "error", error=f"submission failed: {type(e).__name__}: {e}")
             raise
@@ -2205,6 +2387,20 @@ async def api_upscale(file: UploadFile = File(...), pipeline: str = Form("b"),
 
 @app.post("/assemble")
 async def api_assemble(payload: dict):
+    # Films B2: validate the optional grade (lut/grain) up front so a bad value
+    # is a clean 400 at submit, not a job error. Absent = today's behavior.
+    if payload.get("lut"):
+        try:
+            resolve_lut(str(payload["lut"]))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    if payload.get("grain") is not None:
+        try:
+            g = float(payload["grain"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "grain must be a number in [0.0, 1.0]")
+        if not (0.0 <= g <= 1.0):
+            raise HTTPException(400, "grain must be in [0.0, 1.0]")
     with job_slot():
         jid = new_job("assemble", payload)
         enqueue_job(jid, "assemble", payload, {})
@@ -2233,6 +2429,44 @@ async def api_caption(payload: dict):
     with job_slot():
         jid = new_job("caption", payload)
         enqueue_job(jid, "caption", payload, {})
+    return {"job_id": jid}
+
+
+# ------------------------------------------------------------------ Films B2: production tools
+@app.post("/animatic")
+async def api_animatic(payload: dict):
+    # Validate the manifest up front so a bad move / shape is a clean 400 at
+    # submit, not a job error (the flow re-validates as a backstop).
+    manifest = payload.get("shots") or payload.get("manifest")
+    if not isinstance(manifest, list) or not manifest:
+        raise HTTPException(400, "shots: non-empty list of {image, duration, move} required")
+    for i, shot in enumerate(manifest):
+        if not isinstance(shot, dict) or not shot.get("image"):
+            raise HTTPException(400, f"shots[{i}]: {{image, duration, move}} object required")
+        move = str(shot.get("move", "static")).strip().lower()
+        if move not in ANIMATIC_MOVES:
+            raise HTTPException(400, f"shots[{i}].move: unknown move '{move}' "
+                                     f"(valid: {', '.join(ANIMATIC_MOVES)})")
+    with job_slot():
+        jid = new_job("animatic", payload)
+        enqueue_job(jid, "animatic", payload, {})
+    return {"job_id": jid}
+
+
+@app.post("/extract_frame")
+async def api_extract_frame(payload: dict):
+    if "source" not in payload:
+        raise HTTPException(400, "source is required")
+    frame = payload.get("frame")
+    t = payload.get("time")
+    positions = payload.get("positions")
+    n = payload.get("n")
+    if sum(x is not None for x in (frame, t, positions, n)) != 1:
+        raise HTTPException(400, "provide exactly one of: frame (int), time (s), "
+                                 "positions (list), n (int even-spacing)")
+    with job_slot():
+        jid = new_job("extract_frame", payload)
+        enqueue_job(jid, "extract_frame", payload, {})
     return {"job_id": jid}
 
 

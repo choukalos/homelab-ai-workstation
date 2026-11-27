@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 coding** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 next** (long task running 2026-11-27)
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -29,7 +29,20 @@
 >       subagent verified empirically (identity test maxdiff=1, channel-swap test exact).
 >       Delivery: Dockerfile `COPY luts/ /app/luts/` + `stage_luts()` at startup copies to
 >       RUN_DIR/luts/ (comfyui_backend sees /comfy/mnt/luts/); `resolve_lut()` helper added.
-> - [ ] B2: FLF2V end_keyframe + /animatic + /extract_frame + /assemble LUT/grain — **coding now**
+> - [x] **B2 DONE (2026-11-27 19:03)**: FLF2V `end_keyframe` (wan14b only, official
+>       `WanFirstLastFrameToVideo` shift 8.0/cfg 4.0) + `/animatic` (zoompan camera moves +
+>       labels, ffmpeg-only) + `/extract_frame` (frame/time/positions/n) + `/assemble`
+>       `lut`/`grain` (LUT+grain in the concat re-encode; bundled LUTs staged at startup).
+>       **CPU QA 24/24 PASS** (`qa_films_b2.py`, log `logs/qa_b2.log`). **FLF2V GPU QA PASS**
+>       (`qa_films_b2_flf2v.py` + `_part2.py`, logs `logs/qa_b2_flf2v*.log`): 480p FLF2V done
+>       (peak 23066 MiB total on card), end-pose landing verified (last frame MSE 43.6 to END
+>       vs 29244.8 to START; first≈start, last≈end visually), i2v 480p same-seed done
+>       (peak 23028 MiB), **720p FLF2V done (peak 23349 MiB) → 720p ADMITTED, not 480p-restricted**.
+>       Metering/ledger unchanged (FLF2V row = `flow=shots, model=wan2.2-14b-i2v-gguf-q8,
+>       cost>0`). Submit-time validation: bad move / exactly-one-of / bad lut / grain>1 → 400.
+>       **Caveat:** Ollama copywriter (gemma4:31b) co-resident on GPU 1 during QA (14 GB) →
+>       early CPU offload slowed renders (480p FLF2V 17.8 min vs i2v ~10 min) + contaminated
+>       the VRAM baseline (absolute peaks include Ollama's share; ComfyUI's own footprint ≈ i2v).
 > - [ ] B3: /qc_montage
 > - [ ] B5: /montage
 > - [ ] B4: lip-sync Phase-0 VRAM gate (last; DEFERRED-with-measurement if gate fails)
