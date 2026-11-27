@@ -20,6 +20,9 @@ key** at launch time. Every LLM request from that session — coordinator and
 worker subagents — carries the caller's key. Jobs launched without a key fail
 loudly (`No API key found`) instead of silently billing chuck's key.
 
+**Thor-side work:** `docs/thor_key_passthrough_handoff.md` (T1 transport,
+T2 key hygiene, T3 caller intake, T4 verification).
+
 ## 2. Flow
 
 ```
