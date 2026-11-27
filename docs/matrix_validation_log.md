@@ -230,3 +230,60 @@ pipeline since the MCP client aborts long tool calls (see Findings).
   thor** — spec: `docs/thor_media_mcp_handoff.md`. Client-side orchestration
   skill (state file, retry wrapper, resume protocol) is **pending on the
   Mac** — spec: `docs/media_film_skill_spec.md`.
+
+# Run: 2026-11-27 — Films B1: NAS-durable film project store + storyboard approval gate
+
+> Plan: `media-pipeline/films_plan_matrix.md` (batch B1 of the films plan).
+> QA: `media-pipeline/qa_films_b1.py` (live API + on-disk + NAS assertions).
+> Log: `/home/chuck/workspace/films-plan/logs/qa_b1.log`.
+> Container `media_pipeline` rebuilt via `model-manager rebuild media-pipeline`;
+> `/health` ok after every rebuild. **No other container touched**
+> (comfyui_backend / qwen38 / ollama untouched; only `docker exec` ffmpeg).
+
+## Results — 35/35 checks passing
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/health` ok + `features` includes `projects` | ✅ |
+| 2 | `POST /projects` create (slug/title/logline) → 200, dir on disk, layout dirs (`bible/`, `storyboard/`, `production/clips/`) | ✅ |
+| 3 | Duplicate slug → 409; bad slug → 400 | ✅ |
+| 4 | Asset upload (char sheet + env plate) into `bible/` (multipart, project-relative path) | ✅ |
+| 5 | Path traversal (`../`) → 400 | ✅ |
+| 6 | Shotplan save (valid two-tier plan) → 200 + motion-verb `schema_warnings` | ✅ |
+| 7 | Invalid shotplan → **400 with `validation` field list** (bad enum; frames not 4k+1; action_impact >49f; duplicate shot_id) — never 500 | ✅ (all four) |
+| 8 | Re-save good shotplan after invalid attempts (state not clobbered) | ✅ |
+| 9 | 6 keyframes uploaded to `storyboard/keyframes/` | ✅ |
+| 10 | `POST /storyboard_pages` → 2 grid pages; dims verified (1920×748 = 3×2 cells, 640×388 = 1 cell + footer bar) | ✅ |
+| 11 | `POST /approve` (storyboard) → 200; GET shows `storyboard_approved` + approval ts; bogus `what` → 400 | ✅ |
+| 12 | NAS sync: files present on `/mnt/lego/media_projects/<slug>/`, `nas_sync` state ok | ✅ |
+| 13 | **NAS failure path** (`MEDIA_NAS_ROOT=/tmp/…` override + restart — no sudo for a live unmount): mutation succeeds, `nas_sync.pending=true`, forced sync → `ok:false, pending:true, reason:"nas not mounted"`; restore env + restart → sync recovers `ok:true, pending:false` | ✅ |
+| 14 | `df --output=source /mnt/lego` inside the container shows a `//` CIFS source (mount probe basis) | ✅ |
+| 15 | **Regression:** `/images` job submit → done (existing flow unaffected) | ✅ |
+
+## Bugs found & fixed during B1 QA
+
+1. `import projects` ran **before** `load_dotenv()` → `MEDIA_NAS_ROOT`/`MEDIA_PROJECTS_ROOT`
+   env overrides never applied (projects reads config at import time). Fixed: import moved
+   after `load_dotenv()` (same pattern as `metering`).
+2. `nas_sync(force=True)` **skipped the mount probe** → a forced sync while the share was
+   unmounted would rsync into a plain local dir (silent wrong-location write). Fixed: the
+   probe ALWAYS runs; `force` only means "sync now".
+3. `validate_shotplan` raised `AttributeError` (→ 500) on malformed shapes (beat/micro_shot
+   not a dict). Fixed: defensive `isinstance` checks → 400 with field list.
+4. Storyboard grid: `hstack`/`vstack` require ≥2 inputs → single-cell rows use a `null`
+   filter passthrough; single-page footer math fixed.
+5. ffmpeg `drawtext` `y=ih-24` invalid → `y=h-24` (main output ref).
+6. Permission mismatch: service runs as **root**, ffmpeg as **comfy (uid 1024)** → project
+   dirs + asset-upload parents `chmod 777` so both can write.
+7. `-frames:v 1` required for the image2 muxer with lavfi inputs.
+
+## Notes
+
+- **NAS target decision:** `/mnt/lego/media-projects/` → actually `/mnt/lego/media_projects/`
+  (CIFS `//lego.local/backup`, verified writable). Env-overridable via `MEDIA_NAS_ROOT`.
+- **No sudo on matrix** → the B1 unmount QA test is implemented as a `MEDIA_NAS_ROOT`
+  env-override + restart (exercises the same mount-probe → pending → retry path end-to-end).
+- LUTs (B2) delivered by a `pi -p` subagent: **ffmpeg 6.1 `lut3d` reads interleaved RGB
+  triples (Iridas), NOT the 3-section R/G/B layout** — verified empirically (identity test
+  maxdiff=1; channel-swap test exact). 3× 33³ `.cube` starting points in
+  `media-pipeline/luts/` + README.

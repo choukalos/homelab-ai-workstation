@@ -47,6 +47,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import re
 import os
 import shutil
@@ -121,9 +122,70 @@ def load_dotenv(path: str | None = None) -> None:
 
 load_dotenv()  # must run before MAX_CONCURRENT_JOBS is read below
 
+# projects reads MEDIA_PROJECTS_ROOT / MEDIA_NAS_ROOT at import time, so it
+# must be imported AFTER load_dotenv() (same reason as metering below).
+import projects  # noqa: E402
+
 # Metering is imported AFTER load_dotenv() so the MEDIA_* env vars from .env
 # are visible to it (it reads config at import time).
 import metering  # noqa: E402
+
+
+# ------------------------------------------------------------------ LUT staging
+# Bundled starting-point LUTs ship in the image at /app/luts/ (33^3 Iridas .cube).
+# comfyui_backend's ffmpeg (where /assemble runs lut3d) only sees /comfy/mnt
+# (= RUN_DIR) and /basedir, so we stage a copy into RUN_DIR/luts/ at startup.
+# Idempotent: only copies when missing or stale (by mtime), so a user can drop
+# their own .cube into RUN_DIR/luts/ and it won't be clobbered on restart.
+BUNDLED_LUTS = Path("/app/luts")
+STAGED_LUTS = RUN_DIR / "luts"
+
+
+def stage_luts() -> list[str]:
+    """Copy bundled .cube LUTs into RUN_DIR/luts/ (visible to comfyui_backend
+    as /comfy/mnt/luts/<name>.cube). Returns the staged filenames."""
+    staged: list[str] = []
+    if not BUNDLED_LUTS.is_dir():
+        return staged
+    try:
+        STAGED_LUTS.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return staged
+    for cube in sorted(BUNDLED_LUTS.glob("*.cube")):
+        dest = STAGED_LUTS / cube.name
+        try:
+            if dest.exists() and dest.stat().st_mtime >= cube.stat().st_mtime:
+                continue  # fresh enough; don't clobber a user's same-named file
+            dest.write_bytes(cube.read_bytes())
+            staged.append(cube.name)
+        except OSError as e:
+            logger.warning("LUT staging failed for %s: %s", cube.name, e)
+    if staged:
+        logger.info("staged %d bundled LUT(s) into %s: %s",
+                    len(staged), STAGED_LUTS, ", ".join(staged))
+    return staged
+
+
+def resolve_lut(lut: str) -> Path:
+    """Resolve a /assemble lut= value to a file path readable by comfyui_backend.
+    Accepts a bundled name ('cinematic_teal_amber'), a bare filename with .cube,
+    or an absolute path. Raises ValueError if it can't be resolved to an existing
+    .cube file."""
+    lut = (lut or "").strip()
+    if not lut:
+        raise ValueError("lut is empty")
+    candidates = []
+    p = Path(lut)
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        # name without extension -> bundled staged LUT
+        candidates.append(STAGED_LUTS / (lut if lut.endswith(".cube") else lut + ".cube"))
+        candidates.append(BUNDLED_LUTS / (lut if lut.endswith(".cube") else lut + ".cube"))
+    for c in candidates:
+        if c.is_file() and c.suffix == ".cube":
+            return c
+    raise ValueError(f"lut not found (looked for: {', '.join(str(c) for c in candidates)})")
 
 # ------------------------------------------------------------------ job queue
 # Bounded FIFO queue + fixed worker pool. At most MAX_CONCURRENT_JOBS media jobs
@@ -369,6 +431,11 @@ def _retention_loop() -> None:
             _retention_sweep()
         except Exception as e:  # noqa: BLE001 - keep the sweeper alive
             logger.warning("retention sweep failed: %s", e)
+        try:
+            # Films B1: retry pending NAS project mirrors on the same cadence.
+            projects.nas_pending_sync()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("NAS pending sync failed: %s", e)
         time.sleep(RETENTION_SWEEP_INTERVAL_S)
 
 
@@ -689,13 +756,25 @@ def flow_shots(payload: dict, jid: str, keyframe_name: str):
     d = wf.SHOT_MODEL_DEFAULTS[model]
     with GPU_LOCK:
         if model == "wan14b":
-            res = cc.comfy_run(wf.wan22_i2v(keyframe_name, payload["prompt"],
-                                            int(payload.get("width") or d["width"]),
-                                            int(payload.get("height") or d["height"]),
-                                            int(payload.get("frames") or d["frames"]),
-                                            float(payload.get("fps") or d["fps"]),
-                                            int(payload.get("seed", 42)),
-                                            prefix=prefix), timeout=7200)
+            if payload.get("end_keyframe_name"):
+                # Films B2: first-last-frame (FLF2V) — official Comfy-Org
+                # video_wan2_2_14B_flf2v base-mode graph.
+                res = cc.comfy_run(wf.wan22_flf2v(keyframe_name, payload["end_keyframe_name"],
+                                                  payload["prompt"],
+                                                  int(payload.get("width") or d["width"]),
+                                                  int(payload.get("height") or d["height"]),
+                                                  int(payload.get("frames") or d["frames"]),
+                                                  float(payload.get("fps") or d["fps"]),
+                                                  int(payload.get("seed", 42)),
+                                                  prefix=prefix), timeout=7200)
+            else:
+                res = cc.comfy_run(wf.wan22_i2v(keyframe_name, payload["prompt"],
+                                                int(payload.get("width") or d["width"]),
+                                                int(payload.get("height") or d["height"]),
+                                                int(payload.get("frames") or d["frames"]),
+                                                float(payload.get("fps") or d["fps"]),
+                                                int(payload.get("seed", 42)),
+                                                prefix=prefix), timeout=7200)
         else:
             res = cc.comfy_run(wf.ltxv_i2v(keyframe_name, payload["prompt"],
                                            int(payload.get("width") or d["width"]),
@@ -708,9 +787,24 @@ def flow_shots(payload: dict, jid: str, keyframe_name: str):
     paths = copy_comfy_outputs(jid, res["outputs"], prefix)
     if not paths:
         raise RuntimeError("no video output found")
-    return {"video": paths[0], "model": model,
-            "frames": int(payload.get("frames") or d["frames"]),
-            "fps": float(payload.get("fps") or d["fps"])}
+    result = {"video": paths[0], "model": model,
+              "frames": int(payload.get("frames") or d["frames"]),
+              "fps": float(payload.get("fps") or d["fps"]),
+              "end_keyframe": bool(payload.get("end_keyframe_name"))}
+    # Films B1: shots registered to a project land in takes.json +
+    # production/clips/ (bookkeeping only — a failure here must never fail a
+    # finished render).
+    proj = payload.get("project")
+    if proj:
+        try:
+            take = _project_register_shot(proj, payload.get("shot_id") or f"shot_{jid}",
+                                          payload, jid, paths[0])
+            result["project"] = proj
+            result["take"] = take
+        except Exception as e:  # noqa: BLE001
+            logger.warning("project take registration failed for %s/%s: %s",
+                           proj, payload.get("shot_id"), e)
+    return result
 
 
 # ------------------------------------------------------------------ TTS voices
@@ -1163,7 +1257,11 @@ def run_ffmpeg(args, timeout=1800):
     cmd = ["docker", "exec", "-u", "comfy", CONTAINER, "ffmpeg"] + [str(a) for a in args]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {r.stderr[-1500:]}")
+        # ffmpeg ends stderr with version/stream info, so the useful error is
+        # often earlier — include the first Error line plus the tail.
+        err_lines = [l for l in r.stderr.splitlines() if "Error" in l or "error" in l]
+        head = err_lines[0][:800] if err_lines else ""
+        raise RuntimeError(f"ffmpeg failed: {head} | tail: {r.stderr[-800:]}")
     return r
 
 
@@ -1589,7 +1687,7 @@ def health():
         },
         # M3: feature detection for clients.
         "features": ["assemble-duration-hold", "job-kill", "queue-summary",
-                     "job-progress"],
+                     "job-progress", "projects", "storyboard-pages"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -1919,16 +2017,21 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
                     frames: int = Form(None), fps: float = Form(None),
                     seed: int = Form(42), steps: int = Form(8),
                     strength: float = Form(0.7), model: str = Form(None),
+                    project: str = Form(None), shot_id: str = Form(None),
                     user: str = Form(None), client: str = Form(None)):
     # model: 'ltxv2b' (fast, ~8 s) | 'wan14b' (Wan 2.2 14B quality, ~10 min,
     # 480p only — 720p failed the VRAM gate). Validate up front so a bad name
     # is a clean 400, not a job error. Omitted dims/frames/fps -> model-native
     # defaults (ltxv2b: 768x512/97f/25fps; wan14b: 832x480/81f/16fps).
     # steps/strength are LTXV-only (Wan sampling is fixed: 20+20 steps, cfg 5).
+    # project/shot_id (Films B1): optional — register the finished take in the
+    # project's takes.json + production/clips/. Absent = legacy behavior.
     try:
         m = wf.resolve_shot_model({"model": model})
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if project and not projects.exists(project):
+        raise HTTPException(400, f"project not found: {project}")
     d = wf.SHOT_MODEL_DEFAULTS[m]
     w = int(width) if width is not None else d["width"]
     h = int(height) if height is not None else d["height"]
@@ -1943,6 +2046,7 @@ async def api_shots(file: UploadFile = File(...), prompt: str = Form(...),
         payload = {"prompt": prompt, "model": m, "width": w, "height": h,
                    "frames": f, "fps": r, "seed": seed,
                    "steps": steps, "strength": strength,
+                   "project": project, "shot_id": shot_id,
                    "user": user, "client": client}
         jid = new_job("shots", payload)
         try:
@@ -2229,8 +2333,256 @@ def api_dl(token: str):
     return FileResponse(p)
 
 
+# ------------------------------------------------------------------ Films B1: project store
+# The "project bible": one dir per film under RUN_DIR/media_projects (env
+# MEDIA_PROJECTS_ROOT), mirrored append-only to the NAS (projects.nas_sync).
+# media_projects/ is OUTSIDE media_jobs/ — the retention sweeper never touches
+# it (projects are durable by design; see the API doc).
+# All routes below are SYNC (fast CPU/ffmpeg ops, no job queue).
+
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+
+def _project_register_shot(slug: str, shot_id: str, payload: dict, jid: str,
+                            video_host: str) -> dict:
+    """Copy a finished shot clip into production/clips/<shot_id>_<take>.mp4
+    (takes are never overwritten) and append it to takes.json."""
+    root = projects.project_dir(slug)
+    tp = root / "takes.json"
+    takes = json.loads(tp.read_text()) if tp.is_file() else {}
+    n = len(takes.get(shot_id, [])) + 1
+    dest = root / "production" / "clips" / f"{shot_id}_{n:02d}.mp4"
+    shutil.copy2(video_host, dest)
+    entry = projects.register_take(slug, shot_id, {
+        "job_id": jid, "seed": payload.get("seed"), "prompt": payload.get("prompt"),
+        "model": payload.get("model"), "path": str(dest),
+        "source_job_path": str(video_host)})
+    return entry[shot_id][-1]
+
+
+def _render_storyboard_pages(slug: str, per_page: int, page_size: str) -> dict:
+    """Render labeled grid pages from the saved shotplan + existing keyframes
+    (ffmpeg-only, no GPU; missing keyframes -> placeholder cell). Deterministic
+    ordering = shotplan order. Output: storyboard/pages/page_NN.png."""
+    meta = projects.load(slug)
+    sp = projects.load_shotplan(slug)
+    shots = projects.micro_shots(sp)
+    if not shots:
+        raise ValueError("shotplan has no micro_shots")
+    pw, ph = (int(x) for x in page_size.lower().split("x"))
+    cols = math.ceil(math.sqrt(per_page))
+    n_pages = math.ceil(len(shots) / per_page)
+    root = projects.project_dir(slug)
+    caps_dir = projects.PROJECTS_ROOT / ".caps" / f"{slug}_{_ts()}"
+    caps_dir.mkdir(parents=True, exist_ok=True)
+    fs = max(12, int(ph * 0.06))
+    pages = []
+    try:
+        for pi in range(n_pages):
+            cells = shots[pi * per_page:(pi + 1) * per_page]
+            n_cells = len(cells)
+            rows_pg = math.ceil(n_cells / cols)
+            inputs: list[str] = []
+            fexprs: list[str] = []
+            n_in = 0
+            for ci, ms in enumerate(cells):
+                sid = str(ms.get("shot_id", f"cell_{ci}"))
+                kf = root / "storyboard" / "keyframes" / f"{sid}.png"
+                cap = (f"{sid} · {ms.get('shot_type', '?')} · "
+                       f"{ms.get('duration_frames', '?')}f · "
+                       f"{ms.get('animatic_move', '?')} · risk:{ms.get('risk_level', '?')}")
+                cap_f = caps_dir / f"cap_{pi}_{ci}.txt"
+                cap_f.write_text(cap)
+                idx = n_in
+                n_in += 1
+                if kf.is_file():
+                    inputs += ["-i", to_container(str(kf))]
+                else:
+                    inputs += ["-f", "lavfi", "-t", "1",
+                               "-i", f"color=c=0x2b2b2b:s={pw}x{ph}"]
+                f = (f"[{idx}:v]scale={pw}:{ph}:force_original_aspect_ratio=decrease,"
+                     f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:color=black")
+                if not kf.is_file():
+                    nk_f = caps_dir / f"nk_{pi}_{ci}.txt"
+                    nk_f.write_text("no keyframe")
+                    f += (f",drawtext=fontfile={FONT_BOLD}:textfile={to_container(nk_f)}:"
+                          f"fontsize={int(fs * 1.4)}:fontcolor=0x999999:"
+                          f"x=(w-text_w)/2:y=(h-text_h)/2")
+                f += (f",drawtext=fontfile={FONT_BOLD}:textfile={to_container(cap_f)}:"
+                      f"fontsize={fs}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6:"
+                      f"x=(w-text_w)/2:y=h-th-8[c{ci}]")
+                fexprs.append(f)
+            # grid: rows of hstack, then vstack (each needs >=2 inputs;
+            # single-cell rows / single-row pages pass the label through)
+            row_exprs = []
+            for ri in range(rows_pg):
+                row_cells = list(range(ri * cols, min((ri + 1) * cols, n_cells)))
+                if len(row_cells) == 1:
+                    row_exprs.append(f"[c{row_cells[0]}]null[r{ri}]")
+                else:
+                    row_exprs.append(
+                        f"{''.join(f'[c{c}]' for c in row_cells)}"
+                        f"hstack=inputs={len(row_cells)}[r{ri}]")
+            fexprs += row_exprs
+            if rows_pg == 1:
+                fexprs.append("[r0]null[g]")
+            else:
+                fexprs.append(f"{''.join(f'[r{r}]' for r in range(rows_pg))}vstack=inputs={rows_pg}[g]")
+            footer_f = caps_dir / f"footer_{pi}.txt"
+            footer_f.write_text(f"{meta.get('title', slug)} — page {pi + 1}/{n_pages}")
+            fexprs.append(
+                f"[g]pad=iw:ih+28:0:0:color=black,"
+                f"drawtext=fontfile={FONT_BOLD}:textfile={to_container(footer_f)}:"
+                f"fontsize=18:fontcolor=white:x=(w-text_w)/2:y=h-24[out]")
+            out_host = root / "storyboard" / "pages" / f"page_{pi + 1:02d}.png"
+            run_ffmpeg(["-y", *inputs, "-filter_complex", ";".join(fexprs),
+                        "-map", "[out]", "-frames:v", "1", str(to_container(out_host))], timeout=900)
+            pages.append(str(out_host))
+        return {"pages": pages, "n_shots": len(shots), "n_pages": n_pages,
+                "page_size": f"{pw}x{ph}", "per_page": per_page}
+    finally:
+        shutil.rmtree(caps_dir, ignore_errors=True)
+
+
+@app.post("/projects")
+def api_projects_create(payload: dict):
+    """Create a film project (the "project bible" dir + project.json)."""
+    slug = str(payload.get("slug", "")).strip()
+    title = str(payload.get("title", "")).strip() or slug
+    if not projects.SLUG_RE.match(slug):
+        raise HTTPException(400, "slug must match [a-z0-9_] (1-64 chars)")
+    try:
+        meta = projects.create(slug, title)
+    except FileExistsError:
+        raise HTTPException(409, f"project exists: {slug}")
+    projects.nas_sync(slug)  # initial mirror (best-effort; sets pending on failure)
+    return {"slug": slug, "project": str(projects.project_dir(slug)),
+            "status": meta["status"], "nas_sync": meta["nas_sync"]}
+
+
+@app.get("/projects")
+def api_projects_list():
+    """List projects: slug + status + updated + NAS pending flag."""
+    return {"projects": projects.list_projects(),
+            "root": str(projects.PROJECTS_ROOT),
+            "nas_root": str(projects.NAS_ROOT)}
+
+
+@app.get("/projects/{slug}")
+def api_projects_get(slug: str):
+    """Manifest (project.json) + tree summary + takes + nas_sync state."""
+    try:
+        meta = projects.load(slug)
+    except FileNotFoundError:
+        raise HTTPException(404, f"project not found: {slug}")
+    root = projects.project_dir(slug)
+    tree = {}
+    for top in ("bible", "storyboard", "production"):
+        d = root / top
+        n = sum(1 for p in d.rglob("*") if p.is_file()) if d.is_dir() else 0
+        tree[top] = n
+    tp = root / "takes.json"
+    takes = json.loads(tp.read_text()) if tp.is_file() else {}
+    return {**meta, "tree": tree, "takes": takes}
+
+
+@app.post("/projects/{slug}/assets")
+async def api_projects_assets(slug: str, path: str = Form(...),
+                              file: UploadFile = File(...)):
+    """Register an asset (char sheet / env plate / keyframe / voice ref).
+    `path` = project-relative destination (e.g. bible/characters/hero/turnaround.png
+    or storyboard/keyframes/s01.png)."""
+    if not projects.exists(slug):
+        raise HTTPException(404, f"project not found: {slug}")
+    rel = str(path).strip().lstrip("/")
+    if not rel or ".." in Path(rel).parts:
+        raise HTTPException(400, "path must be project-relative (no '..')")
+    proj_root = projects.project_dir(slug).resolve()
+    dest = (proj_root / rel).resolve()
+    if not str(dest).startswith(str(proj_root) + "/"):
+        raise HTTPException(400, "path must stay inside the project dir")
+    data = await file.read()
+    cap = UPLOAD_MAX_MB * 1024 * 1024
+    if len(data) > cap:
+        raise HTTPException(413, f"file exceeds {UPLOAD_MAX_MB}MB cap")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    projects._open_up(dest.parent)  # comfy uid must traverse/write project dirs
+    dest.write_bytes(data)
+    projects.register_asset(slug, rel, len(data))
+    return {"path": str(dest), "size": len(data)}
+
+
+@app.post("/projects/{slug}/shotplan")
+def api_projects_shotplan_save(slug: str, payload: dict):
+    """Save/replace the two-tier shotplan (validated; 400 with the exact field
+    list on failure). Accepts {shotplan: {...}} or a bare shotplan object."""
+    if not projects.exists(slug):
+        raise HTTPException(404, f"project not found: {slug}")
+    sp = payload.get("shotplan") if isinstance(payload, dict) and "shotplan" in payload else payload
+    try:
+        return projects.save_shotplan(slug, sp)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/projects/{slug}/shotplan")
+def api_projects_shotplan_get(slug: str):
+    """Fetch the saved shotplan (incl. schema_warnings + saved ts)."""
+    try:
+        return projects.load_shotplan(slug)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no shotplan saved for project {slug}")
+
+
+@app.post("/projects/{slug}/storyboard_pages")
+def api_projects_storyboard_pages(slug: str, payload: dict):
+    """Render labeled grid pages from the shotplan + existing keyframes
+    (ffmpeg-only; missing keyframes -> placeholder cell). Sync, not a job."""
+    if not projects.exists(slug):
+        raise HTTPException(404, f"project not found: {slug}")
+    try:
+        per_page = int(payload.get("per_page", 6))
+        page_size = str(payload.get("page_size", "640x360"))
+        if not (1 <= per_page <= 24):
+            raise ValueError("per_page must be 1..24")
+        m = re.match(r"^(\d{2,4})x(\d{2,4})$", page_size.lower())
+        if not m or not (64 <= int(m.group(1)) <= 2048 and 64 <= int(m.group(2)) <= 2048):
+            raise ValueError("page_size must be WxH (64..2048 each), e.g. 640x360")
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    try:
+        return _render_storyboard_pages(slug, per_page, page_size)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/projects/{slug}/approve")
+def api_projects_approve(slug: str, payload: dict):
+    """Set the storyboard approval gate (status -> storyboard_approved;
+    idempotent). The anti-suck-atude gate: no draft video before this."""
+    if not projects.exists(slug):
+        raise HTTPException(404, f"project not found: {slug}")
+    what = str(payload.get("what", "")).strip()
+    if not what:
+        raise HTTPException(400, "what is required (v1: 'storyboard')")
+    try:
+        meta = projects.approve(slug, what, payload.get("note"), payload.get("by"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"slug": slug, "status": meta["status"], "approval": meta["approval"]}
+
+
+@app.post("/projects/{slug}/sync")
+def api_projects_sync(slug: str):
+    """Force the NAS rsync now; returns synced file count + ok."""
+    if not projects.exists(slug):
+        raise HTTPException(404, f"project not found: {slug}")
+    return projects.nas_sync(slug, force=True)
+
+
 if __name__ == "__main__":
     _seed_voices_manifest()  # idempotent; creates the library manifest on first boot
+    stage_luts()  # idempotent; stages bundled LUTs into RUN_DIR/luts/ (Films B2)
     # Start the media_jobs retention sweeper (hourly; see MEDIA_JOB_RETENTION_DAYS).
     threading.Thread(target=_retention_loop, name="retention", daemon=True).start()
     # Bind host is configurable so it can run on the host loopback (127.0.0.1)

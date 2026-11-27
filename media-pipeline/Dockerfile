@@ -21,12 +21,30 @@ RUN apt-get update \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli \
+    # Films B1: rsync for the append-only NAS project mirror (df ships with
+    # slim's coreutils/util-linux; used for the CIFS mount probe).
+    && apt-get install -y --no-install-recommends rsync \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py workflows.py comfy_client.py metering.py .
+COPY server.py workflows.py comfy_client.py metering.py projects.py .
+
+# Films B2: bundled starting-point LUTs (33^3 Iridas .cube). Staged into
+# RUN_DIR/luts/ at startup so comfyui_backend's ffmpeg lut3d can read them
+# at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
+COPY luts/ /app/luts/
+
+# Films B2: bundled starting-point LUTs (33^3 Iridas .cube). Staged into
+# RUN_DIR/luts/ at startup so comfyui_backend's ffmpeg lut3d can read them
+# at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
+COPY luts/ /app/luts/
+
+# Films B2: bundled starting-point LUTs (33^3 Iridas .cube). Staged into
+# RUN_DIR/luts/ at startup so comfyui_backend's ffmpeg lut3d can read them
+# at /comfy/mnt/luts/<name>.cube. They are STARTING POINTS, not masters.
+COPY luts/ /app/luts/
 
 # Default bind 0.0.0.0 so the remote media-mcp client can reach <gpu-host>:8189 (LAN-only).
 ENV PIPELINE_HOST=0.0.0.0 \

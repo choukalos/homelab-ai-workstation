@@ -81,4 +81,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/chuck/data/comfyui/run:/home/chuck/data/comfyui/run
       - /home/chuck/data/comfyui/basedir:/home/chuck/data/comfyui/basedir
+      # Films B1 (2026-11-27): NAS project mirror target. The service probes
+      # the CIFS share via `df --output=source` before every rsync (a dropped
+      # automount leaves a plain local dir — writes there would be wrong), so
+      # an unmounted share degrades to nas_sync.pending, never a bad write.
+      - /mnt/lego:/mnt/lego
       - /home/chuck/homelab/.env:/home/chuck/homelab/.env:ro
