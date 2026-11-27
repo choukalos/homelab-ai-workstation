@@ -1581,12 +1581,16 @@ def flow_extract_frame(payload: dict, jid: str):
         out = job / f"frame_{fi:05d}.png"
         run_ffmpeg(["-y", "-i", to_container_any(src), "-vf", f"select=eq(n\\,{fi})",
                     "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+        if not out.exists():
+            raise ValueError(f"frame {fi} not found in source (out of range?)")
         outs.append(out)
     elif t is not None:
         ts = float(t)
         out = job / f"frame_t{ts:08.3f}.png"
         run_ffmpeg(["-y", "-ss", f"{ts:.3f}", "-i", to_container_any(src),
                     "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+        if not out.exists():
+            raise ValueError(f"no frame at t={ts:.3f} (past the last decodable frame?)")
         outs.append(out)
     else:
         # positions: list of 'first'/'middle'/'last', or n for even spacing
@@ -1599,18 +1603,23 @@ def flow_extract_frame(payload: dict, jid: str):
                 elif p == "middle":
                     pts.append(dur / 2.0)
                 elif p == "last":
-                    pts.append(max(0.0, dur - 0.04))
+                    # clamp 100 ms before the end (same fix as B3's _even_frame_times):
+                    # -ss past the last decodable frame yields no frame
+                    pts.append(max(0.0, dur - 0.1))
                 else:
                     raise ValueError(f"positions: unknown '{p}' (first/middle/last)")
         else:
-            # n: even spacing — n frames across the duration (inclusive ends)
+            # n: even spacing — n frames across the duration (inclusive ends);
+            # last clamped 100 ms before the end (B3 fix — see _even_frame_times)
             n = max(2, int(n))
             pts = [dur * k / (n - 1) for k in range(n)]
-            pts[-1] = max(0.0, dur - 0.04)
+            pts[-1] = max(0.0, dur - 0.1)
         for k, ts in enumerate(pts):
             out = job / f"frame_{k:02d}_{ts:08.3f}.png"
             run_ffmpeg(["-y", "-ss", f"{ts:.3f}", "-i", to_container_any(src),
                         "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+            if not out.exists():
+                raise ValueError(f"no frame at t={ts:.3f} (seek past last decodable frame?)")
             outs.append(out)
     return {"frames": [str(o) for o in outs], "count": len(outs)}
 

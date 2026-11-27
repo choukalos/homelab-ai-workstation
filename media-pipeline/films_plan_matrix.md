@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 DONE (/lipsync, QA 23/23) → final summary next** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **COMPLETE (2026-11-27) — B1–B5 all shipped & QA'd: B1 (QA 35/35) · B2 (QA 24/24 CPU + FLF2V GPU) · B3 (QA 19/19) · B4 /lipsync (VRAM gate PASS 9079 MiB, QA 23/23) · B5 (QA 22/22) · final regression 26/26 · NAS mirror verified append-only → plan CLOSED per §8 DoD; thor handoff unblocked**
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -105,7 +105,34 @@
 >       `matrix_validation_log.md` evidence). Committed: `media: add /lipsync
 >       (Films B4)`.
 > - [x] B4: /lipsync implementation (DONE 2026-11-27 — see above)
-> - [ ] Final summary + docs + commits
+> - [x] **PLAN CLOSED (2026-11-27) — final summary (shipped / deferred / known gaps):**
+>   - **Shipped (all committed):** B1 project store + NAS mirror + storyboard pages +
+>     approve gate (`7d0b7f6`); B2 FLF2V `end_keyframe` + `/animatic` + `/extract_frame`
+>     + `/assemble` lut/grain + bundled LUTs (`f63563b`); B3 `/qc_montage` (`fff9bbb`);
+>     B5 `/montage` (`4892af1`); B4 Phase-0 VRAM gate (`1058754`) + `/lipsync` MuseTalk
+>     v1.5 (`fd18fad`).
+>   - **Deferred:** nothing required. LatentSync not measured (optional record only —
+>     the gate passed with 15.4 GB headroom on MuseTalk v1.5).
+>   - **Known gaps / caveats:** (1) B2 QA VRAM peaks contaminated by Ollama
+>     gemma4:31b co-residency (ComfyUI's own footprint ≈ the i2v baseline);
+>     (2) `/lipsync` output duration ≈ audio length (audio longer than the video
+>     cycles the face — documented in the API contract);
+>     (3) bundled LUTs are starting points, not masters;
+>     (4) the 2026-11-27 final regression caught a latent `/extract_frame` bug —
+>     the `n`/`positions:"last"` paths still used the pre-B3-fix `dur−0.04` clamp,
+>     so on 24 fps clips the last frame was silently dropped with a dangling path →
+>     **fixed** (clamp to `dur−0.1` as in B3 + loud job error when no frame is
+>     produced); media-pipeline rebuilt, `/health` ok, final regression re-run 26/26.
+>   - **DoD (§8) met:** B1–B3+B5 shipped & QA'd ✓ · B4 shipped with gate measurement ✓
+>     · docs updated ✓ (`matrix_media_pipeline_api.md` contract + changelog;
+>     `matrix_validation_log.md` evidence) · `/mnt/lego/media_projects/` mirror
+>     verified append-only ✓ (2026-11-27 23:34: CIFS mount probe `//lego.local/backup`;
+>     new files propagate md5-verified; local deletion did NOT propagate — NAS kept
+>     `qa_final_mirror/bible/mirror_probe.txt` intact, sync `files:4 > local_files:3`)
+>     · regression clean ✓ (26/26, `logs/regress_final.log`). Thor can pick up
+>     `docs/thor_films_handoff.md`.
+>   - Closing commit (subject per TODO): `docs: close films plan (B1–B5 shipped;
+>     B4 shipped)` — made via bash per the TODO's global instructions (closing commit).
 > Source: `gemini-insights.md` (AI-filmmaking workflow analysis) + Chuck's decisions 2026-11-27:
 > 1. Every film project's references/shots/storyboard stored on the NAS — durable, never removed, kept for all time.
 > 2. Interactive storyboard skill with a **review/approve gate before any draft video** (anti-suck-atude; the potato-wars incident).

@@ -551,5 +551,49 @@ budget).
   timed out at 900 s after implementing the flow + compose service + metering
   and completing one full reference run (gate demo pair, job 69113402d792,
   72.3 s wall). This run re-verified fresh (QA 23/23) before closing out.
-- **B4 DONE (2026-11-27):** commit pending `media: add /lipsync (Films B4)`
-  (worker session runs with commits disabled).
+- **B4 DONE (2026-11-27):** committed as `fd18fad` (`media: add /lipsync
+  (Films B4)`; worker sessions run with commits disabled — orchestrator commits).
+
+# Run: 2026-11-27 — Films plan FINAL wrap-up (plan close)
+
+Plan: `media-pipeline/films_plan_matrix.md` §8 (Definition of done). All DoD
+items verified; plan closed. Evidence:
+
+- **NAS mirror verified append-only (DoD item):** live test via the service API
+  (project `qa_final_mirror`, 2026-11-27 23:34 UTC):
+  - CIFS mount probe active — `df --output=source /mnt/lego` = `//lego.local/backup`.
+  - New files propagate: asset upload + `POST /projects/{slug}/sync` →
+    `/mnt/lego/media_projects/qa_final_mirror/bible/mirror_probe.txt` present,
+    md5-identical to local.
+  - **Local deletions do NOT propagate:** local `rm` of `mirror_probe.txt` +
+    re-sync → file still on the NAS, content md5 intact; sync report
+    `files:4, local_files:3` (NAS keeps the extra). Code: `projects.py` rsync
+    is `-a --ignore-existing` (never `--delete`); `DELETE /projects/{slug}`
+    keeps the NAS mirror by design.
+  - Pre-existing B1 QA project (`qa_films_b1_164155`) intact on the NAS (9/9
+    files).
+- **Final regression 26/26 PASS** (`regress_final.py`, log
+  `logs/regress_final.log`): `/health` ok + all 8 Films features; one cheap job
+  per CPU flow — `/trim` (60 s → 5 s cut), `/freeze` (still → 2 s),
+  `/extract_frame` (n=3, 3 PNGs on disk), `/animatic` (2 shots + 5 s wav,
+  dur ≈ 5 s), `/assemble` (5 s window + `lut=cinematic_teal_amber` +
+  `grain=0.3`), `/qc_montage` (n=3), `/montage` (n=4 → 2×2 grid), `/projects`
+  (list + manifest + `nas_sync.ok`). GPU flows (shots/images/upscale/tts/music/
+  sfx/transcribe/lipsync) were each exercised end-to-end in their per-batch QA
+  (qa_b1–qa_b4 logs) — not re-run here (GPU minutes, no new coverage).
+- **`/extract_frame` fix (found by the final regression):** the `n`
+  even-spacing path and `positions: "last"` still used the pre-B3-fix `dur−0.04`
+  clamp — on a 24 fps clip the last `-ss` (59.960 s of a 60 s clip) lands past
+  the last decodable frame (59.9583 s), so ffmpeg produced no frame and the job
+  reported success with a dangling path. Fix: clamp to `dur−0.1` (same as B3's
+  `_even_frame_times()`) + every extraction path raises a job error when no
+  frame is produced. media-pipeline rebuilt + restarted; `/health` ok after
+  restart; final regression re-run → 26/26 (first run was 25/26, the
+  `extract_frame` dangling-path check failing — the bug above).
+- **DoD (§8) met:** B1–B3+B5 shipped & QA'd ✓ (7d0b7f6, f63563b, fff9bbb,
+  4892af1) · B4 shipped with gate measurement ✓ (1058754 + fd18fad) · docs
+  updated ✓ · NAS mirror verified append-only ✓ · regression clean ✓.
+  Thor can pick up `docs/thor_films_handoff.md`.
+- **Closing commit:** `docs: close films plan (B1–B5 shipped; B4 shipped)`
+  (made via bash per the TODO's global instructions: "Commits are made
+  explicitly via bash per TODO").
