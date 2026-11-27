@@ -84,6 +84,12 @@
 - **MTP:** 2 speculative tokens (tuned from 3 on 2026-08-25 — 3rd token acceptance ~55%)
 - **Auto tool choice:** enabled
 - **Vision:** enabled (image + video)
+- **Multimodal limit:** `--limit-mm-per-prompt {"image": 5, "video": 2}` — vLLM
+  400-rejects any prompt with >5 images (error kills the calling session).
+  Client-side constraint: `~/.pi/agent/AGENTS.md` on Matrix (≤5 images per turn,
+  ≤5 total in live context, deterministic checks over eyeballing). Server-side
+  counterpart for all LiteLLM clients: `docs/thor_litellm_image_budget_handoff.md`
+  (system_prompt on the matrix-coder alias, pending Thor deploy).
 - **HF model cache:** `/home/chuck/data/models`
 - **shm_size:** 16 GB
 
