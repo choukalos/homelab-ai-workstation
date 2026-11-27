@@ -273,6 +273,13 @@ directly — use the LiteLLM aliases.
 | ComfyUI :8188 | No (internal LAN only) | `SECURITY_LEVEL=weak` — never expose publicly |
 | media-pipeline :8189 | No (internal LAN only) | Job API + `GET /jobs` (durable job listing, 2026-11-04) + `/metrics` + sync endpoints (`/info`, `/upload*`, `/dl_token`, `/dl/{token}`); never expose publicly — off-LAN pulls use signed `dl_token` URLs (see `docs/matrix_media_pipeline_api.md`) |
 
+> **Agent-job key pass-through (2026-11-27):** Matrix *agent* work (pi sessions +
+> pi-long-task worker subagents) bills to the **caller's LiteLLM virtual key**, passed
+> at launch via `scripts/run-with-key.sh` — see `docs/matrix_key_passthrough.md`.
+> This does **not** change the table above: the media-pipeline API makes no LLM calls
+> (GPU cost is ledger-metered, no key), and the LiteLLM proxy remains the sole auth
+> boundary. Matrix LLM endpoints (vLLM/Ollama) stay keyless.
+
 **Network-level security:** All Matrix ports are bound to `0.0.0.0` but are only
 reachable on the homelab LAN. No ports are exposed to the internet.
 
@@ -302,3 +309,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | 1.3 | 2026-09-07 | Media-pipeline Part 1 build (matrix side of the gap-fill plan): 3 new job flows (`/trim`, `/freeze`, `/caption` — CPU ffmpeg), `/assemble` extensions (object shots, timestamped SFX, `vo_start`, `loudnorm`), 6 new sync endpoints (`/info`, `/upload_local`, `/download`, `/upload`, `/dl_token`, `/dl/{token}` — signed pull URLs for off-LAN clients). **No auth change** — :8189 stays unauthenticated (LAN trust); public auth remains the Caddy layer on thor. Contract updated in `docs/matrix_media_pipeline_api.md`; QA 38/38 (`media-pipeline/qa_part1.py`) |
 | 1.4 | 2026-11-04 | Media-pipeline job visibility (post-incident): new read-only `GET /jobs` on :8189 (durable `jobs.jsonl` ledger + live registry; filters `status`/`client`/`user`/`flow`/`since`/`limit`), job IDs logged to `docker logs media_pipeline`, structured 404 on unknown job. **No auth change** — :8189 stays unauthenticated (LAN trust); `GET /jobs` stays LAN-only (off-LAN clients reach it via the thor MCP proxy). Thor-side MCP additions pending — `docs/thor_media_mcp_handoff.md`. Contract: `docs/matrix_media_pipeline_api.md` |
 | 1.5 | 2026-11-26 | Added `matrix-copywriter` alias (`ollama/gemma4:31b` → `http://matrix:11434`, GPU 1 copywriter) with `model_group_fallbacks → [matrix-coder]` — live in Thor LiteLLM, verified end-to-end. Closes `docs/thor_copywriter_litellm_plan.md` |
+| 1.6 | 2026-11-27 | Agent-job key pass-through contract: caller-launched pi sessions on Matrix carry the caller's LiteLLM virtual key (`scripts/run-with-key.sh` → `LITELLM_API_KEY` env → coordinator extension + worker `models.json` interpolation); step-2 cutover removes chuck's hard-copied key to force pass-through. **No endpoint auth change** — media-pipeline makes no LLM calls; LiteLLM proxy stays the sole auth boundary. Contract: `docs/matrix_key_passthrough.md` |
