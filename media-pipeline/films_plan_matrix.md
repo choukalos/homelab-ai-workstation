@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 next** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 next** (long task running 2026-11-27)
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -43,7 +43,14 @@
 >       **Caveat:** Ollama copywriter (gemma4:31b) co-resident on GPU 1 during QA (14 GB) →
 >       early CPU offload slowed renders (480p FLF2V 17.8 min vs i2v ~10 min) + contaminated
 >       the VRAM baseline (absolute peaks include Ollama's share; ComfyUI's own footprint ≈ i2v).
-> - [ ] B3: /qc_montage
+> - [x] **B3 DONE (2026-11-27 19:40)**: `/qc_montage` (ffmpeg only) — clip QC montage:
+>       n even-spaced frames (first/middle/last for n=3) → single hstack PNG with
+>       index+timestamp labels (one image → one vision call). New shared helpers
+>       `_even_frame_times()` + `_extract_even_frames()` (reused by B5 `/montage`).
+>       **QA 19/19 PASS** (`qa_films_b3.py`, log `logs/qa_b3.log`): n=3 dims 1440×270,
+>       frames pixel-identical to `/extract_frame` positions, n=5 even spacing, label=false,
+>       all 400 paths. Key fix: last-frame `-ss` overshoot (original `dur-0.04` clamp went
+>       past the last decodable frame on a 5 s/24 fps clip) → clamp to `dur-0.1`.
 > - [ ] B5: /montage
 > - [ ] B4: lip-sync Phase-0 VRAM gate (last; DEFERRED-with-measurement if gate fails)
 > - [ ] Final summary + docs + commits

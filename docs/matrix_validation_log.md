@@ -375,3 +375,52 @@ on a clean card).
 - **LUT delivery:** bundled `.cube` names resolve via `resolve_lut()` (bundled name /
   `.cube` filename / RUN_DIR-relative / absolute); staged into `RUN_DIR/luts/` at startup
   so comfyui_backend's ffmpeg reads them at `/comfy/mnt/luts/<name>.cube`.
+
+# Run: 2026-11-27 — Films B3: `/qc_montage` clip QC montage
+
+> Plan: `media-pipeline/films_plan_matrix.md` (batch B3 of the films plan).
+> QA: `media-pipeline/qa_films_b3.py` (live API + on-disk assertions, CPU/ffmpeg only).
+> Log: `/home/chuck/workspace/films-plan/logs/qa_b3.log`.
+> Container `media_pipeline` rebuilt via `model-manager rebuild media-pipeline`;
+> `/health` ok after every rebuild. **No other container touched.**
+> API strictly additive — existing flows unchanged; submit-time validation added
+> (bad n / missing source → clean 400).
+
+## Results — 19/19 checks passing
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/qc_montage` n=3 submit → 200 job_id | ✅ |
+| 2 | `/qc_montage` n=3 done; single hstack PNG on disk | ✅ |
+| 3 | `/qc_montage` n=3 dims = 3×cell (1440×270) | ✅ |
+| 4 | `/qc_montage` n=3 returns 3 timestamps | ✅ |
+| 5 | **QC frame[0] == `/extract_frame` first (pixel-identical)** | ✅ |
+| 6 | **QC frame[1] == `/extract_frame` middle (pixel-identical)** | ✅ |
+| 7 | `/qc_montage` n=5 done; dims = 5×cell (2400×270) | ✅ |
+| 8 | `/qc_montage` n=5 timestamps even (first≈0, last≈4.9) | ✅ |
+| 9 | `/qc_montage` label=false → done | ✅ |
+| 10 | `/qc_montage` n=1 → 400 (submit-time) | ✅ |
+| 11 | `/qc_montage` n=13 → 400 | ✅ |
+| 12 | `/qc_montage` n=abc → 400 | ✅ |
+| 13 | `/qc_montage` missing source → 400 | ✅ |
+
+## Bugs found & fixed during B3 QA
+
+1. **Last-frame extraction overshoot:** the original even-spacing clamp
+   (`dur - 0.04`) put the last `-ss` seek **past** the last decodable frame on a
+   5 s/24 fps clip (last frame at 4.958 s; seek to 4.960 → no frame → hstack
+   "No such file or directory"). Fixed: `_even_frame_times()` clamps the last
+   timestamp to `dur - 0.1` (safely before the final frame at any common frame
+   rate). This is the new shared helper for B3/B5; the committed B2
+   `/extract_frame` is unchanged.
+
+## Notes
+
+- **Single hstack PNG** (one row), not a grid — B5 `/montage` is the grid variant;
+  both reuse `_extract_even_frames()`.
+- **Labels** = `"<index>  <timestamp>s"` (e.g. `0  0.0s`), white on a black box,
+  top-left of each cell (verified on a solid-color clip; the testsrc pattern's own
+  frame counter is separate).
+- **Frame identity:** the QC frames are extracted with the same `-ss <ts>` seek as
+  `/extract_frame` positions, so first/middle are pixel-identical (the last frame
+  uses the safer clamp and is not compared).

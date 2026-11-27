@@ -1586,6 +1586,69 @@ def flow_extract_frame(payload: dict, jid: str):
     return {"frames": [str(o) for o in outs], "count": len(outs)}
 
 
+# ------------------------------------------------------------------ Films B3/B5:
+# shared even-spacing frame extraction (B3 /qc_montage hstack + B5 /montage grid
+# both pull their frames from here).
+
+def _even_frame_times(dur: float, n: int) -> list:
+    """n timestamps evenly spaced across [0, dur], inclusive ends. The last is
+    clamped back 100 ms (not 40) so it is safely BEFORE the last decodable frame
+    at any common frame rate — `-ss` past the final frame yields no frame."""
+    n = max(2, int(n))
+    pts = [dur * k / (n - 1) for k in range(n)]
+    pts[-1] = max(0.0, dur - 0.1)
+    return pts
+
+
+def _extract_even_frames(src, job, n: int, prefix: str = "qc"):
+    """Extract n evenly-spaced frames from a video (ffmpeg only). Returns
+    (list[Path], list[float] timestamps). Shared by /qc_montage (B3) and
+    /montage (B5)."""
+    dur = _probe_summary(src)["duration_s"] or 0.0
+    if not dur:
+        raise ValueError("source has no video duration")
+    pts = _even_frame_times(dur, n)
+    outs = []
+    for k, ts in enumerate(pts):
+        out = job / f"{prefix}_{k:02d}_{ts:08.3f}.png"
+        run_ffmpeg(["-y", "-ss", f"{ts:.3f}", "-i", to_container_any(src),
+                    "-frames:v", "1", "-update", "1", to_container(out)], timeout=600)
+        outs.append(out)
+    return outs, pts
+
+
+def flow_qc_montage(payload: dict, jid: str):
+    """Films B3: clip QC montage (ffmpeg only). video -> n even-spaced frames
+    (first/middle/last for n=3) -> a SINGLE hstack PNG with index labels, so one
+    image -> one vision call (the existing montage subagent pattern). Shares the
+    frame-extraction helper with B5 /montage."""
+    src = _resolve_src(payload["source"])
+    job = JOB_DIR / jid
+    n = int(payload.get("n", 3))
+    if not 2 <= n <= 12:
+        raise ValueError("n: 2..12")
+    label = bool(payload.get("label", True))
+    cell_w = int(payload.get("width", 480))
+    cell_h = int(payload.get("height", 270))
+    frames, times = _extract_even_frames(src, job, n, prefix="qc")
+    out = job / "qc_montage.png"
+    # per-frame: scale to the cell size, optional index+timestamp label; then hstack
+    parts = []
+    for i, (f, ts) in enumerate(zip(frames, times)):
+        lbl = f"{i}  {ts:.1f}s" if label else ""
+        dt = (f",drawtext=text='{lbl}':x=8:y=8:fontsize=22:fontcolor=white"
+              f":box=1:boxcolor=black@0.6:boxborderw=6" if lbl else "")
+        parts.append(f"[{i}:v]scale={cell_w}:{cell_h}{dt}[v{i}]")
+    fc = ";".join(parts) + ";" + "".join(f"[v{i}]" for i in range(n)) + f"hstack=inputs={n}[out]"
+    inputs = []
+    for f in frames:
+        inputs += ["-i", to_container_any(f)]
+    run_ffmpeg(["-y"] + inputs +
+               ["-filter_complex", fc, "-map", "[out]", to_container(out)], timeout=600)
+    return {"image": str(out), "frames": n,
+            "timestamps": [round(t, 3) for t in times]}
+
+
 def flow_assemble(payload: dict, jid: str):
     """ffmpeg (in-container): normalize shots, concat, mix audio tracks, output final mp4.
 
@@ -1811,6 +1874,7 @@ FLOW_MAP = {
     "caption": flow_caption,
     "animatic": flow_animatic,
     "extract_frame": flow_extract_frame,
+    "qc_montage": flow_qc_montage,
     "transcribe": flow_transcribe,
 }
 
@@ -1854,7 +1918,8 @@ def health():
         # M3: feature detection for clients.
         "features": ["assemble-duration-hold", "job-kill", "queue-summary",
                      "job-progress", "projects", "storyboard-pages",
-                     "animatic", "extract-frame", "assemble-grade"],
+                     "animatic", "extract-frame", "assemble-grade",
+                     "qc-montage"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -2467,6 +2532,24 @@ async def api_extract_frame(payload: dict):
     with job_slot():
         jid = new_job("extract_frame", payload)
         enqueue_job(jid, "extract_frame", payload, {})
+    return {"job_id": jid}
+
+
+@app.post("/qc_montage")
+async def api_qc_montage(payload: dict):
+    # Films B3: clip QC montage (ffmpeg only). source + n (2..12, default 3) +
+    # label (bool, default true) -> single hstack PNG with index labels.
+    if "source" not in payload:
+        raise HTTPException(400, "source is required")
+    try:
+        n = int(payload.get("n", 3))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "n must be an int (2..12)")
+    if not 2 <= n <= 12:
+        raise HTTPException(400, "n: 2..12")
+    with job_slot():
+        jid = new_job("qc_montage", payload)
+        enqueue_job(jid, "qc_montage", payload, {})
     return {"job_id": jid}
 
 
