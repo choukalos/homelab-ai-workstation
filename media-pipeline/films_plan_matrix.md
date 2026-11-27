@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 next (Phase-0 VRAM gate)** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 Phase-0 GATE PASS (MuseTalk v1.5 peak 9079 MiB, 15.4 GB headroom) → /lipsync next** (long task running 2026-11-27)
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -68,7 +68,19 @@
 >       (Previous session 2026-11-27 19:15 died on a provider 400 image-budget incident
 >       after B3; B5 code + QA were written and first QA run passed, but the batch was
 >       not closed out — this run re-verified fresh before committing.)
-> - [ ] B4: lip-sync Phase-0 VRAM gate (last; DEFERRED-with-measurement if gate fails)
+> - [x] **B4 Phase-0 GATE PASS (2026-11-27 22:54)**: MuseTalk v1.5 (lighter candidate) on GPU 1:
+>       peak **9079 MiB** (baseline 344 MiB, wall 73 s, 1 Hz nvidia-smi sampling) vs gate
+>       20480 MiB → **15388 MiB (~15.4 GB) headroom ≥ 4 GB → PASS, B4 not deferred**.
+>       Representative inference = official demo pair (yongen.mp4 10.7 s @25 fps 704×1216 +
+>       yongen.wav 8 s) → 8.0 s 704×1216 h264 + AAC output (ffprobe-verified, audio
+>       pass-through intact). Evidence: `/home/chuck/workspace/films-plan/logs/b4_gate_result.json`
+>       (+ `b4_gate_run.log`); gate script + venv in scratch `b4/` (not in repo). Ollama
+>       gemma4:31b (17 GB on GPU 1) unloaded via `keep_alive=0` API before each clean run
+>       (not a container change); one contaminated run (peak 22672 MiB, Ollama co-resident
+>       mid-run) discarded — per-run 1 Hz samples logged in the result JSON to detect this.
+>       LatentSync (heavier) not measured (optional record only; gate already passed with
+>       15.4 GB headroom). **B4 implementation (/lipsync) is next.**
+> - [ ] B4: /lipsync implementation (gate passed — see above)
 > - [ ] Final summary + docs + commits
 > Source: `gemini-insights.md` (AI-filmmaking workflow analysis) + Chuck's decisions 2026-11-27:
 > 1. Every film project's references/shots/storyboard stored on the NAS — durable, never removed, kept for all time.
@@ -260,6 +272,21 @@ Shares the frame-extraction helper with B5. QA: 5 s clip → 3-frame montage, fr
   the dedicated 24 GB card (GPU 1, serial `GPU_LOCK`), measure peak VRAM with nvidia-smi
   sampling. **Gate: peak ≤ ~20 GB** (keep ≥4 GB headroom, same standard as the 720p Wan gate).
   If it fails → write the measurement, mark B4 DEFERRED in this file, ship everything else.
+  **RESULT (2026-11-27 22:54): PASS — MuseTalk v1.5 peak 9079 MiB on GPU 1 (24467 MiB card;
+  baseline 344 MiB, wall 73 s, 1 Hz sampling) = 15388 MiB (~15.4 GB) headroom ≫ 4 GB gate.**
+  Representative inference: official demo pair (yongen.mp4 10.7 s @25 fps 704×1216 + yongen.wav
+  8 s) → 8.0 s 704×1216 h264 + AAC stereo output (ffprobe-verified, audio pass-through intact).
+  Setup (scratch, NOT repo): `b4/MuseTalk` clone + weights, `b4/venv` (torch 2.8.0+cu128 —
+  sm_120 Blackwell needs cu128; mmcv 2.2.0 with a venv-local ext-loader stub because its
+  prebuilt `_ext.so` predates the torch ABI — the stubbed compiled ops are never invoked on
+  the RTMPose-topdown runtime path; `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` for the torch ≥2.6
+  `weights_only` default; ffmpeg = imageio-ffmpeg static binary symlinked to `b4/bin/ffmpeg`).
+  Ollama gemma4:31b (17 GB, GPU 1) unloaded via `keep_alive=0` API before each clean run —
+  not a container change; one contaminated run (peak 22672 MiB, Ollama loaded mid-run) was
+  discarded, per-run 1 Hz samples logged in `b4_gate_result.json` to detect co-resident loads.
+  LatentSync not measured (optional record only; gate passed with 15.4 GB headroom).
+  **B4 is NOT deferred → /lipsync ships next.** Evidence:
+  `/home/chuck/workspace/films-plan/logs/b4_gate_result.json`, `b4_gate_run.log`.
 - Flow `/lipsync`: video + wav (+`face_box` optional) → clip with synced lower face. Only for
   shots with `lip_sync_required`. QA: TTS line + talking-head test clip → vision-check lip
   motion alignment at 3 timestamps; audio pass-through intact (`/info`).
