@@ -1,6 +1,6 @@
 # Media pipeline — film projects: NAS-durable project store, storyboard approval gate, production tools — MATRIX PLAN
 
-> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 next** (long task running 2026-11-27)
+> Created: 2026-11-27 · Status: **IN PROGRESS — B1 DONE (QA 35/35) · B2 DONE (QA 24/24 CPU + FLF2V GPU) · B3 DONE (QA 19/19) · B5 DONE (QA 22/22 + regression 13/13) · B4 next (Phase-0 VRAM gate)** (long task running 2026-11-27)
 >
 > **Resume state (keep current):**
 > - [x] Setup: backups of server.py/workflows.py/metering.py/Dockerfile/comfyui.yml → `/home/chuck/workspace/films-plan/backup/` (2026-11-27 15:44)
@@ -51,7 +51,23 @@
 >       frames pixel-identical to `/extract_frame` positions, n=5 even spacing, label=false,
 >       all 400 paths. Key fix: last-frame `-ss` overshoot (original `dur-0.04` clamp went
 >       past the last decodable frame on a 5 s/24 fps clip) → clamp to `dur-0.1`.
-> - [ ] B5: /montage
+> - [x] **B5 DONE (2026-11-27 22:07)**: `/montage` (ffmpeg only, no GPU) — any video +
+>       `n` (2..36, default 9 = 3×3) + `label` → **grid PNG** (`cols=ceil(√n)`,
+>       `rows=ceil(n/cols)`, last row padded with black cells), n even-spaced frames
+>       reusing B3's `_even_frame_times()`/`_extract_even_frames()` (no new extraction
+>       code path, no new deps). Submit-time validation: bad n / non-int / missing
+>       source → clean 400. **QA 22/22 PASS** (`qa_films_b5.py`, log
+>       `/home/chuck/workspace/films-plan/logs/qa_b5.log`, fresh run on the rebuilt
+>       container): 60 s clip n=9 → 3×3 1440×810 + 9 evenly spaced timestamps correct
+>       vs `/info` (last = dur−0.1), n=4 → 2×2, n=5 → 3×2 + 1 pad cell, label=false,
+>       all 4 400 paths. **Regression 13/13** (`regress_b5.py`, log
+>       `logs/regress_b5.log`): `/health` ok + `montage` in features + `/trim` +
+>       `/freeze` + `/qc_montage` (shared-helper flow) all done. Docs updated
+>       (`matrix_media_pipeline_api.md` contract + changelog; `matrix_validation_log.md`
+>       evidence). Committed: `media: add /montage generic video montage grid (Films B5)`.
+>       (Previous session 2026-11-27 19:15 died on a provider 400 image-budget incident
+>       after B3; B5 code + QA were written and first QA run passed, but the batch was
+>       not closed out — this run re-verified fresh before committing.)
 > - [ ] B4: lip-sync Phase-0 VRAM gate (last; DEFERRED-with-measurement if gate fails)
 > - [ ] Final summary + docs + commits
 > Source: `gemini-insights.md` (AI-filmmaking workflow analysis) + Chuck's decisions 2026-11-27:

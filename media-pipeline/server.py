@@ -1649,6 +1649,60 @@ def flow_qc_montage(payload: dict, jid: str):
             "timestamps": [round(t, 3) for t in times]}
 
 
+def flow_montage(payload: dict, jid: str):
+    """Films B5: generic video -> montage grid (ffmpeg only). Any video + n
+    (default 9, a 3x3 grid) + label (bool, default true) -> a GRID PNG of n
+    even-spaced frames (cols=ceil(sqrt(n)), rows=ceil(n/cols); the last row is
+    padded with black cells so vstack is uniform). Fun tool + long-render review.
+    Reuses the B3 even-spacing frame-extraction helper."""
+    import math
+    src = _resolve_src(payload["source"])
+    job = JOB_DIR / jid
+    n = int(payload.get("n", 9))
+    if not 2 <= n <= 36:
+        raise ValueError("n: 2..36")
+    label = bool(payload.get("label", True))
+    cell_w = int(payload.get("width", 480))
+    cell_h = int(payload.get("height", 270))
+    frames, times = _extract_even_frames(src, job, n, prefix="mg")
+    cols = math.ceil(math.sqrt(n))
+    rows = math.ceil(n / cols)
+    total = cols * rows
+    pad = total - n
+    # pad the last row with black cells so every row is `cols` wide (vstack-safe)
+    pad_frames = []
+    for p in range(pad):
+        pf = job / f"mg_pad_{p:02d}.png"
+        run_ffmpeg(["-y", "-f", "lavfi", "-i", f"color=c=black:s={cell_w}x{cell_h}",
+                    "-frames:v", "1", to_container(pf)], timeout=60)
+        pad_frames.append(pf)
+    all_frames = frames + pad_frames
+    # per-frame: scale + optional label (pad cells get no label); hstack per row;
+    # vstack the rows
+    parts = []
+    for i, f in enumerate(all_frames):
+        is_pad = i >= n
+        ts = times[i] if i < n else 0.0
+        lbl = f"{i}  {ts:.1f}s" if (label and not is_pad) else ""
+        dt = (f",drawtext=text='{lbl}':x=8:y=8:fontsize=22:fontcolor=white"
+              f":box=1:boxcolor=black@0.6:boxborderw=6" if lbl else "")
+        parts.append(f"[{i}:v]scale={cell_w}:{cell_h}{dt}[v{i}]")
+    row_filters = []
+    for r in range(rows):
+        row_inputs = "".join(f"[v{r * cols + c}]" for c in range(cols))
+        row_filters.append(f"{row_inputs}hstack=inputs={cols}[row{r}]")
+    fc = ";".join(parts) + ";" + ";".join(row_filters) + ";" + \
+        "".join(f"[row{r}]" for r in range(rows)) + f"vstack=inputs={rows}[out]"
+    out = job / "montage.png"
+    inputs = []
+    for f in all_frames:
+        inputs += ["-i", to_container_any(f)]
+    run_ffmpeg(["-y"] + inputs +
+               ["-filter_complex", fc, "-map", "[out]", to_container(out)], timeout=600)
+    return {"image": str(out), "frames": n, "grid": f"{cols}x{rows}",
+            "timestamps": [round(t, 3) for t in times]}
+
+
 def flow_assemble(payload: dict, jid: str):
     """ffmpeg (in-container): normalize shots, concat, mix audio tracks, output final mp4.
 
@@ -1875,6 +1929,7 @@ FLOW_MAP = {
     "animatic": flow_animatic,
     "extract_frame": flow_extract_frame,
     "qc_montage": flow_qc_montage,
+    "montage": flow_montage,
     "transcribe": flow_transcribe,
 }
 
@@ -1919,7 +1974,7 @@ def health():
         "features": ["assemble-duration-hold", "job-kill", "queue-summary",
                      "job-progress", "projects", "storyboard-pages",
                      "animatic", "extract-frame", "assemble-grade",
-                     "qc-montage"],
+                     "qc-montage", "montage"],
         "retention_days": MEDIA_JOB_RETENTION_DAYS,
         "retention_last_run": RETENTION_STATE["last_run"],
         "retention_last_deleted": RETENTION_STATE["last_deleted"],
@@ -2550,6 +2605,24 @@ async def api_qc_montage(payload: dict):
     with job_slot():
         jid = new_job("qc_montage", payload)
         enqueue_job(jid, "qc_montage", payload, {})
+    return {"job_id": jid}
+
+
+@app.post("/montage")
+async def api_montage(payload: dict):
+    # Films B5: generic video -> montage grid (ffmpeg only). source + n (2..36,
+    # default 9 = 3x3) + label (bool, default true) -> grid PNG of even-spaced frames.
+    if "source" not in payload:
+        raise HTTPException(400, "source is required")
+    try:
+        n = int(payload.get("n", 9))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "n must be an int (2..36)")
+    if not 2 <= n <= 36:
+        raise HTTPException(400, "n: 2..36")
+    with job_slot():
+        jid = new_job("montage", payload)
+        enqueue_job(jid, "montage", payload, {})
     return {"job_id": jid}
 
 

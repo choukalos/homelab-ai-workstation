@@ -424,3 +424,66 @@ on a clean card).
 - **Frame identity:** the QC frames are extracted with the same `-ss <ts>` seek as
   `/extract_frame` positions, so first/middle are pixel-identical (the last frame
   uses the safer clamp and is not compared).
+
+---
+
+# Run: 2026-11-27 — Films B5: `/montage` generic video → montage grid
+
+> Plan: `media-pipeline/films_plan_matrix.md` (batch B5 of the films plan).
+> QA: `media-pipeline/qa_films_b5.py` (live API + on-disk assertions, CPU/ffmpeg only).
+> Log: `/home/chuck/workspace/films-plan/logs/qa_b5.log` (fresh run 2026-11-27 22:0x,
+> post-rebuild).
+> Regression: `/home/chuck/workspace/films-plan/regress_b5.py` →
+> `/home/chuck/workspace/films-plan/logs/regress_b5.log`.
+> Container `media_pipeline` rebuilt via `docker compose -f compose/comfyui.yml
+> --profile image build media-pipeline && up -d media-pipeline`; `/health` ok after
+> the restart, `features` includes `montage`. **No other container touched.**
+> API strictly additive — existing flows unchanged; submit-time validation added
+> (bad n / missing source → clean 400). No new Python deps (ffmpeg-only).
+
+## Results — 22/22 QA checks + 13/13 regression checks passing
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/montage` n=9 (60 s clip) submit → 200 job_id | ✅ |
+| 2 | n=9 done; grid PNG on disk | ✅ |
+| 3 | n=9 grid dims = 3×3 cells (1440×810) | ✅ |
+| 4 | n=9 `grid` field = `3x3` | ✅ |
+| 5 | n=9 returns 9 timestamps | ✅ |
+| 6 | n=9 timestamps evenly spaced (0, 7.5, 15, …, 59.9) | ✅ |
+| 7 | n=9 last timestamp correct vs `/info` duration (dur−0.1 clamp) | ✅ |
+| 8 | `/montage` n=4 done; grid dims = 2×2 (960×540) | ✅ |
+| 9 | n=4 `grid` field = `2x2` | ✅ |
+| 10 | `/montage` n=5 done; grid dims = 3×2 (1440×540, 1 black pad cell) | ✅ |
+| 11 | n=5 `grid` field = `3x2` | ✅ |
+| 12 | `/montage` label=false → done | ✅ |
+| 13 | `/montage` n=1 → 400 (submit-time) | ✅ |
+| 14 | `/montage` n=37 → 400 | ✅ |
+| 15 | `/montage` n=abc → 400 | ✅ |
+| 16 | `/montage` missing source → 400 | ✅ |
+
+## Regression (cheap existing flows only, per TASK.md)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/health` ok + `features` includes `montage` + all pre-B5 feature flags | ✅ |
+| 2 | `/trim` (M1) 60 s clip → 5 s cut: done, `/info` duration ≈ 5 s | ✅ |
+| 3 | `/freeze` (M2) still → 2 s clip: done, `/info` duration ≈ 2 s | ✅ |
+| 4 | `/qc_montage` (B3, shares the `_extract_even_frames()` helper) n=3: done, image on disk | ✅ |
+
+(13/13 checks, log `logs/regress_b5.log`.)
+
+## Notes
+
+- **Grid geometry:** `cols=ceil(√n)`, `rows=ceil(n/cols)`; the last row is padded
+  with black cells (generated via `lavfi color`) so every row is `cols` wide and
+  `vstack` is uniform. n=5 → 3×2 with 1 pad cell; n=9 → 3×3; n=4 → 2×2.
+- **Shared helper:** frame extraction reuses B3's `_even_frame_times()` /
+  `_extract_even_frames()` (last frame clamped to `dur − 0.1`); no new extraction
+  code path, no new deps (ffmpeg-only).
+- **Session incident:** the previous autonomous session (2026-11-27 19:15) died on
+  a provider 400 (image budget) after B3; B5's implementation + QA script were
+  written and the first QA run passed, but the batch was not closed out. This run
+  re-verified everything fresh on the rebuilt container before committing.
+- **B5 DONE (2026-11-27):** committed per batch convention (`media: add /montage
+  generic video montage grid (Films B5)`).
