@@ -67,9 +67,13 @@ run-with-key.sh sk-... -p "Run a long task with commits to ..."
   the proxy). The proxy, not Matrix, enforces policy.
 - The wrapper exports `LITELLM_API_KEY` + `LITELLM_BASE_URL` and `exec`s `pi` —
   the env is inherited by all in-process worker subagents.
-- Interactive use (chuck, at the terminal):
-  `LITELLM_API_KEY=$(cat ~/.pi/agent/litellm.key) pi` — key file installed by the
-  step-2 cutover (chmod 600).
+- Interactive use (chuck, at the terminal): `pi` — aliased in `~/.bashrc` to
+  `scripts/pi.sh`, which exports chuck's key from `~/.pi/agent/litellm.key`
+  (installed by the step-2 cutover, chmod 600) + `LITELLM_BASE_URL` and execs
+  `pi`. The alias keeps interactive launches from prompting for a key and
+  re-saving it into `auth.json` (a stored credential would win over caller
+  keys and silently revert pass-through — §3). An already-exported
+  `LITELLM_API_KEY` is honored over the key file.
 
 ## 5. Step 2 cutover (remove the hard copy — forces pass-through)
 

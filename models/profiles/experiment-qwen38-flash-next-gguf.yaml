@@ -15,9 +15,9 @@ model:
   path: /home/chuck/data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
   quantization: IQ4_XS (97.7 GB, 3 shards; KLD @32k 0.0929, top-p @32k 88.91%)
   format: GGUF (llama.cpp)
-  expected_vram: ~63.5 GB GPU + ~34 GB RAM (mmap)
+  expected_vram: ~57.5-64 GB GPU (~68-69 GB total incl. KV+mmproj) + ~40 GB RAM (mmap)
   parameters: 125B MoE (6B active/token + 51B n-gram embedding PLE + 4B MTP)
-  context: 262144
+  context: 196608  # 4 x 196608 with vision (Phase 5 config decision); 262144 native
   architecture: "Qwen3.8-Flash-Next (48 layers = 12 x (3 GDN + 1 QSA); only QSA layers carry per-token KV)"
 
 launch:
@@ -32,8 +32,8 @@ launch:
   args:
     # Full arg list lives in the compose file; key settings:
     - --alias qwen38-27b
-    - --ctx-size 262144
-    - --parallel 2
+    - --ctx-size 196608
+    - --parallel 4
     - --cache-type-k q8_0 --cache-type-v q4_0
     - --flash-attn on
     - --mmproj /data/models/gguf/mmproj-Swift-1.5-Qwen3.8-Flash-Next-BF16.gguf
@@ -52,6 +52,7 @@ notes:
   - Also stop qwen-coder daily driver (port 8000) — model-manager experiment start does this
   - Let ollama release the GPU (keep_alive 5m idle timeout)
   - Only ONE of the two flash-next experiment files should run at a time (fallback: experiment-qwen38-flash-next-gsq-rco)
-  - Expected decode (est.): 2x256K ~60-75 tok/s per session; 4x256K ~50-65 tok/s per session
-  - Verify QSA sparse-attention support in llama.cpp first — dense 256K fallback would collapse KV numbers
+  - Expected decode (est.): 4x196K ~50-65 tok/s per session (~200-260 aggregate); prior 2x256K estimate ~60-75 per session
+  - Config decision (Phase 5, Chuck): 4 x 196608 WITH vision (--mmproj kept) — VRAM ~68-69/72 GB, RAM ~50/62 GB; the 4x256K option was near-zero-headroom and dropped vision
+  - Verify QSA sparse-attention support in llama.cpp at LONG context (short-context 2026-11-14 run was fine) — dense fallback would collapse KV numbers; the 4x196K concurrent decode test is the check
   - Rollback: model-manager mode rollback (restores qwen-coder.yml on port 8000)

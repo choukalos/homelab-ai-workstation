@@ -2,6 +2,7 @@
 *.env
 !.env.example
 state/
+tmp/
 example.dot.env
 __pycache__/
 .DS_Store

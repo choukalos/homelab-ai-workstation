@@ -1,23 +1,26 @@
-# matrix-coder-flashnext — Qwen3.8-Flash-Next daily model (llama.cpp)
-# Status: DRAFT (add_card_plan.md Phase 0a) — candidate for the `daily` mode.
-# Replaces matrix-coder (Qwen3.8-27B NVFP4 vLLM) only if the QNF experiment
-# (Phase 5) wins.
+# matrix-coder-flashnext — Qwen3.8-Flash-Next candidate daily model (llama.cpp)
+# Status: CANDIDATE (add_card_plan.md Phase 5) — NOT the daily driver.
+# Becomes the `daily` profile only if the QNF experiment wins; until then the
+# experiment runs via experiment-qwen38-flash-next-gguf (same compose/args).
 #
 # Serves as `qwen38-27b` on :8000 — the LiteLLM matrix-coder contract is UNCHANGED
 # (Thor needs no changes). llama.cpp `--alias qwen38-27b` provides the served name.
+#
+# Config decision (Phase 5, Chuck): 4 x 196608 WITH vision (--mmproj kept).
+# VRAM ~68-69/72 GB, RAM ~50/62 GB — the first QNF config that fits with margin.
 
 name: matrix-coder-flashnext
 alias: matrix-coder
 backend: llama.cpp
-status: draft
+status: candidate
 
 model:
-  path: /data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
+  path: /home/chuck/data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf  # host path; /data/models inside the container
   quantization: IQ4_XS (97.7 GB, 3 shards) — Swift 1.5
   format: gguf
-  expected_vram: ~63.5 GB on-GPU + ~34 GB host RAM (mmap)
+  expected_vram: ~57.5-64 GB on-GPU (~68-69 GB total incl. KV+mmproj) + ~40 GB host RAM (mmap)
   parameters: 125B MoE (6B active/token) + 51B PLE n-gram embedding + 4B MTP
-  context: 262144
+  context: 196608  # 4 x 196608 with vision (Phase 5 config decision); 262144 native
   vision: true
   fallback_quant: >
     IQ3_S GSQ-RCO (83.7 GB, 2 shards) — compose/experiments/qwen38-flash-next-gsq-rco.yml.
@@ -25,7 +28,7 @@ model:
 
 launch:
   container: qwen38-flash-next
-  image: ghcr.io/ggml-org/llama.cpp:server
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda  # CUDA build — plain 'server' tag is CPU-ONLY (2026-11-13 incident)
   compose: compose/experiments/qwen38-flash-next-gguf.yml
   port: 8000
   shm_size: 16g
@@ -35,10 +38,10 @@ launch:
     --model: /data/models/gguf/IQ4_XS/Swift-1.5-Qwen3.8-Flash-Next-IQ4_XS-00001-of-00003.gguf
     --alias: qwen38-27b
     --host: 0.0.0.0
-    --port: "8080"
+    --port: "8080"  # internal port; compose publishes 8000:8080 (matrix-coder contract = :8000)
     --n-gpu-layers: "999"
-    --ctx-size: "262144"
-    --parallel: "2"
+    --ctx-size: "196608"
+    --parallel: "4"
     --cont-batching: true
     --jinja: true
     --flash-attn: on
@@ -58,9 +61,8 @@ compatible_modes:
   - daily
 
 notes:
-  - "Requires stopping the vLLM daily driver (port 8000 + ~56 GB VRAM) before launch"
-  - "QSA sparse-attention support in llama.cpp MUST be verified in the first benchmark
-    (Phase 0b/5) — a dense-256K fallback collapses throughput (KV-read dominated)"
+  - "Requires stopping the vLLM daily driver (port 8000 + ~69 GB VRAM) before launch — `model-manager experiment start` does this"
+  - "QSA sparse-attention at LONG context still unverified (short-context 2026-11-14 run was fine) — the 4x196K concurrent decode test in Phase 5 is the check; a dense fallback collapses throughput (KV-read dominated)"
   - "PCIe x8 watch-item: ~34 GB weights RAM-resident; the Phase 0b x16 baseline isolates
     the x8 delta (both cards drop to x8 per mobo manual)"
   - "Promotion path: Phase 5 (QNF experiment) → if it wins, this becomes the `daily`
