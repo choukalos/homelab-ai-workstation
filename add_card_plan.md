@@ -1,6 +1,6 @@
 # Add Card Plan — RTX 4000 Blackwell (24 GB) → Matrix as GPU 1
 
-> **Status: IN PROGRESS — card installed 2026-11-14, Phases 1–4 + 6 DONE; Phase 5 (QNF daily experiment) + Phase 7 (media QoL) pending.**
+> **Status: IN PROGRESS — card installed 2026-11-14; Phases 1–4 + 6 + 7 DONE; Phase 5 (QNF daily experiment) pending — config decided 2026-11-28 (4 × 196K with vision, commit `861b299`); x8 run + promotion decision outstanding (needs the Chuck-scheduled agent-down window).**
 > Created 2026-11-13. Owners: **Chuck** (hardware actions, §5) · **agent** (phases, §6).
 > Companion docs: `docs/matrix_inventory.md`, `EXPERIMENTS_RESULTS.md` (Exp 7/8),
 > `media-pipeline/wan_shots_todo.md`, `docs/matrix_media_pipeline_api.md` §6.
@@ -362,16 +362,23 @@ candidate) *before* install. If good → proceed with confidence.
 ### Phase 5 — QNF experiment (swap 27B → QNF as daily)
 > Depends on the Phase 0b x16 baseline — **captured 2026-11-14 (291.4 tok/s @ x16,
 > see Phase 0b)**; the QSA/long-context question folds into this run.
+> **Config decision 2026-11-28 (Chuck, commit `861b299`): 4 × 196608 WITH
+> vision (`--mmproj` kept)** — 4 × 256K fits only with ~zero VRAM headroom;
+> 4 × 196K is the first QNF config that fits with margin AND vision (VRAM
+> ~68-69/72 GB, RAM ~50/62 GB). Compose + profile updated to match (also:
+> `server-cuda` image — the plain `server` tag is CPU-only; host model path).
+> The x8 run itself is still pending (agent-down window).
 - [ ] Flash-Next experiment (IQ4_XS; IQ3_S fallback) at 2 × 256K → 4 × 256K **at x8**;
       **compare directly to the Phase 0b x16 baseline** → the x8 delta is measured,
       not estimated. Full benchmark vs the bumped 27B.
 - [ ] Decision: promote QNF to `daily` (profile + mode + LiteLLM alias unchanged) or
       keep the bumped 27B. Archive the loser to `state/experiment_archive.md`.
-- [ ] **Note (not a blocker): daily model settled** — Phase 6 is technically
+- [x] **Note (not a blocker): daily model settled** — Phase 6 is technically
       independent (GPU 1 services only; the media pipeline has no dependency on
       the daily model on GPU 0). The only coupling is scheduling: the Phase 5
       agent-down window (qwen38 stop) shouldn't land mid-way through a long
-      Phase 6 session. Either order works.
+      Phase 6 session. Either order works. **Moot 2026-11-22: Phases 6 + 7
+      done; only the Phase 5 agent-down window remains to schedule.**
 
 ### Phase 6 — flex the media pipeline (GPU 1 quality unlocks)
 > **Independent of Phase 5** (2026-11-21, Chuck): all GPU 1 work — the media
@@ -429,8 +436,12 @@ candidate) *before* install. If good → proceed with confidence.
       (it's the best keyframe); Q6_K staged as opt-in legacy upgrade.
 - [x] **QoL-3: LTXV 720p fast lane** — QA gate 1280×720/97f (VRAM/wall) + docs.
       **Result: promoted** (18 s/clip, 18,335 MiB peak, 1280×704 out).
-- [ ] **Thor**: harness commit `6fd88ca` (mcp_media descriptions + media-film
-      contract) — committed 2026-11-22 → **Chuck pushes + rebuilds mcp_media**.
+- [ ] **Thor**: harness commit (mcp_media descriptions + media-film contract) —
+      committed 2026-11-22 → **pushed 2026-11-28 as `44ded12`** (the referenced
+      `6fd88ca` is a rebase orphan of the same patch — identical patch-id
+      `0644a6ab…`, verified 2026-11-28; nothing lost, nothing to push).
+      Remaining: **rebuild mcp_media on Thor** (Thor-side; not verifiable from
+      Matrix).
 
 ## 7. Open questions (need your answers)
 

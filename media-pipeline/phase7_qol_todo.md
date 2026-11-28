@@ -168,9 +168,11 @@ Repo: `/home/chuck/workspace/homelab-ai-harness` (fresh clone 2026-11-22).
   - add_card_plan.md: §4.3 items 2/7/8 closed with outcomes; Phase 7 boxes
     checked (Thor box pending push).
   - matrix_backup.md: diffusion_models 87 → 104 GB, source total 163 → 181 GB.
-  - Harness commit `6fd88ca` (server.py descriptions, client docstrings,
-    README rows + history, media-film SKILL.md + pipeline-contract.md) →
-    **Chuck pushes + rebuilds the mcp_media container on Thor**.
+  - Harness commit (server.py descriptions, client docstrings, README rows +
+    history, media-film SKILL.md + pipeline-contract.md) → committed `6fd88ca`
+    2026-11-22, **pushed 2026-11-28 as `44ded12`** (rebase onto newer main;
+    identical patch — `6fd88ca` is a dangling orphan, verified by patch-id).
+    Remaining: **rebuild the mcp_media container on Thor** (Thor-side).
   - Cleanup: redundant 18 GB workspace Q6_K copy deleted (container keeps
     its own; re-downloadable from HF); container test intermediates removed
     (129f evidence clip wan22_p1_1280x720_00005.mp4 + p7_* QA images kept);

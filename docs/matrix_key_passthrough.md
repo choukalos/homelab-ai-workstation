@@ -1,7 +1,9 @@
 # Matrix key pass-through contract
 
-**Created:** 2026-11-27 · **Status:** STEP 1 ready (wrapper + docs); STEP 2 cutover
-scripted, pending run (see §5 — must wait for the active long task to finish)
+**Created:** 2026-11-27 · **Status:** **LIVE (2026-11-28)** — step 1 wrapper +
+docs; step 2 cutover done 2026-11-28 (stored credential removed, env
+interpolation live); T1 transport live + T4 verified end-to-end (checks 1–4
+PASS — `docs/matrix_validation_log.md` Run 2026-11-28 final; contract §10 v1.7)
 
 ## 1. Purpose
 
@@ -76,6 +78,10 @@ run-with-key.sh sk-... -p "Run a long task with commits to ..."
   `LITELLM_API_KEY` is honored over the key file.
 
 ## 5. Step 2 cutover (remove the hard copy — forces pass-through)
+
+> **DONE 2026-11-28** — ran after the films long task finished; all steps
+> verified (see the Status line above + `docs/matrix_validation_log.md` Run
+> 2026-11-28 final, "Cutover state").
 
 `scripts/enable-key-passthrough.sh` (idempotent, safety-gated):
 
