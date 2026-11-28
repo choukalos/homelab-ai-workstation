@@ -1,7 +1,7 @@
 # Matrix — Thor Integration Contract
 
 > Created: 2026-07-03
-> Version: 1.5
+> Version: 1.7
 > Maintainer: Chuck (homelab operator)
 
 **This document defines the interface between Thor (application/orchestration layer)
@@ -280,6 +280,29 @@ directly — use the LiteLLM aliases.
 > (GPU cost is ledger-metered, no key), and the LiteLLM proxy remains the sole auth
 > boundary. Matrix LLM endpoints (vLLM/Ollama) stay keyless.
 
+> **T1 transport LIVE (2026-11-28, T4-verified end-to-end):** the Thor→Matrix
+> **agent-job transport** is now live. Thor holds a dedicated restricted ed25519
+> keypair (`~/.ssh/id_ed25519_matrix`; ssh alias `matrix-agent`; the Matrix
+> `authorized_keys` line carries `from="192.168.4.54"` and is command-restricted
+> to `/home/chuck/homelab/scripts/run-with-key.sh` — no-pty/no-forwarding, **no
+> shell**). Jobs ride ssh **stdin** as a 2-line envelope: line 1 = the caller's
+> LiteLLM virtual key, line 2 = pi args as a JSON array (e.g.
+> `["-p","Reply OK"]`). The wrapper's stdin mode plus the T4 fixes are live on
+> Matrix: `export PATH="$HOME/.pi/agent/bin:$PATH"` (the forced-command context has
+> no `~/.pi/agent/bin` on PATH) and `LITELLM_BASE_URL` pinned to the LAN proxy
+> `http://192.168.4.54:4000` — the public route `https://llm.choukalos.com` is
+> Caddy-gated to family keys, so caller keys can only traverse the LAN. Step-2
+> cutover is done (2026-11-28): chuck's stored `auth.json` credential removed,
+> `models.json` env-interpolated, `~/.pi/agent/litellm.key` present (chmod 600).
+> Launch from Thor via `scripts/matrix-agent-launch.sh`
+> (`MATRIX_CALLER_KEY=… scripts/matrix-agent-launch.sh -- <pi args…>`). Key
+> hygiene: the key is never in argv (never in `ps` on either host), never
+> persisted, and all launch output is redacted. Live wrapper sha256 (2026-11-28,
+> verified over the transport): `684cc3fe97e0b2ce37f362e5b6cdd9db026b928dff1796f8c8d52fc5c648e171`.
+> Evidence: `docs/matrix_validation_log.md` (Run 2026-11-28 final) + Thor
+> `docs/thor_validation_log.md` (part 18). **No endpoint auth change** — the
+> LiteLLM proxy remains the sole auth boundary.
+
 **Network-level security:** All Matrix ports are bound to `0.0.0.0` but are only
 reachable on the homelab LAN. No ports are exposed to the internet.
 
@@ -295,6 +318,7 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | `docs/matrix_media_pipeline_api.md` | Media-pipeline :8189 API contract + metering |
 | `docs/matrix_monitoring_health.md` | Health endpoints and metrics |
 | `docs/matrix_model_manager.md` | Model manager CLI (operator tool, not Thor-facing) |
+| `docs/matrix_key_passthrough.md` | Agent-job key pass-through contract (caller-key launch via `scripts/run-with-key.sh`; T1 transport + T4 verification) |
 | Thor's `thor.litellm.config.yml` | Thor's LiteLLM proxy config — **lives on Thor, not in this repo** (repo copy removed 2026-09-06 to avoid stale mirrors) |
 
 ---
@@ -310,3 +334,4 @@ reachable on the homelab LAN. No ports are exposed to the internet.
 | 1.4 | 2026-11-04 | Media-pipeline job visibility (post-incident): new read-only `GET /jobs` on :8189 (durable `jobs.jsonl` ledger + live registry; filters `status`/`client`/`user`/`flow`/`since`/`limit`), job IDs logged to `docker logs media_pipeline`, structured 404 on unknown job. **No auth change** — :8189 stays unauthenticated (LAN trust); `GET /jobs` stays LAN-only (off-LAN clients reach it via the thor MCP proxy). Thor-side MCP additions pending — `docs/thor_media_mcp_handoff.md`. Contract: `docs/matrix_media_pipeline_api.md` |
 | 1.5 | 2026-11-26 | Added `matrix-copywriter` alias (`ollama/gemma4:31b` → `http://matrix:11434`, GPU 1 copywriter) with `model_group_fallbacks → [matrix-coder]` — live in Thor LiteLLM, verified end-to-end. Closes `docs/thor_copywriter_litellm_plan.md` |
 | 1.6 | 2026-11-27 | Agent-job key pass-through contract: caller-launched pi sessions on Matrix carry the caller's LiteLLM virtual key (`scripts/run-with-key.sh` → `LITELLM_API_KEY` env → coordinator extension + worker `models.json` interpolation); step-2 cutover removes chuck's hard-copied key to force pass-through. **No endpoint auth change** — media-pipeline makes no LLM calls; LiteLLM proxy stays the sole auth boundary. Contract: `docs/matrix_key_passthrough.md` |
+| 1.7 | 2026-11-28 | **T1 transport LIVE** (T4-verified end-to-end): dedicated restricted ed25519 keypair on Thor (ssh alias `matrix-agent`, `from="192.168.4.54"`, command-restricted to `scripts/run-with-key.sh`, no shell); 2-line stdin envelope (caller key + pi args JSON); wrapper stdin patch + T4 fixes live (PATH export for the forced-command context; `LITELLM_BASE_URL` pinned to LAN proxy `http://192.168.4.54:4000` — public route is Caddy-gated to family keys); step-2 cutover done 2026-11-28; launch via Thor `scripts/matrix-agent-launch.sh`. **No endpoint auth change** — LiteLLM proxy stays the sole auth boundary. Live wrapper sha256 `684cc3fe…` (verified over the transport) |
